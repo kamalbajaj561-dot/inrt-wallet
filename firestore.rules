@@ -1,0 +1,53 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Helper function to check if user is admin
+    function isAdmin() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true;
+    }
+
+    // User profiles
+    match /users/{userId} {
+      allow read: if request.auth != null;
+      allow create: if request.auth != null && request.auth.uid == userId;
+      // Allow update by user for preview purposes (including walletBalance)
+      allow update: if request.auth != null && request.auth.uid == userId;
+    }
+    
+    // Transactions
+    // Allow create from client for preview purposes
+    match /transactions/{transactionId} {
+      allow read: if request.auth != null && (
+        resource.data.senderId == request.auth.uid || 
+        resource.data.receiverId == request.auth.uid || 
+        isAdmin()
+      );
+      allow create: if request.auth != null && (
+        request.resource.data.senderId == request.auth.uid ||
+        request.resource.data.receiverId == request.auth.uid
+      );
+      allow update, delete: if false;
+    }
+
+    // Payment Requests
+    match /payment_requests/{requestId} {
+      allow read: if request.auth != null && (
+        resource.data.senderId == request.auth.uid || 
+        resource.data.receiverId == request.auth.uid
+      );
+      allow create: if request.auth != null && request.resource.data.senderId == request.auth.uid;
+      allow update: if request.auth != null && (
+        resource.data.senderId == request.auth.uid || 
+        resource.data.receiverId == request.auth.uid
+      );
+    }
+
+    // Bank Accounts
+    match /bankAccounts/{accountId} {
+      allow read: if request.auth != null && resource.data.userId == request.auth.uid;
+      allow create: if request.auth != null && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if request.auth != null && resource.data.userId == request.auth.uid;
+    }
+  }
+}

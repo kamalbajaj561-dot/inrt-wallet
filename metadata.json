@@ -1,0 +1,5 @@
+{
+  "name": "INRT Wallet",
+  "description": "A centralized fintech wallet application with modern UI, OTP auth, and transaction features.",
+  "requestFramePermissions": ["camera"]
+}
