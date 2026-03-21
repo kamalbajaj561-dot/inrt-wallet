@@ -1,0 +1,10 @@
+{
+  "build": {
+    "builder": "NIXPACKS",
+    "buildCommand": "npm install --legacy-peer-deps"
+  },
+  "deploy": {
+    "startCommand": "node server.js",
+    "healthcheckPath": "/health"
+  }
+}

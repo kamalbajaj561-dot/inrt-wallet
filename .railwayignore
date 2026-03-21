@@ -1,0 +1,9 @@
+src/
+public/
+dist/
+*.tsx
+*.ts
+vite.config.ts
+tailwind.config.js
+postcss.config.js
+index.html

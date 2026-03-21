@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite --port=3000 --host=0.0.0.0",
     "preinstall": "npm config set legacy-peer-deps true",
+    "start": "node server.js",
     "server": "node server.js",
     "build": "vite build --mode production",
     "preview": "vite preview",
