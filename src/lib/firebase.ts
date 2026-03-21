@@ -1,7 +1,6 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
 import { connectAuthEmulator } from 'firebase/auth';
-import { initializeAppCheck, ReCaptchaEnterpriseProvider } from 'firebase/app-check';
 import { getFirestore } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
 
@@ -17,16 +16,6 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 
 export const auth = getAuth(app);
-
-// Only initialize App Check in production
-if (typeof window !== 'undefined' && import.meta.env.PROD) {
-  initializeAppCheck(app, {
-    provider: new ReCaptchaEnterpriseProvider(
-      import.meta.env.VITE_RECAPTCHA_KEY || '6LcEDZIsAAAAAAfV56ePcuHLXpPHd0w-niWCmzwf'
-    ),
-    isTokenAutoRefreshEnabled: true,
-  });
-}
 
 export const db = getFirestore(app);
 export const storage = getStorage(app);
