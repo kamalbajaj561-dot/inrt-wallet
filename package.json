@@ -5,8 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite --port=3000 --host=0.0.0.0",
+    "preinstall": "npm config set legacy-peer-deps true",
     "server": "node server.js",
-    "build": "vite build",
+    "build": "tsc --skipLibCheck && vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit"
@@ -40,6 +41,10 @@
   "overrides": {
     "react": "^18.0.0",
     "react-dom": "^18.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=8.0.0"
   },
   "devDependencies": {
     "@types/express": "^4.17.21",
