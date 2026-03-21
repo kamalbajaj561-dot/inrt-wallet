@@ -1,90 +1,99 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import { User, onAuthStateChanged } from 'firebase/auth';
-import { doc, onSnapshot, updateDoc } from 'firebase/firestore';
-import { auth, db } from '@/lib/firebase';
-import { UserProfile } from '@/types';
+import {
+  signInWithPhoneNumber,
+  RecaptchaVerifier,
+  signOut,
+  onAuthStateChanged,
+  User,
+  updateProfile,
+} from 'firebase/auth';
+import { auth } from '../lib/firebase';
+import { createUserProfile, getUserProfile } from '../lib/db';
 
 interface AuthContextType {
   user: User | null;
-  userProfile: UserProfile | null;
+  userProfile: any;
   loading: boolean;
-  isAdmin: boolean;
+  sendOTP: (phone: string) => Promise<void>;
+  verifyOTP: (otp: string, name: string) => Promise<void>;
+  logout: () => Promise<void>;
+  refreshProfile: () => Promise<void>;
 }
 
-const AuthContext = createContext<AuthContextType>({
-  user: null,
-  userProfile: null,
-  loading: true,
-  isAdmin: false,
-});
-
+const AuthContext = createContext<AuthContextType>({} as AuthContextType);
 export const useAuth = () => useContext(AuthContext);
 
-export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
-  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+  const [userProfile, setUserProfile] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [confirmationResult, setConfirmationResult] = useState<any>(null);
 
   useEffect(() => {
-    if (!auth || !db) {
-      setLoading(false);
-      return;
-    }
-
-    const unsubscribeAuth = onAuthStateChanged(auth, (currentUser) => {
-      setUser(currentUser);
-      
-      if (currentUser) {
-        // Subscribe to user profile changes
-        const userDocRef = doc(db, 'users', currentUser.uid);
-        const unsubscribeProfile = onSnapshot(userDocRef, async (docSnap) => {
-          if (docSnap.exists()) {
-            const data = docSnap.data() as UserProfile;
-            
-            // Check if UPI ID exists, if not generate one
-            if (!data.upiId) {
-              const randomNum = Math.floor(1000 + Math.random() * 9000);
-              const firstName = data.fullName ? data.fullName.split(' ')[0].toLowerCase().replace(/[^a-z0-9]/g, '') : 'user';
-              const newUpiId = `${firstName}${randomNum}@inrt`;
-              
-              try {
-                await updateDoc(userDocRef, {
-                  upiId: newUpiId,
-                  accountType: data.accountType || 'user'
-                });
-                // The snapshot will update automatically
-              } catch (e) {
-                console.error("Error generating UPI ID:", e);
-              }
-            } else {
-              setUserProfile(data);
-            }
-          } else {
-            setUserProfile(null);
-          }
-          setLoading(false);
-        }, (error) => {
-          console.error("Error fetching user profile:", error);
-          setLoading(false);
-        });
-
-        return () => {
-          unsubscribeProfile();
-        };
+    const unsub = onAuthStateChanged(auth, async (u) => {
+      setUser(u);
+      if (u) {
+        const profile = await getUserProfile(u.uid);
+        setUserProfile(profile);
       } else {
         setUserProfile(null);
-        setLoading(false);
       }
+      setLoading(false);
     });
-
-    return () => unsubscribeAuth();
+    return unsub;
   }, []);
 
-  const isAdmin = userProfile?.isAdmin || false; // In real app, check custom claims or specific admin collection
+  const sendOTP = async (phone: string) => {
+    const formatted = phone.startsWith('+') ? phone : `+91${phone}`;
+
+    // Clear any existing recaptcha
+    const existing = document.getElementById('recaptcha-container');
+    if (existing) existing.innerHTML = '';
+
+    const recaptcha = new RecaptchaVerifier(auth, 'recaptcha-container', {
+      size: 'invisible',
+    });
+    const result = await signInWithPhoneNumber(auth, formatted, recaptcha);
+    setConfirmationResult(result);
+  };
+
+  const verifyOTP = async (otp: string, name: string) => {
+    if (!confirmationResult) throw new Error('Please request OTP first');
+    const result = await confirmationResult.confirm(otp);
+    const u = result.user;
+
+    // Create profile if new user
+    const existing = await getUserProfile(u.uid);
+    if (!existing) {
+      await createUserProfile(u.uid, {
+        phone: u.phoneNumber || '',
+        name,
+      });
+      await updateProfile(u, { displayName: name });
+    }
+
+    const profile = await getUserProfile(u.uid);
+    setUserProfile(profile);
+  };
+
+  const logout = async () => {
+    await signOut(auth);
+    setUserProfile(null);
+  };
+
+  const refreshProfile = async () => {
+    if (user) {
+      const profile = await getUserProfile(user.uid);
+      setUserProfile(profile);
+    }
+  };
 
   return (
-    <AuthContext.Provider value={{ user, userProfile, loading, isAdmin }}>
+    <AuthContext.Provider
+      value={{ user, userProfile, loading, sendOTP, verifyOTP, logout, refreshProfile }}
+    >
+      <div id="recaptcha-container" />
       {children}
     </AuthContext.Provider>
   );
-};
+}

@@ -2,15 +2,10 @@ import React from 'react';
 import { Navigate, Outlet, useLocation } from 'react-router-dom';
 import { useAuth } from '@/context/AuthContext';
 import { Loader2 } from 'lucide-react';
-import { isFirebaseConfigured } from '@/lib/firebase';
 
 export const ProtectedRoute = () => {
   const { user, loading } = useAuth();
   const location = useLocation();
-
-  if (!isFirebaseConfigured) {
-    return <Navigate to="/setup" replace />;
-  }
 
   if (loading) {
     return (

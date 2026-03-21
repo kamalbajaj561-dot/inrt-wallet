@@ -5,9 +5,11 @@ import { QRCodeCanvas } from "qrcode.react";
 
 export default function ReceiveMoney() {
 
-  const { user, userProfile } = useAuth();
+  const { userProfile } = useAuth();
 
-  const qrValue = user?.uid || "";
+  const qrValue = userProfile?.phoneNumber
+    ? `upi://pay?phone=${userProfile.phoneNumber}`
+    : "";
 
   return (
 

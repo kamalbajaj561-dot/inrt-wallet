@@ -1,15 +1,23 @@
-import React from 'react';
-import { ToastContainer, Toast } from 'react-toastify';
-import 'react-toastify/dist/ReactToastify.css';
+import React from "react";
+import { useToast } from "@/context/ToastContext";
+import "@/styles/ToastContainer.module.css";
 
-const ToastComponent = () => {
+const ToastContainer: React.FC = () => {
+  const { toasts } = useToast();
+
   return (
-    <ToastContainer>
-      <Toast>
-        <div>This is a toast message!</div>
-      </Toast>
-    </ToastContainer>
+    <div className="toast-container">
+      {toasts.map((toast) => (
+        <div 
+          key={toast.id} 
+          className={`toast toast-${toast.type}`}
+          role="alert"
+        >
+          <span>{toast.message}</span>
+        </div>
+      ))}
+    </div>
   );
 };
 
-export default ToastComponent;
+export default ToastContainer;

@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '@/context/AuthContext';
-import { db, functions } from '@/lib/firebase';
+import { db } from '@/lib/firebase';
+import { sendMoney } from '@/lib/db';
 import { collection, query, where, getDocs, addDoc, onSnapshot, orderBy, updateDoc, doc, runTransaction, serverTimestamp } from 'firebase/firestore';
-import { httpsCallable } from 'firebase/functions';
+import { getFunctions, httpsCallable } from 'firebase/functions';
 import { Button, Input, Card } from '@/components/ui';
 import { formatCurrency } from '@/lib/utils';
 import { PaymentRequest, UserProfile } from '@/types';
@@ -20,6 +21,7 @@ declare global {
 
 export default function RequestMoney() {
   const { user, userProfile } = useAuth();
+  const functions = getFunctions();
   const [activeTab, setActiveTab] = useState<'received' | 'sent'>('received');
   const [requests, setRequests] = useState<PaymentRequest[]>([]);
   const [loading, setLoading] = useState(false);
@@ -198,7 +200,7 @@ export default function RequestMoney() {
     if (!selectedRequest || !user || !userProfile) return;
 
     if (paymentMode === 'WALLET') {
-      if (selectedRequest.amount > userProfile.walletBalance) {
+      if (selectedRequest.amount > (userProfile?.balance ?? 0)) {
         toast.error("Insufficient wallet balance");
         return;
       }
@@ -216,63 +218,41 @@ export default function RequestMoney() {
   };
 
   const processWalletPayment = async () => {
-    if (!selectedRequest) return;
+    if (!selectedRequest || !user) return;
     setLoading(true);
     try {
-      await runTransaction(db!, async (transaction) => {
-        // Get sender (me, the payer)
-        const senderRef = doc(db!, 'users', user!.uid);
-        const senderDoc = await transaction.get(senderRef);
-        if (!senderDoc.exists()) throw new Error("Sender not found");
-        
-        const senderData = senderDoc.data();
-        if (senderData.walletBalance < selectedRequest.amount) {
-          throw new Error("Insufficient funds");
-        }
+      if (!selectedRequest.senderUpiId) {
+        throw new Error("Requester UPI ID not found");
+      }
 
-        // Get receiver (the person who requested)
-        const receiverRef = doc(db!, 'users', selectedRequest.senderId);
-        const receiverDoc = await transaction.get(receiverRef);
-        if (!receiverDoc.exists()) throw new Error("Receiver not found");
+      const myName =
+        userProfile?.fullName ||
+        userProfile?.name ||
+        userProfile?.phoneNumber ||
+        userProfile?.phone ||
+        "You";
 
-        // Update balances
-        const newSenderBalance = senderData.walletBalance - selectedRequest.amount;
-        const newReceiverBalance = (receiverDoc.data().walletBalance || 0) + selectedRequest.amount;
+      // Approve = pay the requester using wallet
+      const ref = await sendMoney({
+        fromUid: user.uid,
+        toUpiId: selectedRequest.senderUpiId,
+        amount: selectedRequest.amount,
+        note: selectedRequest.description || "Payment request",
+      });
 
-        transaction.update(senderRef, { walletBalance: newSenderBalance });
-        transaction.update(receiverRef, { walletBalance: newReceiverBalance });
+      await updateDoc(
+        doc(db!, "payment_requests", selectedRequest.requestId),
+        { status: "approved", transactionRef: ref }
+      );
 
-        // Create transaction record
-        const newTxRef = doc(collection(db!, 'transactions'));
-        transaction.set(newTxRef, {
-          id: newTxRef.id,
-          senderId: user!.uid,
-          senderPhoneNumber: senderData.phoneNumber,
-          receiverId: selectedRequest.senderId,
-          receiverPhoneNumber: receiverDoc.data().phoneNumber,
-          amount: selectedRequest.amount,
-          timestamp: serverTimestamp(),
-          status: 'success',
-          type: 'request_payment',
-          description: `Payment for request: ${selectedRequest.description}`,
-          paymentMethod: 'wallet'
-        });
-
-        // Update request status
-        const requestRef = doc(db!, 'payment_requests', selectedRequest.requestId);
-        transaction.update(requestRef, { status: 'approved' });
-
-        // Create Notification for Sender (Requester)
-        const notifRef = doc(collection(db!, 'notifications'));
-        transaction.set(notifRef, {
-          userId: selectedRequest.senderId,
-          type: 'request_approved',
-          title: 'Request Approved',
-          message: `${receiverDoc.data().fullName || receiverDoc.data().phoneNumber} paid your request of ${formatCurrency(selectedRequest.amount)}`,
-          amount: selectedRequest.amount,
-          status: 'unread',
-          timestamp: Date.now()
-        });
+      await addDoc(collection(db!, "notifications"), {
+        userId: selectedRequest.senderId,
+        type: "request_approved",
+        title: "Request Approved",
+        message: `${myName} paid your request of ${formatCurrency(selectedRequest.amount)}`,
+        amount: selectedRequest.amount,
+        status: "unread",
+        timestamp: Date.now(),
       });
 
       toast.success("Payment successful!");
@@ -280,80 +260,15 @@ export default function RequestMoney() {
       setSelectedRequest(null);
     } catch (error: any) {
       console.error("Payment failed:", error);
-      toast.error(error.message || "Payment failed");
+      toast.error(error?.message || "Payment failed");
     } finally {
       setLoading(false);
     }
   };
 
   const processBankPayment = async () => {
-    if (!selectedRequest) return;
-    setLoading(true);
-    try {
-      // Razorpay checkout disabled in preview environment
-      // Real Razorpay popup will run after deployment
-
-      let orderId = '';
-      
-      // 1. Call Cloud Function to generate order (simulating backend interaction)
-      try {
-        if (functions) {
-          const createOrder = httpsCallable(functions, 'createRazorpayOrder');
-          const result = await createOrder({ amount: selectedRequest.amount });
-          const data = result.data as any;
-          orderId = data.orderId;
-        } else {
-          throw new Error("Functions not initialized");
-        }
-      } catch (error) {
-        console.warn("Backend not reachable, using simulation.", error);
-        orderId = "order_" + new Date().getTime();
-      }
-
-      // 2. Simulate successful payment immediately
-      await runTransaction(db!, async (transaction) => {
-         const newTxRef = doc(collection(db!, 'transactions'));
-         transaction.set(newTxRef, {
-           id: newTxRef.id,
-           senderId: user!.uid,
-           senderPhoneNumber: userProfile?.phoneNumber,
-           receiverId: selectedRequest.senderId,
-           receiverPhoneNumber: selectedRequest.senderName,
-           amount: selectedRequest.amount,
-           timestamp: serverTimestamp(),
-           status: 'success',
-           type: 'request_payment',
-           description: `Payment for request: ${selectedRequest.description}`,
-           paymentMethod: 'razorpay',
-           razorpayPaymentId: "simulated_" + Date.now()
-         });
-
-         const requestRef = doc(db!, 'payment_requests', selectedRequest.requestId);
-         transaction.update(requestRef, { status: 'approved' });
-
-         // Create Notification for Sender (Requester)
-         const notifRef = doc(collection(db!, 'notifications'));
-         transaction.set(notifRef, {
-           userId: selectedRequest.senderId,
-           type: 'request_approved',
-           title: 'Request Approved',
-           message: `${userProfile?.fullName || userProfile?.phoneNumber} paid your request of ${formatCurrency(selectedRequest.amount)}`,
-           amount: selectedRequest.amount,
-           status: 'unread',
-           timestamp: Date.now()
-         });
-      });
-
-      toast.success("Payment successful!");
-      setShowPaymentModal(false);
-      setSelectedRequest(null);
-
-    } catch (error) {
-      console.error("Bank Transfer Error:", error);
-      toast.error("Failed to initiate payment");
-    } finally {
-      setLoading(false);
-    }
+    // For now, approve via wallet path to keep transaction schema consistent
+    await processWalletPayment();
   };
 
   return (

@@ -9,8 +9,7 @@ import { formatCurrency } from '@/lib/utils';
 import { ArrowLeft, CheckCircle, Clock, XCircle, Wallet, Building, Check } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { PinVerificationModal } from '@/components/PinVerificationModal';
-import { httpsCallable } from 'firebase/functions';
-import { functions } from '@/lib/firebase';
+import { httpsCallable, getFunctions } from 'firebase/functions';
 
 declare global {
   interface Window {
@@ -21,6 +20,7 @@ declare global {
 export default function SplitDetails() {
   const { id } = useParams<{ id: string }>();
   const { user, userProfile } = useAuth();
+  const functions = getFunctions();
   const navigate = useNavigate();
   const [split, setSplit] = useState<SplitPayment | null>(null);
   const [loading, setLoading] = useState(true);

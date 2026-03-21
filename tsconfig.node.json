@@ -1,1 +1,13 @@
-{\n  "compilerOptions": {\n    "target": "ESNext",\n    "module": "CommonJS",\n    "outDir": "dist",\n    "strict": true,\n    "esModuleInterop": true,\n    "skipLibCheck": true,\n    "forceConsistentCasingInFileNames": true\n  }\n}
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "composite": true,
+    "types": ["node"],
+    "noEmit": false,
+    "declaration": true,
+    "declarationMap": true,
+    "emitDeclarationOnly": true,
+    "outDir": "./node_modules/.cache/tsc-node"
+  },
+  "include": ["vite.config.ts"]
+}

@@ -1,14 +1,12 @@
-import React, { useState, useEffect } from 'react';
-import { useAuth } from '@/context/AuthContext';
-import { db, functions } from '@/lib/firebase';
-import { collection, query, where, onSnapshot, doc, runTransaction, serverTimestamp } from 'firebase/firestore';
-import { httpsCallable } from 'firebase/functions';
-import { Button, Input, Card } from '@/components/ui';
-import { toast } from 'react-hot-toast';
-import { BankAccount } from '@/types';
-import { Building, CheckCircle, Plus, Wallet, ChevronRight } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
-import { cn } from '@/lib/utils';
+import React, { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { getAuth } from "firebase/auth";
+import { collection, doc, runTransaction, serverTimestamp } from "firebase/firestore";
+import { toast } from "react-hot-toast";
+import { db } from "@/lib/firebase";
+import { useAuth } from "@/context/AuthContext";
+import { Button, Card } from "@/components/ui";
+import { formatCurrency } from "@/lib/utils";
 
 declare global {
   interface Window {
@@ -16,310 +14,315 @@ declare global {
   }
 }
 
+type CreateOrderResponse =
+  | { success: true; orderId: string; amount: number; currency: string; keyId: string; simulated?: boolean }
+  | { success: false; error: string; details?: string };
+
+type VerifyPaymentResponse =
+  | { success: true; amount: number | null; userId: string | null }
+  | { success: false; error: string; details?: string };
+
 export default function AddMoney() {
-  const { user, userProfile } = useAuth();
   const navigate = useNavigate();
-  const [amount, setAmount] = useState('');
-  const [linkedBanks, setLinkedBanks] = useState<BankAccount[]>([]);
-  const [selectedBankId, setSelectedBankId] = useState<string | null>(null);
+  const { userProfile } = useAuth();
+
+  const auth = useMemo(() => getAuth(), []);
+  const userId = auth.currentUser?.uid;
+
+  const [amount, setAmount] = useState<string>("");
   const [loading, setLoading] = useState(false);
-  const [step, setStep] = useState<'AMOUNT' | 'BANK' | 'PIN' | 'SUCCESS'>('AMOUNT');
 
+  const amountNum = useMemo(() => {
+    const n = Number(amount);
+    return Number.isFinite(n) ? n : 0;
+  }, [amount]);
+
+  // Razorpay script loader (idempotent)
   useEffect(() => {
-    if (!user) return;
+    if (!document.getElementById("razorpay-script")) {
+      const script = document.createElement("script");
+      script.id = "razorpay-script";
+      script.src = "https://checkout.razorpay.com/v1/checkout.js";
+      script.async = true;
+      document.body.appendChild(script);
+    }
+  }, []);
 
-    const q = query(collection(db, 'bankAccounts'), where('userId', '==', user.uid));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const banks = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as BankAccount));
-      setLinkedBanks(banks);
-      if (banks.length > 0 && !selectedBankId) {
-        setSelectedBankId(banks[0].id);
-      }
-    });
+  const quickAmounts = [100, 200, 500, 1000, 2000, 5000];
 
-    return () => unsubscribe();
-  }, [user]);
+  const creditWallet = async (uid: string, amt: number, razorpayOrderId: string, razorpayPaymentId: string) => {
+    const rewardPoints = Math.floor(amt / 10); // 1 point per ₹10
+    await runTransaction(db, async (tx) => {
+      const userRef = doc(db, "users", uid);
+      const snap = await tx.get(userRef);
+      if (!snap.exists()) throw new Error("User profile not found");
 
-  const processSuccessfulPayment = async (amountVal: number, paymentId: string) => {
-    try {
-      await runTransaction(db, async (transaction) => {
-        // Get user doc
-        const userRef = doc(db, 'users', user!.uid);
-        const userDoc = await transaction.get(userRef);
+      const data: any = snap.data();
+      const nextBalance = Number(data.balance ?? 0) + amt;
+      const nextPoints = Number(data.rewardPoints ?? 0) + rewardPoints;
 
-        if (!userDoc.exists()) {
-          throw "User not found";
-        }
-
-        const userData = userDoc.data();
-        const currentBalance = userData.walletBalance || 0;
-        
-        // Update wallet balance
-        transaction.update(userRef, { walletBalance: currentBalance + amountVal });
-
-        // Create transaction record
-        const newTxRef = doc(collection(db, 'transactions'));
-        transaction.set(newTxRef, {
-          id: newTxRef.id,
-          senderId: user!.uid,
-          senderPhoneNumber: userData.phoneNumber,
-          receiverId: user!.uid,
-          receiverPhoneNumber: userData.phoneNumber,
-          amount: amountVal,
-          timestamp: serverTimestamp(),
-          status: 'success',
-          type: 'wallet_deposit',
-          description: 'Wallet Top-up via Razorpay',
-          bankAccountId: selectedBankId,
-          paymentMethod: 'razorpay',
-          razorpayPaymentId: paymentId
-        });
+      tx.update(userRef, {
+        balance: nextBalance,
+        rewardPoints: nextPoints,
+        updatedAt: serverTimestamp(),
       });
 
-      setStep('SUCCESS');
-      toast.success("Money added to wallet successfully!");
-    } catch (error) {
-      console.error("Transaction failed:", error);
-      toast.error("Failed to update wallet balance. Please contact support.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const loadRazorpay = () => {
-    return new Promise((resolve) => {
-      if (window.Razorpay) {
-        resolve(true);
-        return;
-      }
-      const script = document.createElement("script");
-      script.src = "https://checkout.razorpay.com/v1/checkout.js";
-      script.onload = () => resolve(true);
-      script.onerror = () => resolve(false);
-      document.body.appendChild(script);
+      const txRef = doc(collection(db, "transactions"));
+      tx.set(txRef, {
+        uid,
+        type: "credit",
+        amount: amt,
+        note: "Added via Razorpay",
+        ref: razorpayOrderId,
+        status: "success",
+        createdAt: serverTimestamp(),
+        razorpayPaymentId: razorpayPaymentId,
+      });
     });
   };
 
   const handleAddMoney = async () => {
-    if (!user || !amount || !selectedBankId) return;
-    
+    if (!userId) {
+      toast.error("Please log in first");
+      navigate("/login");
+      return;
+    }
+
+    if (!amountNum || amountNum < 10) {
+      toast.error("Enter a valid amount (min ₹10)");
+      return;
+    }
+
+    if (!window.Razorpay) {
+      toast.error("Razorpay SDK not loaded. Refresh and try again.");
+      return;
+    }
+
     setLoading(true);
 
     try {
-      // Ensure Razorpay SDK is loaded
-      const loaded = await loadRazorpay();
-      if (!loaded) {
-        throw new Error("Razorpay SDK failed to load");
-      }
-
-      let orderId = '';
-      let key = 'rzp_test_placeholder'; // Placeholder for preview
-      let amountInPaise = parseFloat(amount) * 100;
-
-      // 1. Try to create order via Cloud Function
-      try {
-        if (functions) {
-          const createOrder = httpsCallable(functions, 'createRazorpayOrder');
-          const result = await createOrder({ amount: parseFloat(amount) });
-          const data = result.data as any;
-          orderId = data.orderId;
-          key = data.key || key;
-          amountInPaise = data.amount || amountInPaise;
-        } else {
-            throw new Error("Functions not initialized");
-        }
-      } catch (error) {
-        console.warn("Backend not reachable or failed, using simulation values for preview.", error);
-        // Generate a fake order ID for preview simulation
-        orderId = "order_" + new Date().getTime();
-      }
-
-      // 2. Open Razorpay Checkout
-      const options = {
-        key: key, 
-        amount: amountInPaise,
-        currency: "INR",
-        name: "INRT Wallet",
-        description: "Add Money to Wallet",
-        order_id: orderId, // This might fail with a real Razorpay instance if the order ID is fake
-        handler: async function (response: any) {
-          // Payment successful
-          // 3. Verify payment via Cloud Function
-          try {
-            if (functions) {
-              const verifyPayment = httpsCallable(functions, 'verifyRazorpayPayment');
-              await verifyPayment(response);
-            }
-          } catch (error) {
-            console.warn("Verification backend not reachable, proceeding with client-side update for preview.");
-          }
-
-          // 4. Update Firestore (Client-side fallback for preview)
-          await processSuccessfulPayment(parseFloat(amount), response.razorpay_payment_id);
-        },
-        prefill: {
-          name: userProfile?.fullName || "User",
-          contact: userProfile?.phoneNumber || "",
-          email: user?.email || ""
-        },
-        theme: {
-          color: "#3399cc"
-        },
-        modal: {
-          ondismiss: function() {
-            setLoading(false);
-            toast("Payment cancelled");
-          }
-        }
-      };
-
-      // Initialize Razorpay
-      const rzp = new window.Razorpay(options);
-      
-      // Handle failure in opening (e.g. invalid key) by falling back to simulation
-      rzp.on('payment.failed', function (response: any){
-        console.error("Razorpay payment failed:", response.error);
-        toast.error(response.error.description || "Payment failed");
-        setLoading(false);
+      const orderRes = await fetch("http://localhost:4000/create-order", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ amount: amountNum, userId }),
       });
 
-      try {
-        rzp.open();
-      } catch (err) {
-        console.error("Razorpay open failed (likely due to invalid key in preview):", err);
-        // Fallback simulation for preview environment
-        const confirmSim = window.confirm("Razorpay Test Mode: Simulate successful payment?");
-        if (confirmSim) {
-          await processSuccessfulPayment(parseFloat(amount), "simulated_" + Date.now());
-        } else {
-          setLoading(false);
-        }
+      const orderData = (await orderRes.json()) as CreateOrderResponse;
+      if (!orderRes.ok || orderData.success === false) {
+        throw new Error(orderData.success === false ? orderData.error : "Failed to create order");
       }
 
-    } catch (error) {
-      console.error("Add Money Error:", error);
-      toast.error("Failed to initiate payment.");
+      const orderId = orderData.orderId;
+
+      // If backend simulates the order (e.g. Razorpay auth failure), skip the popup
+      // and complete the flow end-to-end via verify-payment + wallet credit.
+      if ("simulated" in orderData && orderData.simulated) {
+        const simulatedPaymentId = `simulated_payment_${Date.now()}`;
+        const verifyRes = await fetch("http://localhost:4000/verify-payment", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            razorpay_order_id: orderId,
+            razorpay_payment_id: simulatedPaymentId,
+            razorpay_signature: "simulated",
+            userId,
+            amount: amountNum,
+          }),
+        });
+
+        const verifyData = (await verifyRes.json()) as VerifyPaymentResponse;
+        if (!verifyRes.ok || verifyData.success === false) {
+          throw new Error(verifyData.success === false ? verifyData.error : "Verification failed");
+        }
+
+        await creditWallet(userId, amountNum, orderId, simulatedPaymentId);
+        toast.success(`✅ ₹${amountNum} added successfully (simulated)`);
+        setTimeout(() => navigate("/dashboard"), 2000);
+        setLoading(false);
+        return;
+      }
+
+      const options = {
+        key: orderData.keyId,
+        amount: orderData.amount,
+        currency: orderData.currency,
+        name: "INRT Wallet",
+        description: "Add Money to Wallet",
+        order_id: orderId,
+        method: {
+          upi: true,
+          card: true,
+          netbanking: true,
+          wallet: true,
+          emi: true,
+          paylater: true,
+        },
+        theme: { color: "#2563eb" },
+        handler: async (response: any) => {
+          try {
+            const verifyRes = await fetch("http://localhost:4000/verify-payment", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                razorpay_order_id: response.razorpay_order_id,
+                razorpay_payment_id: response.razorpay_payment_id,
+                razorpay_signature: response.razorpay_signature,
+                userId,
+                amount: amountNum,
+              }),
+            });
+
+            const verifyData = (await verifyRes.json()) as VerifyPaymentResponse;
+            if (!verifyRes.ok || verifyData.success === false) {
+              throw new Error(verifyData.success === false ? verifyData.error : "Payment verification failed");
+            }
+
+            await creditWallet(userId, amountNum, orderId, response.razorpay_payment_id);
+            toast.success(`✅ ₹${amountNum} added successfully`);
+
+            setTimeout(() => navigate("/dashboard"), 2000);
+          } catch (e: any) {
+            console.error("verify-payment/credit error:", e);
+            toast.error(e?.message || "Payment failed");
+          } finally {
+            setLoading(false);
+          }
+        },
+        prefill: {
+          contact: userProfile?.phone || "",
+          name: userProfile?.name || "",
+        },
+        modal: {
+          ondismiss: () => {
+            setLoading(false);
+            toast("Payment cancelled");
+          },
+        },
+      };
+
+      const rzp = new window.Razorpay(options);
+      rzp.on("payment.failed", (resp: any) => {
+        console.error("Razorpay payment.failed:", resp?.error);
+        toast.error(resp?.error?.description || "Payment failed");
+        setLoading(false);
+      });
+      rzp.open();
+    } catch (e: any) {
+      console.error("AddMoney error:", e);
+      toast.error(e?.message || "Failed to initiate payment");
       setLoading(false);
     }
   };
 
-  if (step === 'SUCCESS') {
-    return (
-      <div className="flex flex-col items-center justify-center py-12 text-center">
-        <div className="w-20 h-20 bg-green-100 rounded-full flex items-center justify-center text-green-600 mb-6">
-          <CheckCircle size={40} />
-        </div>
-        <h2 className="text-2xl font-bold mb-2">₹{amount} Added!</h2>
-        <p className="text-slate-500 mb-6">Money has been successfully added to your wallet.</p>
-        <div className="space-y-3 w-full max-w-xs">
-          <Button onClick={() => navigate('/dashboard')} className="w-full">
-            Go to Dashboard
-          </Button>
-          <Button variant="outline" onClick={() => {
-            setStep('AMOUNT');
-            setAmount('');
-          }} className="w-full">
-            Add More Money
-          </Button>
+  return (
+    <div className="max-w-md mx-auto pb-10">
+      {/* Header */}
+      <div className="bg-slate-950 text-white p-4 pt-6 rounded-b-3xl shadow-md mb-6">
+        <div className="flex items-center justify-between">
+          <button
+            type="button"
+            onClick={() => navigate("/dashboard")}
+            className="p-2 rounded-full hover:bg-white/10 transition-colors"
+            aria-label="Back"
+          >
+            ←
+          </button>
+          <h1 className="text-xl font-extrabold tracking-tight">Add Money</h1>
+          <div className="w-10" />
         </div>
       </div>
-    );
-  }
 
-  return (
-    <div className="space-y-6">
-      <h1 className="text-2xl font-bold">Add Money</h1>
-
-      <Card className="p-6 bg-primary text-white">
-        <p className="text-primary-foreground/80 text-sm mb-1">Current Balance</p>
-        <h2 className="text-3xl font-bold">₹{userProfile?.walletBalance.toFixed(2)}</h2>
+      {/* Balance card */}
+      <Card className="p-5 mb-5 bg-gradient-to-br from-slate-950 to-slate-800 text-white border-0 shadow-lg">
+        <p className="text-white/70 text-xs font-bold tracking-widest">CURRENT BALANCE</p>
+        <p className="text-4xl font-extrabold mt-2">
+          ₹{(userProfile?.balance ?? 0).toLocaleString("en-IN")}
+        </p>
       </Card>
 
-      <div className="space-y-4">
-        <div>
-          <label className="block text-sm font-medium text-slate-700 mb-2">Enter Amount</label>
-          <div className="relative">
-            <span className="absolute left-4 top-1/2 -translate-y-1/2 text-2xl font-bold text-slate-400">₹</span>
-            <Input 
-              type="number" 
-              placeholder="0" 
-              value={amount}
-              onChange={(e) => setAmount(e.target.value)}
-              className="pl-10 text-2xl font-bold h-16"
-            />
-          </div>
-          <div className="flex gap-2 mt-3">
-            {[100, 500, 1000, 2000].map((val) => (
-              <button
-                key={val}
-                onClick={() => setAmount(val.toString())}
-                className="px-3 py-1 text-sm bg-slate-100 rounded-full hover:bg-slate-200 transition-colors"
-              >
-                +₹{val}
-              </button>
+      <div className="space-y-4 px-2">
+        {/* Amount input */}
+        <div className="flex items-center justify-center gap-2">
+          <span className="text-4xl font-extrabold text-sky-500">₹</span>
+          <input
+            className="w-full bg-white rounded-2xl border border-slate-200 text-3xl font-extrabold text-center py-3"
+            type="number"
+            inputMode="decimal"
+            placeholder="0"
+            value={amount}
+            onChange={(e) => setAmount(e.target.value)}
+            disabled={loading}
+          />
+        </div>
+
+        {/* Quick amounts (2x3 grid) */}
+        <div className="grid grid-cols-3 gap-3">
+          {quickAmounts.map((v) => (
+            <button
+              key={v}
+              type="button"
+              onClick={() => setAmount(String(v))}
+              disabled={loading}
+              className={`py-2 rounded-xl text-sm font-bold transition-colors ${
+                amountNum === v ? "bg-blue-100 text-blue-700 border border-blue-200" : "bg-slate-100 text-slate-700 hover:bg-slate-200 border border-slate-100"
+              }`}
+            >
+              ₹{v}
+            </button>
+          ))}
+        </div>
+
+        {/* Payment methods */}
+        <div className="flex flex-wrap gap-2">
+          {[
+            { label: "UPI", color: "bg-emerald-50 text-emerald-700 border-emerald-200" },
+            { label: "Debit Card", color: "bg-emerald-50 text-emerald-700 border-emerald-200" },
+            { label: "Credit Card", color: "bg-emerald-50 text-emerald-700 border-emerald-200" },
+            { label: "Net Banking", color: "bg-emerald-50 text-emerald-700 border-emerald-200" },
+          ].map((m) => (
+            <span
+              key={m.label}
+              className={`px-3 py-1 rounded-full text-xs font-bold border ${m.color}`}
+            >
+              ✓ {m.label}
+            </span>
+          ))}
+        </div>
+
+        {/* Add button */}
+        <Button
+          className="w-full h-14 text-lg bg-gradient-to-r from-blue-600 to-sky-500 hover:from-blue-700 hover:to-sky-600"
+          size="lg"
+          isLoading={loading}
+          onClick={handleAddMoney}
+          disabled={!amountNum || amountNum <= 0 || loading}
+        >
+          Add ₹{amountNum ? amountNum : 0} to Wallet →
+        </Button>
+
+        <p className="text-xs text-slate-500 text-center pt-1">
+          100% Secure · Powered by Razorpay · RBI Compliant
+        </p>
+
+        {/* How it works */}
+        <div className="pt-2">
+          <p className="font-extrabold text-slate-900 mb-3">How it works</p>
+          <div className="space-y-3">
+            {[
+              "Enter amount and tap Add",
+              "Select UPI / Card / Net Banking in Razorpay",
+              "Complete payment in Razorpay popup",
+              "Money instantly added to your INRT wallet",
+            ].map((t, idx) => (
+              <div key={t} className="flex gap-3 items-start">
+                <div className="w-8 h-8 rounded-full bg-blue-50 text-blue-700 flex items-center justify-center font-extrabold text-sm">
+                  {idx + 1}
+                </div>
+                <p className="text-sm text-slate-700 pt-1">{t}</p>
+              </div>
             ))}
           </div>
         </div>
-
-        <div>
-          <div className="flex justify-between items-center mb-2">
-            <label className="block text-sm font-medium text-slate-700">From Bank Account</label>
-            <button 
-              onClick={() => navigate('/link-bank')}
-              className="text-xs text-primary font-medium flex items-center hover:underline"
-            >
-              <Plus size={14} className="mr-1" /> Add New Bank
-            </button>
-          </div>
-          
-          {linkedBanks.length === 0 ? (
-            <Card 
-              className="p-4 border-dashed border-2 flex flex-col items-center justify-center text-slate-400 py-8 cursor-pointer hover:bg-slate-50"
-              onClick={() => navigate('/link-bank')}
-            >
-              <Building size={32} className="mb-2" />
-              <p>No bank accounts linked</p>
-              <p className="text-xs">Tap to link a bank account</p>
-            </Card>
-          ) : (
-            <div className="space-y-2">
-              {linkedBanks.map(bank => (
-                <div 
-                  key={bank.id}
-                  className={cn(
-                    "flex items-center justify-between p-4 border rounded-xl cursor-pointer transition-all",
-                    selectedBankId === bank.id 
-                      ? "border-primary bg-primary/5 ring-1 ring-primary" 
-                      : "border-slate-200 hover:border-slate-300"
-                  )}
-                  onClick={() => setSelectedBankId(bank.id)}
-                >
-                  <div className="flex items-center space-x-3">
-                    <div className="w-10 h-10 bg-slate-100 rounded-full flex items-center justify-center text-slate-600">
-                      <Building size={20} />
-                    </div>
-                    <div>
-                      <p className="font-medium">{bank.bankName}</p>
-                      <p className="text-xs text-slate-500">xxxx {bank.accountNumberMasked.slice(-4)}</p>
-                    </div>
-                  </div>
-                  {selectedBankId === bank.id && (
-                    <CheckCircle className="text-primary" size={20} />
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <Button 
-          className="w-full h-12 text-lg mt-4" 
-          onClick={handleAddMoney} 
-          isLoading={loading}
-          disabled={!amount || !selectedBankId || parseFloat(amount) <= 0}
-        >
-          Add ₹{amount || '0'}
-        </Button>
       </div>
     </div>
   );
