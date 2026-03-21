@@ -7,7 +7,7 @@
     "dev": "vite --port=3000 --host=0.0.0.0",
     "preinstall": "npm config set legacy-peer-deps true",
     "server": "node server.js",
-    "build": "vite build",
+    "build": "vite build --mode production",
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit"
