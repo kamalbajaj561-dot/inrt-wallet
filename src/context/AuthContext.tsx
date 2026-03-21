@@ -46,32 +46,36 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const sendOTP = async (phone: string) => {
     const formatted = phone.startsWith('+') ? phone : `+91${phone}`;
 
-    // Clear existing recaptcha
-    const container = document.getElementById('recaptcha-container');
-    if (container) container.innerHTML = '';
+    // Remove any existing recaptcha
+    const existing = document.getElementById('recaptcha-container');
+    if (existing) existing.innerHTML = '';
 
-    try {
-      const recaptchaVerifier = new RecaptchaVerifier(
-        auth,
-        'recaptcha-container',
-        {
+    return new Promise<void>((resolve, reject) => {
+      try {
+        const verifier = new RecaptchaVerifier(auth, 'recaptcha-container', {
           size: 'invisible',
-          callback: () => {},
-          'error-callback': () => {},
-        }
-      );
+          callback: () => resolve(),
+          'expired-callback': () => reject(new Error('reCAPTCHA expired')),
+          'error-callback': (err: any) => reject(err),
+        });
 
-      await recaptchaVerifier.render();
-      const result = await signInWithPhoneNumber(
-        auth,
-        formatted,
-        recaptchaVerifier
-      );
-      setConfirmationResult(result);
-    } catch (error: any) {
-      console.error('OTP error:', error);
-      throw new Error(error.message || 'Failed to send OTP');
-    }
+        signInWithPhoneNumber(auth, formatted, verifier)
+          .then((result) => {
+            setConfirmationResult(result);
+            resolve();
+          })
+          .catch((error) => {
+            console.error('Phone auth error:', error);
+            reject(new Error(
+              error.code === 'auth/api-key-not-valid'
+                ? 'Please check Firebase configuration'
+                : error.message
+            ));
+          });
+      } catch (err: any) {
+        reject(err);
+      }
+    });
   };
 
   const verifyOTP = async (otp: string, name: string) => {
