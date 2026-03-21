@@ -46,15 +46,32 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const sendOTP = async (phone: string) => {
     const formatted = phone.startsWith('+') ? phone : `+91${phone}`;
 
-    // Clear any existing recaptcha
-    const existing = document.getElementById('recaptcha-container');
-    if (existing) existing.innerHTML = '';
+    // Clear existing recaptcha
+    const container = document.getElementById('recaptcha-container');
+    if (container) container.innerHTML = '';
 
-    const recaptcha = new RecaptchaVerifier(auth, 'recaptcha-container', {
-      size: 'invisible',
-    });
-    const result = await signInWithPhoneNumber(auth, formatted, recaptcha);
-    setConfirmationResult(result);
+    try {
+      const recaptchaVerifier = new RecaptchaVerifier(
+        auth,
+        'recaptcha-container',
+        {
+          size: 'invisible',
+          callback: () => {},
+          'error-callback': () => {},
+        }
+      );
+
+      await recaptchaVerifier.render();
+      const result = await signInWithPhoneNumber(
+        auth,
+        formatted,
+        recaptchaVerifier
+      );
+      setConfirmationResult(result);
+    } catch (error: any) {
+      console.error('OTP error:', error);
+      throw new Error(error.message || 'Failed to send OTP');
+    }
   };
 
   const verifyOTP = async (otp: string, name: string) => {
