@@ -19,5 +19,10 @@ export default defineConfig({
         warn(warning)
       }
     }
+  },
+  server: {
+    headers: {
+      'Content-Security-Policy': "script-src 'self' 'unsafe-inline' 'unsafe-eval';"
+    }
   }
 })
