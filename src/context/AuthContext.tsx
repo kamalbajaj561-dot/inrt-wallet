@@ -1,7 +1,7 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import { createContext, useContext, useEffect, useState } from 'react';
 import {
-  signInWithPhoneNumber,
-  RecaptchaVerifier,
+  createUserWithEmailAndPassword,
+  signInWithEmailAndPassword,
   signOut,
   onAuthStateChanged,
   User,
@@ -14,8 +14,8 @@ interface AuthContextType {
   user: User | null;
   userProfile: any;
   loading: boolean;
-  sendOTP: (phone: string) => Promise<void>;
-  verifyOTP: (otp: string, name: string) => Promise<void>;
+  signUp: (phone: string, name: string, password: string) => Promise<void>;
+  signIn: (phone: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   refreshProfile: () => Promise<void>;
 }
@@ -27,7 +27,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [userProfile, setUserProfile] = useState<any>(null);
   const [loading, setLoading] = useState(true);
-  const [confirmationResult, setConfirmationResult] = useState<any>(null);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
@@ -43,57 +42,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return unsub;
   }, []);
 
-  const sendOTP = async (phone: string) => {
-    const formatted = phone.startsWith('+') ? phone : `+91${phone}`;
-
-    // Remove any existing recaptcha
-    const existing = document.getElementById('recaptcha-container');
-    if (existing) existing.innerHTML = '';
-
-    return new Promise<void>((resolve, reject) => {
-      try {
-        const verifier = new RecaptchaVerifier(auth, 'recaptcha-container', {
-          size: 'invisible',
-          callback: () => resolve(),
-          'expired-callback': () => reject(new Error('reCAPTCHA expired')),
-          'error-callback': (err: any) => reject(err),
-        });
-
-        signInWithPhoneNumber(auth, formatted, verifier)
-          .then((result) => {
-            setConfirmationResult(result);
-            resolve();
-          })
-          .catch((error) => {
-            console.error('Phone auth error:', error);
-            reject(new Error(
-              error.code === 'auth/api-key-not-valid'
-                ? 'Please check Firebase configuration'
-                : error.message
-            ));
-          });
-      } catch (err: any) {
-        reject(err);
-      }
-    });
+  const signUp = async (phone: string, name: string, password: string) => {
+    const email = `${phone.replace(/\s/g, '')}@inrtwallet.app`;
+    const result = await createUserWithEmailAndPassword(auth, email, password);
+    await updateProfile(result.user, { displayName: name });
+    const existing = await getUserProfile(result.user.uid);
+    if (!existing) {
+      await createUserProfile(result.user.uid, { phone, name, email });
+    }
+    const profile = await getUserProfile(result.user.uid);
+    setUserProfile(profile);
   };
 
-  const verifyOTP = async (otp: string, name: string) => {
-    if (!confirmationResult) throw new Error('Please request OTP first');
-    const result = await confirmationResult.confirm(otp);
-    const u = result.user;
-
-    // Create profile if new user
-    const existing = await getUserProfile(u.uid);
-    if (!existing) {
-      await createUserProfile(u.uid, {
-        phone: u.phoneNumber || '',
-        name,
-      });
-      await updateProfile(u, { displayName: name });
-    }
-
-    const profile = await getUserProfile(u.uid);
+  const signIn = async (phone: string, password: string) => {
+    const email = `${phone.replace(/\s/g, '')}@inrtwallet.app`;
+    const result = await signInWithEmailAndPassword(auth, email, password);
+    const profile = await getUserProfile(result.user.uid);
     setUserProfile(profile);
   };
 
@@ -110,10 +74,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider
-      value={{ user, userProfile, loading, sendOTP, verifyOTP, logout, refreshProfile }}
-    >
-      <div id="recaptcha-container" />
+    <AuthContext.Provider value={{ user, userProfile, loading, signUp, signIn, logout, refreshProfile }}>
       {children}
     </AuthContext.Provider>
   );
