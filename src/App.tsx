@@ -10,6 +10,7 @@ import { ToastProvider } from '@/context/ToastContext';
 import { Layout } from '@/components/Layout';
 import { ProtectedRoute, AdminRoute } from '@/components/ProtectedRoute';
 import ToastContainer from '@/components/ToastContainer';
+import QRPage from '@/pages/QRPage';
 
 // Pages
 import Login from '@/pages/Login';
@@ -84,6 +85,10 @@ export default function App() {
                 element={<Layout><Dashboard /></Layout>}
                 path="/dashboard"
               />
+              <Route
+  element={<Layout><QRPage /></Layout>}
+  path="/qr"
+/>
               <Route
                 element={<Layout><SendMoney /></Layout>}
                 path="/send"
