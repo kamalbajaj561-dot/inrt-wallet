@@ -32,6 +32,9 @@ import SplitBill from '@/pages/SplitBill';
 import SplitDetails from '@/pages/SplitDetails';
 import Insights from '@/pages/Insights';
 import Scan from './pages/scan';
+import RechargePage from '@/pages/RechargePage';
+import BillPaymentsPage from '@/pages/BillPaymentsPage';
+import CibilPage from '@/pages/CibilPage';
 
 /**
  * Main App Component
@@ -109,6 +112,23 @@ export default function App() {
                 element={<Layout><RequestMoney /></Layout>}
                 path="/request"
               />
+              // Recharge Page
+<Route
+  element={<Layout><RechargePage /></Layout>}
+  path="/recharge"
+/>
+
+// Bill Payments Page  
+<Route
+  element={<Layout><BillPaymentsPage /></Layout>}
+  path="/bill-payments"
+/>
+
+// CIBIL Score Page
+<Route
+  element={<Layout><CibilPage /></Layout>}
+  path="/cibil"
+/>
               <Route
                 element={<Layout><LinkBank /></Layout>}
                 path="/link-bank"
