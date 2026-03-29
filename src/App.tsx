@@ -23,6 +23,7 @@ import SetupGuide from '@/pages/SetupGuide';
 import MerchantDashboard from '@/pages/MerchantDashboard';
 import RequestMoney from '@/pages/RequestMoney';
 import LinkBank from '@/pages/LinkBank';
+import KYCPage from '@/pages/KYCPage';
 import AddMoney from '@/pages/AddMoney';
 import Profile from '@/pages/Profile';
 import Notifications from '@/pages/Notifications';
@@ -108,6 +109,7 @@ export default function App() {
                 element={<Layout><MerchantDashboard /></Layout>}
                 path="/merchant"
               />
+              <Route element={<Layout><KYCPage /></Layout>} path="/kyc" />
               <Route
                 element={<Layout><RequestMoney /></Layout>}
                 path="/request"
