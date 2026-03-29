@@ -1,0 +1,56 @@
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  background: #0f172a;
+  color: #e2e8f0;
+}
+.app {
+  max-width: 840px;
+  margin: 0 auto;
+  padding: 24px 16px;
+}
+header h1 { margin-bottom: 8px; }
+.card {
+  margin-top: 14px;
+  background: #111827;
+  border-radius: 14px;
+  border: 1px solid #334155;
+  overflow: hidden;
+}
+.chat {
+  height: 58vh;
+  overflow: auto;
+  padding: 16px;
+}
+.msg {
+  max-width: 80%;
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  white-space: pre-wrap;
+}
+.user { margin-left: auto; background: #0369a1; }
+.bot { background: #1f2937; border: 1px solid #334155; }
+.controls {
+  display: flex;
+  gap: 10px;
+  padding: 12px;
+  border-top: 1px solid #334155;
+}
+input {
+  flex: 1;
+  border-radius: 10px;
+  border: 1px solid #334155;
+  background: #0b1220;
+  color: #e2e8f0;
+  padding: 11px 12px;
+}
+button {
+  border: none;
+  border-radius: 10px;
+  padding: 0 14px;
+  cursor: pointer;
+}
+#micBtn { background: #374151; color: #fff; }
+#sendBtn { background: #06b6d4; color: #06202a; font-weight: 700; }

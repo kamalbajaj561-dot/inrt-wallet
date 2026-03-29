@@ -1,0 +1,15 @@
+{
+  "name": "jarvis-india-assistant",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Independent voice-first JARVIS assistant with Indian stock market knowledge",
+  "main": "src/server.js",
+  "scripts": {
+    "dev": "node src/server.js",
+    "start": "node src/server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.21.2"
+  }
+}
