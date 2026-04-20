@@ -1,103 +1,53 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    
-    // Helper function to check if user is admin
-    function isAdmin() {
-      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true;
+
+    // ── OTP collection — allow read/write for generating & verifying ──
+    match /otps/{phone} {
+      allow read, write: if true;  // Public — OTPs are time-limited (5 min) and single-use
     }
 
-    // User profiles
+    // ── Phone index — maps phone → uid (for OTP login) ──
+    match /phoneIndex/{phone} {
+      allow read: if true;
+      allow write: if request.auth != null
+                   || request.resource.data.keys().hasAll(['uid','phone','pwd']);
+    }
+
+    // ── Users ──
     match /users/{userId} {
-      allow read: if request.auth != null;
-      allow create: if request.auth != null && request.auth.uid == userId;
-      // Allow update by user for preview purposes (including walletBalance)
-      allow update: if request.auth != null && request.auth.uid == userId;
-    }
-    
-    // Transactions
-    // Allow create/read from client for preview purposes.
-    // Supports both schemas:
-    // - uid/type credit/debit (used by src/lib/db.ts)
-    // - senderId/receiverId (older UI variants)
-    match /transactions/{transactionId} {
-      allow read: if request.auth != null && (
-        resource.data.uid == request.auth.uid ||
-        resource.data.senderId == request.auth.uid ||
-        resource.data.receiverId == request.auth.uid ||
-        isAdmin()
-      );
-      allow create: if request.auth != null && (
-        request.resource.data.uid == request.auth.uid ||
-        request.resource.data.senderId == request.auth.uid ||
-        request.resource.data.receiverId == request.auth.uid
-      );
-      allow update, delete: if false;
+      allow read:  if request.auth != null && request.auth.uid == userId;
+      allow write: if request.auth != null && request.auth.uid == userId;
+      allow create: if request.auth != null;
     }
 
-    // Payment Requests
-    match /payment_requests/{requestId} {
-      allow read: if request.auth != null && (
-        resource.data.senderId == request.auth.uid || 
-        resource.data.receiverId == request.auth.uid
-      );
-      allow create: if request.auth != null && request.resource.data.senderId == request.auth.uid;
-      allow update: if request.auth != null && (
-        resource.data.senderId == request.auth.uid || 
-        resource.data.receiverId == request.auth.uid
-      );
+    // ── Transactions ──
+    match /transactions/{txId} {
+      allow read:  if request.auth != null && resource.data.uid == request.auth.uid;
+      allow create: if request.auth != null;
+      allow write: if request.auth != null;
     }
 
-    // Notifications
-    match /notifications/{notificationId} {
-      allow read: if request.auth != null && resource.data.userId == request.auth.uid;
-      allow create: if request.auth != null && request.resource.data.userId == request.auth.uid;
-      allow update: if request.auth != null && resource.data.userId == request.auth.uid;
+    // ── KYC ──
+    match /kyc/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
     }
 
-    // Subscriptions (AutoPay)
-    match /subscriptions/{subId} {
-      allow read: if request.auth != null && resource.data.userId == request.auth.uid;
-      allow create: if request.auth != null && request.resource.data.userId == request.auth.uid;
-      allow update: if request.auth != null && resource.data.userId == request.auth.uid;
-      allow delete: if false;
+    // ── Notifications ──
+    match /notifications/{notifId} {
+      allow read, write: if request.auth != null
+                         && resource.data.userId == request.auth.uid;
     }
 
-    // Bank Accounts
-    match /bankAccounts/{accountId} {
-      allow read: if request.auth != null && resource.data.userId == request.auth.uid;
-      allow create: if request.auth != null && request.resource.data.userId == request.auth.uid;
-      allow update, delete: if request.auth != null && resource.data.userId == request.auth.uid;
+    // ── Wallets, bank accounts, bookings ──
+    match /wallets/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
     }
-
-    // Split Payments
-    match /splitPayments/{splitId} {
-      allow read: if request.auth != null && (
-        resource.data.creatorId == request.auth.uid ||
-        (resource.data.participants != null && resource.data.participants[0].userId == request.auth.uid)
-      );
-      allow create: if request.auth != null && request.resource.data.creatorId == request.auth.uid;
-      allow update: if request.auth != null && resource.data.creatorId == request.auth.uid;
-      allow delete: if false;
+    match /bankAccounts/{docId} {
+      allow read, write: if request.auth != null;
     }
-
-    // Bookings (tickets)
     match /bookings/{bookingId} {
-      allow read: if request.auth != null && resource.data.uid == request.auth.uid;
-      allow create: if request.auth != null && request.resource.data.uid == request.auth.uid;
-      allow update: if request.auth != null && resource.data.uid == request.auth.uid;
-      allow delete: if false;
-    }
-
-    // Ledger (server-side + preview reads)
-    match /ledger/{ledgerId} {
-      allow read: if request.auth != null && (
-        resource.data.from == request.auth.uid ||
-        resource.data.to == request.auth.uid ||
-        isAdmin()
-      );
-      allow create: if false;
-      allow update, delete: if false;
+      allow read, write: if request.auth != null;
     }
   }
 }
