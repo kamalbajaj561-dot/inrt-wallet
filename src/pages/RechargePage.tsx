@@ -1,157 +1,328 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { doc, updateDoc, increment, serverTimestamp, collection, addDoc } from 'firebase/firestore';
+import { db } from '../lib/firebase';
 
-const PLANS = {
-  Airtel: [
-    { id: 1, price: 149, validity: '28 days', data: '1GB/day', calls: 'Unlimited', tag: '' },
-    { id: 2, price: 299, validity: '28 days', data: '2GB/day', calls: 'Unlimited', tag: 'Popular' },
-    { id: 3, price: 449, validity: '56 days', data: '1.5GB/day', calls: 'Unlimited', tag: '' },
-    { id: 4, price: 719, validity: '84 days', data: '1.5GB/day', calls: 'Unlimited', tag: 'Best Value' },
-    { id: 5, price: 999, validity: '84 days', data: '3GB/day', calls: 'Unlimited', tag: '' },
-  ],
-  Jio: [
-    { id: 1, price: 189, validity: '28 days', data: '1.5GB/day', calls: 'Unlimited', tag: '' },
-    { id: 2, price: 299, validity: '28 days', data: '2GB/day', calls: 'Unlimited', tag: 'Popular' },
-    { id: 3, price: 533, validity: '84 days', data: '1.5GB/day', calls: 'Unlimited', tag: 'Best Value' },
-    { id: 4, price: 779, validity: '84 days', data: '2GB/day', calls: 'Unlimited', tag: '' },
-  ],
-  Vi: [
-    { id: 1, price: 199, validity: '28 days', data: '1.5GB/day', calls: 'Unlimited', tag: '' },
-    { id: 2, price: 299, validity: '28 days', data: '2GB/day', calls: 'Unlimited', tag: 'Popular' },
-    { id: 3, price: 479, validity: '56 days', data: '1.5GB/day', calls: 'Unlimited', tag: '' },
-  ],
-  BSNL: [
-    { id: 1, price: 107, validity: '22 days', data: '1GB/day', calls: 'Unlimited', tag: '' },
-    { id: 2, price: 187, validity: '28 days', data: '2GB/day', calls: 'Unlimited', tag: 'Popular' },
-    { id: 3, price: 397, validity: '80 days', data: '2GB/day', calls: 'Unlimited', tag: 'Best Value' },
-  ],
+type RechargeType = 'prepaid' | 'postpaid' | 'dth';
+type FlowStep     = 'form' | 'plans' | 'confirm' | 'success';
+
+interface Plan {
+  id: string; price: number; validity: string;
+  data: string; calls: string; sms: string; desc: string; popular?: boolean;
+}
+
+const OPERATORS: Record<RechargeType, string[]> = {
+  prepaid:  ['Jio', 'Airtel', 'Vi', 'BSNL'],
+  postpaid: ['Jio Postpaid', 'Airtel Postpaid', 'Vi Postpaid', 'BSNL Postpaid'],
+  dth:      ['Tata Play', 'Dish TV', 'Airtel DTH', 'Sun Direct', 'DD Free Dish'],
 };
 
+// Realistic plans — in production fetch from recharge API
+const PLANS: Plan[] = [
+  { id:'p1', price:179, validity:'28 days',  data:'2GB/day',  calls:'Unlimited',sms:'100/day',desc:'Entry plan',popular:false },
+  { id:'p2', price:239, validity:'28 days',  data:'2GB/day',  calls:'Unlimited',sms:'100/day',desc:'Popular plan',popular:true },
+  { id:'p3', price:299, validity:'28 days',  data:'3GB/day',  calls:'Unlimited',sms:'100/day',desc:'High data',popular:false },
+  { id:'p4', price:479, validity:'56 days',  data:'2.5GB/day',calls:'Unlimited',sms:'100/day',desc:'2-month plan',popular:false },
+  { id:'p5', price:599, validity:'84 days',  data:'2GB/day',  calls:'Unlimited',sms:'100/day',desc:'3-month plan',popular:true },
+  { id:'p6', price:899, validity:'84 days',  data:'3GB/day',  calls:'Unlimited',sms:'100/day',desc:'3-month premium',popular:false },
+  { id:'p7', price:1199,validity:'365 days', data:'2.5GB/day',calls:'Unlimited',sms:'100/day',desc:'Annual plan',popular:false },
+  { id:'p8', price:2999,validity:'365 days', data:'3GB/day',  calls:'Unlimited',sms:'100/day',desc:'Annual premium',popular:false },
+];
+
 export default function RechargePage() {
-  const { userProfile } = useAuth();
+  const { user, userProfile, refreshProfile } = useAuth();
   const navigate = useNavigate();
-  const [tab, setTab] = useState<'mobile' | 'dth' | 'fastag'>('mobile');
-  const [number, setNumber] = useState('');
-  const [operator, setOperator] = useState('Airtel');
-  const [selectedPlan, setSelectedPlan] = useState<any>(null);
-  const [loading, setLoading] = useState(false);
-  const [success, setSuccess] = useState(false);
-  const [error, setError] = useState('');
 
-  const plans = PLANS[operator as keyof typeof PLANS] || [];
+  const [type,     setType]    = useState<RechargeType>('prepaid');
+  const [operator, setOperator]= useState('Jio');
+  const [mobile,   setMobile]  = useState('');
+  const [step,     setStep]    = useState<FlowStep>('form');
+  const [plan,     setPlan]    = useState<Plan | null>(null);
+  const [customAmt,setCustomAmt]=useState('');
+  const [loading,  setLoading] = useState(false);
+  const [error,    setError]   = useState('');
+  const [txId,     setTxId]    = useState('');
 
-  const handleRecharge = async () => {
-    if (!number || number.length !== 10) return setError('Enter valid 10-digit number');
-    if (!selectedPlan) return setError('Select a recharge plan');
-    if ((userProfile?.balance || 0) < selectedPlan.price) return setError('Insufficient wallet balance');
-    setLoading(true); setError('');
-    await new Promise(r => setTimeout(r, 1500));
-    setLoading(false);
-    setSuccess(true);
+  const bal = userProfile?.balance || 0;
+
+  const handleNext = () => {
+    if (type !== 'dth' && mobile.replace(/\D/g,'').length !== 10)
+      return setError('Enter valid 10-digit number');
+    if (!operator) return setError('Select operator');
+    setError(''); setStep('plans');
   };
 
-  if (success) return (
-    <div style={s.page}>
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '60vh', padding: 24 }}>
-        <div style={{ fontSize: 72, marginBottom: 16 }}>✅</div>
-        <h2 style={{ fontWeight: 800, fontSize: 24, color: '#111', marginBottom: 8 }}>Recharge Successful!</h2>
-        <p style={{ color: '#666', fontSize: 16, marginBottom: 4 }}>₹{selectedPlan.price} recharged for</p>
-        <p style={{ color: '#00b9f1', fontWeight: 700, fontSize: 18, marginBottom: 4 }}>+91 {number}</p>
-        <p style={{ color: '#666', fontSize: 14, marginBottom: 24 }}>{operator} · {selectedPlan.data} · {selectedPlan.validity}</p>
-        <button style={s.btn} onClick={() => navigate('/dashboard')}>Back to Home</button>
-        <button style={{ ...s.btn, background: '#fff', color: '#00b9f1', border: '2px solid #00b9f1', marginTop: 10 }} onClick={() => { setSuccess(false); setSelectedPlan(null); setNumber(''); }}>Recharge Again</button>
-      </div>
-    </div>
-  );
+  const handleSelectPlan = (p: Plan) => {
+    setPlan(p); setCustomAmt(''); setStep('confirm');
+  };
+
+  const handleSelectCustom = () => {
+    const amt = parseFloat(customAmt);
+    if (!amt || amt < 10) return setError('Minimum ₹10');
+    setPlan({ id:'custom', price:amt, validity:'—', data:'—', calls:'—', sms:'—', desc:'Custom recharge' });
+    setStep('confirm');
+  };
+
+  const handlePay = async () => {
+    if (!plan || !user) return;
+    const amt = plan.price;
+    if (amt > bal) return setError(`Insufficient balance. You have ₹${bal}`);
+    setLoading(true); setError('');
+    try {
+      const ref = `RC${Date.now()}${Math.random().toString(36).slice(2,5).toUpperCase()}`;
+      await updateDoc(doc(db, 'users', user.uid), {
+        balance:      increment(-amt),
+        rewardPoints: increment(Math.floor(amt / 10)),
+        updatedAt:    serverTimestamp(),
+      });
+      await addDoc(collection(db, 'transactions'), {
+        uid: user.uid, type:'debit', amount:amt, cat:'recharge',
+        note: `${operator} ${type === 'dth' ? 'DTH' : mobile} — ₹${amt}`,
+        ref, status:'success', operator, mobile,
+        plan: plan.desc, createdAt: serverTimestamp(),
+      });
+      setTxId(ref);
+      await refreshProfile();
+      setStep('success');
+    } catch (e: any) { setError(e.message || 'Recharge failed'); }
+    setLoading(false);
+  };
+
+  const reset = () => {
+    setStep('form'); setPlan(null); setMobile('');
+    setCustomAmt(''); setError(''); setTxId('');
+  };
 
   return (
-    <div style={s.page}>
-      <div style={s.header}>
-        <button onClick={() => navigate('/dashboard')} style={s.back}>←</button>
-        <h1 style={s.title}>Recharge</h1>
+    <div style={S.page}>
+      <div style={S.header}>
+        <button
+          onClick={() => { if(step==='form') navigate('/dashboard'); else if(step==='plans') setStep('form'); else if(step==='confirm') setStep('plans'); }}
+          style={S.back}>←</button>
+        <h1 style={S.title}>Recharge</h1>
       </div>
 
-      {/* Tabs */}
-      <div style={s.tabs}>
-        {(['mobile', 'dth', 'fastag'] as const).map(t => (
-          <button key={t} onClick={() => setTab(t)} style={{ ...s.tab, background: tab === t ? '#00b9f1' : '#f1f5f9', color: tab === t ? '#fff' : '#374151' }}>
-            {t === 'mobile' ? '📱 Mobile' : t === 'dth' ? '📺 DTH' : '🚗 FASTag'}
-          </button>
-        ))}
-      </div>
+      <div style={{ padding:'16px 16px 90px' }}>
 
-      {tab === 'mobile' ? (
-        <div style={{ padding: '0 16px' }}>
-          {/* Number Input */}
-          <div style={s.card}>
-            <p style={s.label}>MOBILE NUMBER</p>
-            <div style={s.phoneRow}>
-              <span style={s.flag}>🇮🇳 +91</span>
-              <input style={s.phoneInput} type="tel" maxLength={10} placeholder="10-digit number" value={number} onChange={e => setNumber(e.target.value.replace(/\D/g, ''))} />
-            </div>
-
-            <p style={{ ...s.label, marginTop: 16 }}>SELECT OPERATOR</p>
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              {['Airtel', 'Jio', 'Vi', 'BSNL'].map(op => (
-                <button key={op} onClick={() => { setOperator(op); setSelectedPlan(null); }} style={{ ...s.opBtn, background: operator === op ? '#dbeafe' : '#f8fafc', border: `2px solid ${operator === op ? '#00b9f1' : '#e5e7eb'}`, color: operator === op ? '#0369a1' : '#374151' }}>
-                  {op}
+        {/* ── FORM ── */}
+        {step === 'form' && (
+          <>
+            {/* Type selector */}
+            <div style={{ display:'flex',gap:8,marginBottom:20 }}>
+              {(['prepaid','postpaid','dth'] as RechargeType[]).map(t => (
+                <button key={t} onClick={() => { setType(t); setOperator(OPERATORS[t][0]); }}
+                  style={{ flex:1,padding:'10px 0',borderRadius:12,fontSize:12,fontWeight:700,cursor:'pointer',
+                             background:type===t?'rgba(240,180,41,0.15)':'#16161f',
+                             border:`1px solid ${type===t?'#f0b429':'rgba(255,255,255,0.07)'}`,
+                             color:type===t?'#f0b429':'#555570' }}>
+                  {t==='prepaid'?'📱 Prepaid':t==='postpaid'?'📋 Postpaid':'📡 DTH'}
                 </button>
               ))}
             </div>
-          </div>
 
-          {/* Plans */}
-          <p style={{ fontWeight: 700, fontSize: 16, color: '#111', margin: '16px 0 10px' }}>Popular Plans</p>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 20 }}>
-            {plans.map(plan => (
-              <button key={plan.id} onClick={() => setSelectedPlan(plan)} style={{ ...s.planCard, background: selectedPlan?.id === plan.id ? '#f0f9ff' : '#fff', border: `2px solid ${selectedPlan?.id === plan.id ? '#00b9f1' : '#e5e7eb'}` }}>
-                <div style={{ textAlign: 'left' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <p style={{ fontWeight: 800, fontSize: 18, color: '#111' }}>₹{plan.price}</p>
-                    {plan.tag && <span style={{ background: '#fef9c3', color: '#92400e', fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 20 }}>{plan.tag}</span>}
+            <div style={S.card}>
+              {/* Mobile number */}
+              {type !== 'dth' && (
+                <>
+                  <p style={S.label}>MOBILE NUMBER</p>
+                  <div style={{ display:'flex',border:'1px solid rgba(255,255,255,0.1)',
+                                 borderRadius:12,overflow:'hidden',marginBottom:16 }}>
+                    <span style={{ padding:'13px 12px',background:'#1e1e2a',color:'#8888a8',
+                                    fontSize:13,borderRight:'1px solid rgba(255,255,255,0.07)',
+                                    whiteSpace:'nowrap' }}>🇮🇳 +91</span>
+                    <input style={{ flex:1,background:'none',border:'none',outline:'none',
+                                     padding:'13px 14px',fontSize:15,color:'#f0f0f8',fontFamily:'inherit' }}
+                      type="tel" maxLength={10} placeholder="10-digit mobile"
+                      value={mobile}
+                      onChange={e => { setMobile(e.target.value.replace(/\D/g,'')); setError(''); }} />
                   </div>
-                  <p style={{ color: '#6b7280', fontSize: 13, marginTop: 2 }}>{plan.data} · {plan.calls} · {plan.validity}</p>
+                </>
+              )}
+
+              {/* Operator */}
+              <p style={S.label}>SELECT OPERATOR</p>
+              <div style={{ display:'flex',gap:8,flexWrap:'wrap' as const,marginBottom:16 }}>
+                {OPERATORS[type].map(op => (
+                  <button key={op} onClick={() => setOperator(op)}
+                    style={{ padding:'8px 14px',borderRadius:10,fontSize:13,fontWeight:600,cursor:'pointer',
+                               background:operator===op?'rgba(240,180,41,0.12)':'#1e1e2a',
+                               border:`1px solid ${operator===op?'#f0b429':'rgba(255,255,255,0.07)'}`,
+                               color:operator===op?'#f0b429':'#8888a8' }}>
+                    {op}
+                  </button>
+                ))}
+              </div>
+
+              {error && <p style={S.errBox}>⚠️ {error}</p>}
+
+              <button onClick={handleNext}
+                style={S.goldBtn}>
+                View Plans →
+              </button>
+            </div>
+          </>
+        )}
+
+        {/* ── PLANS ── */}
+        {step === 'plans' && (
+          <>
+            <div style={{ display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:14 }}>
+              <p style={{ color:'#f0f0f8',fontWeight:700,fontSize:16 }}>
+                {operator} Plans
+              </p>
+              <span style={{ color:'#555570',fontSize:12 }}>
+                {type !== 'dth' && `+91 ${mobile}`}
+              </span>
+            </div>
+
+            {/* Custom amount */}
+            <div style={{ ...S.card,marginBottom:14 }}>
+              <p style={S.label}>CUSTOM AMOUNT</p>
+              <div style={{ display:'flex',gap:10 }}>
+                <input style={{ ...S.input,flex:1 }} type="number"
+                  placeholder="Enter amount" value={customAmt}
+                  onChange={e => { setCustomAmt(e.target.value); setError(''); }} />
+                <button onClick={handleSelectCustom}
+                  style={{ padding:'0 18px',background:'linear-gradient(135deg,#f0b429,#ff8c00)',
+                             border:'none',borderRadius:12,color:'#000',fontWeight:700,cursor:'pointer' }}>
+                  Pay
+                </button>
+              </div>
+              {error && <p style={{ ...S.errBox,marginTop:8 }}>⚠️ {error}</p>}
+            </div>
+
+            {/* Plan cards */}
+            {PLANS.map(p => (
+              <button key={p.id} onClick={() => handleSelectPlan(p)}
+                style={{ ...S.planCard, border:`1px solid ${p.popular?'rgba(240,180,41,0.3)':'rgba(255,255,255,0.07)'}` }}>
+                {p.popular && (
+                  <span style={{ position:'absolute',top:-8,right:12,
+                                   background:'#f0b429',color:'#000',fontSize:9,fontWeight:800,
+                                   padding:'2px 8px',borderRadius:20 }}>POPULAR</span>
+                )}
+                <div style={{ display:'flex',justifyContent:'space-between',alignItems:'flex-start' }}>
+                  <div style={{ textAlign:'left' as const }}>
+                    <p style={{ fontFamily:"'Syne',sans-serif",fontWeight:900,fontSize:20,color:'#f0b429' }}>
+                      ₹{p.price}
+                    </p>
+                    <p style={{ color:'#555570',fontSize:11,marginTop:2 }}>{p.desc}</p>
+                  </div>
+                  <span style={{ color:'#8888a8',fontSize:11,background:'#1e1e2a',
+                                   padding:'4px 10px',borderRadius:8 }}>
+                    {p.validity}
+                  </span>
                 </div>
-                <div style={{ width: 20, height: 20, borderRadius: '50%', border: `2px solid ${selectedPlan?.id === plan.id ? '#00b9f1' : '#d1d5db'}`, background: selectedPlan?.id === plan.id ? '#00b9f1' : '#fff', flexShrink: 0 }} />
+                <div style={{ display:'flex',gap:12,marginTop:10 }}>
+                  {[['📶',p.data],['📞',p.calls],['💬',p.sms]].map(([icon,val]) => (
+                    <div key={icon} style={{ display:'flex',alignItems:'center',gap:4 }}>
+                      <span style={{ fontSize:12 }}>{icon}</span>
+                      <span style={{ color:'#8888a8',fontSize:11 }}>{val}</span>
+                    </div>
+                  ))}
+                </div>
               </button>
             ))}
+          </>
+        )}
+
+        {/* ── CONFIRM ── */}
+        {step === 'confirm' && plan && (
+          <div>
+            <div style={S.card}>
+              <p style={{ fontFamily:"'Syne',sans-serif",fontWeight:700,fontSize:16,color:'#f0f0f8',marginBottom:16 }}>
+                Confirm Recharge
+              </p>
+              {[
+                ['Number',    type!=='dth'?`+91 ${mobile}`:'DTH Account'],
+                ['Operator',  operator],
+                ['Plan',      plan.desc],
+                ['Validity',  plan.validity],
+                ['Data',      plan.data],
+                ['Amount',    `₹${plan.price}`],
+              ].map(([k,v]) => (
+                <div key={k} style={{ display:'flex',justifyContent:'space-between',
+                                       padding:'9px 0',borderBottom:'1px solid rgba(255,255,255,0.05)' }}>
+                  <span style={{ color:'#555570',fontSize:13 }}>{k}</span>
+                  <span style={{ color:'#f0f0f8',fontWeight:600,fontSize:13 }}>{v}</span>
+                </div>
+              ))}
+              <div style={{ display:'flex',justifyContent:'space-between',paddingTop:12 }}>
+                <span style={{ color:'#555570',fontSize:14 }}>Points Earned</span>
+                <span style={{ color:'#f0b429',fontWeight:700,fontSize:14 }}>
+                  +{Math.floor(plan.price/10)} pts
+                </span>
+              </div>
+            </div>
+
+            <div style={{ display:'flex',justifyContent:'space-between',
+                           padding:'10px 14px',background:'#16161f',borderRadius:12,margin:'12px 0' }}>
+              <span style={{ color:'#555570',fontSize:13 }}>Wallet balance</span>
+              <span style={{ color:plan.price>bal?'#ef4444':'#10b981',fontWeight:700,fontSize:13 }}>
+                ₹{bal.toLocaleString('en-IN')}
+              </span>
+            </div>
+
+            {error && <p style={{ ...S.errBox,marginBottom:12 }}>⚠️ {error}</p>}
+
+            <button onClick={handlePay} disabled={loading}
+              style={{ ...S.goldBtn,opacity:loading?0.6:1 }}>
+              {loading?'⏳ Processing...':`Recharge ₹${plan.price} →`}
+            </button>
           </div>
+        )}
 
-          {error && <p style={s.error}>{error}</p>}
+        {/* ── SUCCESS ── */}
+        {step === 'success' && plan && (
+          <div style={{ display:'flex',flexDirection:'column' as const,alignItems:'center',
+                         textAlign:'center' as const,paddingTop:40 }}>
+            <div style={{ width:80,height:80,borderRadius:'50%',background:'rgba(16,185,129,0.1)',
+                           border:'2px solid #10b981',display:'flex',alignItems:'center',
+                           justifyContent:'center',fontSize:36,marginBottom:16 }}>✅</div>
+            <h2 style={{ fontFamily:"'Syne',sans-serif",fontWeight:800,fontSize:24,color:'#f0f0f8',marginBottom:8 }}>
+              Recharge Done!
+            </h2>
+            <p style={{ color:'#8888a8',fontSize:15,marginBottom:4 }}>
+              {type!=='dth'?`+91 ${mobile}`:operator} recharged with ₹{plan.price}
+            </p>
 
-          <button style={{ ...s.btn, opacity: loading ? 0.7 : 1 }} onClick={handleRecharge} disabled={loading}>
-            {loading ? '⏳ Processing...' : selectedPlan ? `Recharge ₹${selectedPlan.price} →` : 'Select a Plan'}
-          </button>
-          <p style={{ textAlign: 'center', color: '#9ca3af', fontSize: 12, marginTop: 8 }}>
-            💰 Wallet Balance: ₹{(userProfile?.balance || 0).toLocaleString('en-IN')}
-          </p>
-        </div>
-      ) : (
-        <div style={{ textAlign: 'center', padding: '60px 20px' }}>
-          <span style={{ fontSize: 64 }}>{tab === 'dth' ? '📺' : '🚗'}</span>
-          <p style={{ fontWeight: 700, fontSize: 18, color: '#111', marginTop: 16 }}>Coming Soon!</p>
-          <p style={{ color: '#9ca3af', fontSize: 14, marginTop: 8 }}>{tab === 'dth' ? 'DTH' : 'FASTag'} recharge launching soon</p>
-        </div>
-      )}
+            <div style={{ ...S.card,width:'100%',marginTop:20,marginBottom:20,textAlign:'left' as const }}>
+              {[
+                ['Transaction ID', txId],
+                ['Amount',         `₹${plan.price}`],
+                ['Points Earned',  `+${Math.floor(plan.price/10)} pts`],
+                ['Status',         '✅ Successful'],
+              ].map(([k,v]) => (
+                <div key={k} style={{ display:'flex',justifyContent:'space-between',
+                                       padding:'9px 0',borderBottom:'1px solid rgba(255,255,255,0.05)' }}>
+                  <span style={{ color:'#555570',fontSize:13 }}>{k}</span>
+                  <span style={{ color:'#f0f0f8',fontWeight:700,fontSize:13 }}>{v}</span>
+                </div>
+              ))}
+            </div>
+
+            <button style={S.goldBtn} onClick={reset}>Recharge Again</button>
+            <button style={{ ...S.goldBtn,marginTop:10,background:'transparent',
+                              border:'1px solid rgba(255,255,255,0.1)',color:'#f0f0f8' }}
+              onClick={() => navigate('/dashboard')}>
+              Back to Home
+            </button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
 
-const s: Record<string, React.CSSProperties> = {
-  page: { maxWidth: 480, margin: '0 auto', minHeight: '100vh', background: '#f8fafc', fontFamily: "'DM Sans', sans-serif", paddingBottom: 40 },
-  header: { display: 'flex', alignItems: 'center', gap: 14, padding: '52px 16px 16px', background: 'linear-gradient(160deg,#001a2e,#002a45)' },
-  back: { background: 'rgba(255,255,255,0.1)', border: 'none', borderRadius: 12, width: 40, height: 40, fontSize: 18, cursor: 'pointer', color: '#fff' },
-  title: { fontWeight: 800, fontSize: 20, color: '#fff' },
-  tabs: { display: 'flex', padding: '12px 16px', gap: 8, background: '#fff', marginBottom: 8 },
-  tab: { flex: 1, border: 'none', borderRadius: 12, padding: '10px 0', fontSize: 13, fontWeight: 700, cursor: 'pointer' },
-  card: { background: '#fff', borderRadius: 18, padding: 18, boxShadow: '0 2px 8px rgba(0,0,0,0.04)', marginBottom: 8 },
-  label: { color: '#9ca3af', fontSize: 11, letterSpacing: 1, fontWeight: 700, marginBottom: 8 },
-  phoneRow: { display: 'flex', border: '2px solid #e5e7eb', borderRadius: 12, overflow: 'hidden' },
-  flag: { padding: '13px 12px', background: '#f9fafb', fontSize: 13, borderRight: '2px solid #e5e7eb' },
-  phoneInput: { flex: 1, border: 'none', outline: 'none', padding: '13px 14px', fontSize: 16, fontFamily: 'inherit' },
-  opBtn: { borderRadius: 20, padding: '8px 16px', fontSize: 13, fontWeight: 700, cursor: 'pointer' },
-  planCard: { borderRadius: 16, padding: '14px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer', textAlign: 'left' },
-  btn: { width: '100%', padding: '16px 0', background: '#00b9f1', border: 'none', borderRadius: 16, color: '#fff', fontWeight: 700, fontSize: 16, cursor: 'pointer', fontFamily: 'inherit' },
-  error: { color: '#ef4444', fontSize: 13, background: '#fef2f2', padding: '10px 14px', borderRadius: 10, marginBottom: 12 },
+const S: Record<string, React.CSSProperties> = {
+  page:     { maxWidth:480,margin:'0 auto',minHeight:'100vh',background:'#0a0a0f',fontFamily:"'DM Sans',sans-serif" },
+  header:   { display:'flex',alignItems:'center',gap:14,padding:'52px 16px 16px',background:'linear-gradient(160deg,#0f0f1a,#0a0a0f)' },
+  back:     { background:'rgba(255,255,255,0.06)',border:'1px solid rgba(255,255,255,0.07)',borderRadius:12,width:40,height:40,fontSize:18,cursor:'pointer',color:'#f0f0f8',flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center' },
+  title:    { fontFamily:"'Syne',sans-serif",fontWeight:800,fontSize:20,color:'#f0f0f8',flex:1 },
+  card:     { background:'#16161f',border:'1px solid rgba(255,255,255,0.07)',borderRadius:18,padding:20,marginBottom:14 },
+  label:    { color:'#555570',fontSize:10,fontWeight:700,letterSpacing:0.8,marginBottom:8,textTransform:'uppercase' as const },
+  input:    { background:'#1e1e2a',border:'1px solid rgba(255,255,255,0.07)',borderRadius:12,padding:'12px 14px',fontSize:14,outline:'none',color:'#f0f0f8',fontFamily:'inherit',boxSizing:'border-box' as const },
+  goldBtn:  { width:'100%',padding:'15px',background:'linear-gradient(135deg,#f0b429,#ff8c00)',border:'none',borderRadius:14,color:'#000',fontWeight:700,fontSize:16,cursor:'pointer',fontFamily:'inherit' },
+  planCard: { width:'100%',background:'#16161f',borderRadius:16,padding:'16px',marginBottom:10,cursor:'pointer',position:'relative' as const,display:'block',textAlign:'left' as const },
+  errBox:   { color:'#ef4444',fontSize:13,padding:'10px 12px',background:'rgba(239,68,68,0.1)',borderRadius:10,border:'1px solid rgba(239,68,68,0.2)' },
 };

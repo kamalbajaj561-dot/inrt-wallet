@@ -1,145 +1,309 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { doc, updateDoc, increment, serverTimestamp, collection, addDoc } from 'firebase/firestore';
+import { db } from '../lib/firebase';
+
+const API = import.meta.env.VITE_API_URL || '';
 
 const CATEGORIES = [
-  { id: 'electricity', icon: '⚡', label: 'Electricity', providers: ['MSEDCL', 'TPDDL', 'BESCOM', 'CESC', 'BSES'] },
-  { id: 'water', icon: '💧', label: 'Water', providers: ['BMC', 'NDMC', 'BWSSB', 'HMWSSB'] },
-  { id: 'gas', icon: '🔥', label: 'Gas', providers: ['MGL', 'IGL', 'GAIL Gas', 'BGL'] },
-  { id: 'broadband', icon: '🌐', label: 'Broadband', providers: ['Jio Fiber', 'Airtel Xstream', 'BSNL', 'ACT Fibernet'] },
-  { id: 'postpaid', icon: '📱', label: 'Postpaid', providers: ['Airtel', 'Jio', 'Vi', 'BSNL'] },
-  { id: 'creditcard', icon: '💳', label: 'Credit Card', providers: ['HDFC', 'SBI Card', 'ICICI', 'Axis Bank', 'Kotak'] },
-  { id: 'insurance', icon: '🛡️', label: 'Insurance', providers: ['LIC', 'HDFC Life', 'SBI Life', 'ICICI Pru'] },
-  { id: 'loan', icon: '🏠', label: 'Loan / EMI', providers: ['SBI', 'HDFC', 'LIC HFL', 'Bajaj Finance'] },
+  { id:'electricity', label:'Electricity', icon:'⚡', color:'#f0b429',
+    providers:['MSEDCL','BESCOM','TNEB','PSPCL','BSES','Torrent Power','CESC','WBSEDCL'] },
+  { id:'water',       label:'Water',       icon:'💧', color:'#00d4ff',
+    providers:['BWSSB','Delhi Jal Board','MCG','PMC Water','NMMC','NMCG'] },
+  { id:'gas',         label:'Gas',         icon:'🔥', color:'#ff6b35',
+    providers:['Indane LPG','Bharat Gas','HP Gas','IGL','MGL','Adani Gas'] },
+  { id:'dth',         label:'DTH',         icon:'📡', color:'#8b5cf6',
+    providers:['Tata Play','Dish TV','Sun Direct','Airtel DTH','BSNL DTH','DD Free Dish'] },
+  { id:'broadband',   label:'Broadband',   icon:'📶', color:'#10b981',
+    providers:['JioFiber','Airtel Broadband','ACT Fibernet','Hathway','BSNL Broadband','MTNL'] },
+  { id:'insurance',   label:'Insurance',   icon:'🛡️', color:'#06b6d4',
+    providers:['LIC','HDFC Life','ICICI Prudential','SBI Life','Max Life','Bajaj Allianz'] },
+  { id:'loan',        label:'Loan EMI',    icon:'🏦', color:'#f59e0b',
+    providers:['HDFC Bank','SBI','ICICI Bank','Axis Bank','Bajaj Finserv','Tata Capital'] },
+  { id:'credit_card', label:'Credit Card', icon:'💳', color:'#ec4899',
+    providers:['HDFC Credit Card','SBI Card','ICICI Credit Card','Axis Bank CC','Citi Bank CC','Amex'] },
 ];
 
-export default function BillPaymentsPage() {
-  const { userProfile } = useAuth();
-  const navigate = useNavigate();
-  const [selected, setSelected] = useState<any>(null);
-  const [provider, setProvider] = useState('');
-  const [account, setAccount] = useState('');
-  const [amount, setAmount] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [success, setSuccess] = useState(false);
-  const [error, setError] = useState('');
+type FlowStep = 'category' | 'details' | 'confirm' | 'success';
 
-  const handlePay = async () => {
-    if (!account.trim()) return setError('Enter account / consumer number');
-    if (!amount || parseFloat(amount) <= 0) return setError('Enter valid amount');
-    if ((userProfile?.balance || 0) < parseFloat(amount)) return setError('Insufficient wallet balance');
+export default function BillPaymentsPage() {
+  const { user, userProfile, refreshProfile } = useAuth();
+  const navigate = useNavigate();
+
+  const [step,      setStep]     = useState<FlowStep>('category');
+  const [category,  setCategory] = useState(CATEGORIES[0]);
+  const [provider,  setProvider] = useState('');
+  const [accountNo, setAccountNo]= useState('');
+  const [amount,    setAmount]   = useState('');
+  const [billRef,   setBillRef]  = useState('');
+  const [loading,   setLoading]  = useState(false);
+  const [error,     setError]    = useState('');
+  const [txId,      setTxId]     = useState('');
+
+  const bal = userProfile?.balance || 0;
+  const QUICK_AMOUNTS = [199, 299, 499, 599, 999, 1199];
+
+  const handleFetchBill = async () => {
+    if (!provider) return setError('Select a provider');
+    if (!accountNo.trim()) return setError('Enter account / consumer number');
     setLoading(true); setError('');
-    await new Promise(r => setTimeout(r, 1500));
+    try {
+      // Simulate bill fetch — in production call BBPS/Setu API here
+      await new Promise(r => setTimeout(r, 1200));
+      const simulatedAmount = (Math.floor(Math.random() * 15) + 1) * 100 + 99;
+      setAmount(String(simulatedAmount));
+      setBillRef(`BILL${Date.now().toString().slice(-8)}`);
+      setStep('confirm');
+    } catch (e: any) { setError(e.message || 'Failed to fetch bill'); }
     setLoading(false);
-    setSuccess(true);
   };
 
-  if (success) return (
-    <div style={s.page}>
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '60vh', padding: 24 }}>
-        <div style={{ fontSize: 72, marginBottom: 16 }}>✅</div>
-        <h2 style={{ fontWeight: 800, fontSize: 24, color: '#111', marginBottom: 8 }}>Bill Paid!</h2>
-        <p style={{ color: '#666', fontSize: 16, marginBottom: 4 }}>{selected?.label} bill of ₹{amount}</p>
-        <p style={{ color: '#00b9f1', fontWeight: 700, fontSize: 16, marginBottom: 4 }}>{provider}</p>
-        <p style={{ color: '#666', fontSize: 13, marginBottom: 24 }}>Account: {account}</p>
-        <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 14, padding: '12px 20px', marginBottom: 24 }}>
-          <p style={{ color: '#16a34a', fontSize: 14, fontWeight: 600 }}>🎁 ₹{Math.floor(parseFloat(amount) * 0.02)} cashback will be credited!</p>
-        </div>
-        <button style={s.btn} onClick={() => navigate('/dashboard')}>Back to Home</button>
-        <button style={{ ...s.btn, background: '#fff', color: '#00b9f1', border: '2px solid #00b9f1', marginTop: 10 }} onClick={() => { setSuccess(false); setSelected(null); setAccount(''); setAmount(''); }}>Pay Another Bill</button>
-      </div>
-    </div>
-  );
+  const handlePay = async () => {
+    const amt = parseFloat(amount);
+    if (!amt || amt < 1) return setError('Invalid amount');
+    if (amt > bal)       return setError(`Insufficient balance. You have ₹${bal}`);
+    setLoading(true); setError('');
+    try {
+      const txRef = `BP${Date.now()}${Math.random().toString(36).slice(2,6).toUpperCase()}`;
+
+      await updateDoc(doc(db, 'users', user!.uid), {
+        balance:      increment(-amt),
+        cashback:     increment(Math.floor(amt * 0.02)),
+        rewardPoints: increment(Math.floor(amt / 10)),
+        updatedAt:    serverTimestamp(),
+      });
+      await addDoc(collection(db, 'transactions'), {
+        uid:     user!.uid,
+        type:    'debit',
+        amount:  amt,
+        cat:     'bills',
+        note:    `${category.label} — ${provider}`,
+        ref:     txRef,
+        status:  'success',
+        billRef, accountNo, provider,
+        cashback: Math.floor(amt * 0.02),
+        createdAt: serverTimestamp(),
+      });
+
+      setTxId(txRef);
+      await refreshProfile();
+      setStep('success');
+    } catch (e: any) { setError(e.message || 'Payment failed'); }
+    setLoading(false);
+  };
+
+  const reset = () => {
+    setStep('category'); setProvider(''); setAccountNo('');
+    setAmount(''); setBillRef(''); setTxId(''); setError('');
+  };
 
   return (
-    <div style={s.page}>
-      <div style={s.header}>
-        <button onClick={() => selected ? setSelected(null) : navigate('/dashboard')} style={s.back}>←</button>
-        <h1 style={s.title}>{selected ? selected.label : 'Pay Bills'}</h1>
+    <div style={S.page}>
+      {/* Header */}
+      <div style={S.header}>
+        <button
+          onClick={() => { if(step==='category') navigate('/dashboard'); else if(step==='confirm') setStep('details'); else if(step==='details') setStep('category'); }}
+          style={S.back}>←</button>
+        <h1 style={S.title}>Bill Payments</h1>
+        <span style={{ background:'rgba(240,180,41,0.1)',border:'1px solid rgba(240,180,41,0.2)',
+                         borderRadius:8,padding:'3px 9px',color:'#f0b429',fontSize:10,fontWeight:700 }}>
+          BBPS
+        </span>
       </div>
 
-      {!selected ? (
-        <div style={{ padding: '16px' }}>
-          {/* Upcoming Bills Banner */}
-          <div style={s.banner}>
-            <p style={{ fontWeight: 700, color: '#92400e', fontSize: 14, marginBottom: 8 }}>📅 Upcoming Bills</p>
-            {[['Electricity - MSEDCL', 'Due in 3 days', '₹1,200'], ['Jio Postpaid', 'Due in 7 days', '₹599']].map(([n, d, a]) => (
-              <div key={n} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid rgba(146,64,14,0.1)' }}>
-                <div><p style={{ color: '#92400e', fontSize: 13, fontWeight: 600 }}>{n}</p><p style={{ color: '#b45309', fontSize: 11 }}>{d}</p></div>
-                <span style={{ color: '#dc2626', fontWeight: 700 }}>{a}</span>
-              </div>
-            ))}
-          </div>
-
-          <p style={{ fontWeight: 700, fontSize: 16, color: '#111', margin: '16px 0 12px' }}>Select Category</p>
-          <div style={s.grid}>
-            {CATEGORIES.map(cat => (
-              <button key={cat.id} onClick={() => { setSelected(cat); setProvider(cat.providers[0]); }} style={s.catBtn}>
-                <span style={{ fontSize: 28 }}>{cat.icon}</span>
-                <span style={{ fontSize: 11, fontWeight: 600, color: '#374151', marginTop: 4 }}>{cat.label}</span>
-              </button>
+      {/* Progress */}
+      {step !== 'success' && (
+        <div style={{ padding:'0 16px 16px',background:'linear-gradient(160deg,#0f0f1a,#0a0a0f)' }}>
+          <div style={{ display:'flex',gap:4 }}>
+            {['category','details','confirm'].map((s,i) => (
+              <div key={s} style={{ flex:1,height:3,borderRadius:3,transition:'background 0.3s',
+                                     background: ['category','details','confirm','success'].indexOf(step)>=i ? '#f0b429' : '#1e1e2a' }} />
             ))}
           </div>
         </div>
-      ) : (
-        <div style={{ padding: '16px' }}>
-          <div style={s.card}>
-            <p style={s.label}>SELECT PROVIDER</p>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
-              {selected.providers.map((p: string) => (
-                <button key={p} onClick={() => setProvider(p)} style={{ ...s.provBtn, background: provider === p ? '#dbeafe' : '#f8fafc', border: `2px solid ${provider === p ? '#00b9f1' : '#e5e7eb'}`, color: provider === p ? '#0369a1' : '#374151' }}>
+      )}
+
+      <div style={{ padding:'16px 16px 90px' }}>
+
+        {/* ── STEP 1: Category ── */}
+        {step === 'category' && (
+          <>
+            <p style={S.sectionTitle}>Select Category</p>
+            <div style={{ display:'grid',gridTemplateColumns:'repeat(2,1fr)',gap:12 }}>
+              {CATEGORIES.map(cat => (
+                <button key={cat.id} onClick={() => { setCategory(cat); setProvider(''); setStep('details'); }}
+                  style={{ background:'#16161f',border:`1px solid ${category.id===cat.id?cat.color:'rgba(255,255,255,0.07)'}`,
+                             borderRadius:16,padding:'18px 14px',
+                             display:'flex',flexDirection:'column' as const,alignItems:'flex-start',gap:8,
+                             cursor:'pointer',transition:'all 0.2s' }}>
+                  <div style={{ width:44,height:44,borderRadius:12,
+                                  background:`${cat.color}18`,border:`1px solid ${cat.color}30`,
+                                  display:'flex',alignItems:'center',justifyContent:'center',fontSize:22 }}>
+                    {cat.icon}
+                  </div>
+                  <p style={{ color:'#f0f0f8',fontWeight:700,fontSize:14,textAlign:'left' as const }}>{cat.label}</p>
+                  <p style={{ color:'#555570',fontSize:10 }}>{cat.providers.length} providers</p>
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+
+        {/* ── STEP 2: Details ── */}
+        {step === 'details' && (
+          <div style={S.card}>
+            <div style={{ display:'flex',alignItems:'center',gap:12,marginBottom:20 }}>
+              <div style={{ width:44,height:44,borderRadius:12,background:`${category.color}18`,
+                             display:'flex',alignItems:'center',justifyContent:'center',fontSize:22 }}>
+                {category.icon}
+              </div>
+              <p style={S.sectionTitle}>{category.label} Payment</p>
+            </div>
+
+            <p style={S.fieldLabel}>SELECT PROVIDER</p>
+            <div style={{ display:'flex',gap:8,flexWrap:'wrap' as const,marginBottom:16 }}>
+              {category.providers.map(p => (
+                <button key={p} onClick={() => { setProvider(p); setError(''); }}
+                  style={{ padding:'8px 14px',borderRadius:10,fontSize:12,fontWeight:600,cursor:'pointer',
+                             background:provider===p?`${category.color}18`:'#1e1e2a',
+                             border:`1px solid ${provider===p?category.color:'rgba(255,255,255,0.07)'}`,
+                             color:provider===p?category.color:'#8888a8' }}>
                   {p}
                 </button>
               ))}
             </div>
 
-            <p style={s.label}>ACCOUNT / CONSUMER NUMBER</p>
-            <input style={s.input} placeholder="Enter account number" value={account} onChange={e => setAccount(e.target.value)} />
+            <p style={S.fieldLabel}>
+              {category.id==='credit_card' ? 'CARD NUMBER' :
+               category.id==='loan'        ? 'LOAN ACCOUNT NUMBER' :
+               category.id==='insurance'   ? 'POLICY NUMBER' : 'CONSUMER / ACCOUNT NUMBER'}
+            </p>
+            <input style={{ ...S.input,marginBottom:16 }}
+              type="tel" placeholder="Enter number"
+              value={accountNo}
+              onChange={e => { setAccountNo(e.target.value); setError(''); }} />
 
-            <p style={s.label}>BILL AMOUNT (₹)</p>
-            <input style={s.input} type="number" placeholder="Enter amount" value={amount} onChange={e => setAmount(e.target.value)} />
+            {error && <p style={S.errBox}>⚠️ {error}</p>}
 
-            <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
-              {[500, 1000, 2000, 5000].map(a => (
-                <button key={a} onClick={() => setAmount(String(a))} style={{ flex: 1, background: amount === String(a) ? '#dbeafe' : '#f8fafc', border: `1px solid ${amount === String(a) ? '#00b9f1' : '#e5e7eb'}`, borderRadius: 10, padding: '8px 0', fontSize: 13, fontWeight: 700, cursor: 'pointer', color: amount === String(a) ? '#0369a1' : '#374151' }}>
-                  ₹{a}
-                </button>
+            <button onClick={handleFetchBill} disabled={loading}
+              style={{ ...S.goldBtn,opacity:loading?0.6:1 }}>
+              {loading ? '⏳ Fetching bill...' : 'Fetch Bill Amount →'}
+            </button>
+          </div>
+        )}
+
+        {/* ── STEP 3: Confirm ── */}
+        {step === 'confirm' && (
+          <div>
+            <div style={S.card}>
+              <p style={S.sectionTitle}>Bill Details</p>
+              {[
+                ['Category',   category.label],
+                ['Provider',   provider],
+                ['Account No', accountNo],
+                ['Bill Ref',   billRef],
+              ].map(([k,v]) => (
+                <div key={k} style={{ display:'flex',justifyContent:'space-between',
+                                       padding:'10px 0',borderBottom:'1px solid rgba(255,255,255,0.05)' }}>
+                  <span style={{ color:'#555570',fontSize:13 }}>{k}</span>
+                  <span style={{ color:'#f0f0f8',fontWeight:600,fontSize:13 }}>{v}</span>
+                </div>
+              ))}
+              <div style={{ display:'flex',justifyContent:'space-between',paddingTop:12 }}>
+                <span style={{ color:'#555570',fontSize:14 }}>Amount Due</span>
+                <span style={{ fontFamily:"'Syne',sans-serif",fontWeight:900,fontSize:22,color:'#f0b429' }}>
+                  ₹{parseFloat(amount).toLocaleString('en-IN')}
+                </span>
+              </div>
+            </div>
+
+            {/* Cashback notice */}
+            <div style={{ background:'rgba(16,185,129,0.08)',border:'1px solid rgba(16,185,129,0.15)',
+                           borderRadius:14,padding:'12px 16px',marginTop:12,marginBottom:16 }}>
+              <p style={{ color:'#10b981',fontSize:13,fontWeight:600 }}>
+                🎁 You'll earn ₹{Math.floor(parseFloat(amount||'0') * 0.02)} cashback + {Math.floor(parseFloat(amount||'0') / 10)} reward points
+              </p>
+            </div>
+
+            <div style={{ display:'flex',justifyContent:'space-between',
+                           padding:'10px 14px',background:'#16161f',borderRadius:12,marginBottom:16 }}>
+              <span style={{ color:'#555570',fontSize:13 }}>Wallet balance</span>
+              <span style={{ color:parseFloat(amount)>bal?'#ef4444':'#10b981',fontWeight:700,fontSize:13 }}>
+                ₹{bal.toLocaleString('en-IN')}
+              </span>
+            </div>
+
+            {error && <p style={{ ...S.errBox,marginBottom:12 }}>⚠️ {error}</p>}
+
+            <button onClick={handlePay} disabled={loading}
+              style={{ ...S.goldBtn,opacity:loading?0.6:1 }}>
+              {loading ? '⏳ Processing...' : `Pay ₹${parseFloat(amount).toLocaleString('en-IN')} →`}
+            </button>
+            <button onClick={() => setStep('details')}
+              style={{ width:'100%',marginTop:10,padding:'13px',background:'transparent',
+                        border:'1px solid rgba(255,255,255,0.07)',borderRadius:14,
+                        color:'#8888a8',fontWeight:600,cursor:'pointer' }}>
+              ← Go Back
+            </button>
+          </div>
+        )}
+
+        {/* ── SUCCESS ── */}
+        {step === 'success' && (
+          <div style={{ display:'flex',flexDirection:'column' as const,alignItems:'center',
+                         textAlign:'center' as const,paddingTop:40 }}>
+            <div style={{ width:80,height:80,borderRadius:'50%',
+                           background:'rgba(16,185,129,0.1)',border:'2px solid #10b981',
+                           display:'flex',alignItems:'center',justifyContent:'center',
+                           fontSize:36,marginBottom:16 }}>✅</div>
+            <h2 style={{ fontFamily:"'Syne',sans-serif",fontWeight:800,fontSize:24,color:'#f0f0f8',marginBottom:8 }}>
+              Bill Paid!
+            </h2>
+            <p style={{ color:'#8888a8',fontSize:15,marginBottom:4 }}>
+              ₹{parseFloat(amount).toLocaleString('en-IN')} paid to {provider}
+            </p>
+
+            <div style={{ ...S.card,width:'100%',marginTop:20,marginBottom:20,textAlign:'left' as const }}>
+              {[
+                ['Transaction ID', txId],
+                ['Category',       category.label],
+                ['Provider',       provider],
+                ['Amount',         `₹${parseFloat(amount).toLocaleString('en-IN')}`],
+                ['Cashback',       `₹${Math.floor(parseFloat(amount) * 0.02)}`],
+                ['Points Earned',  `+${Math.floor(parseFloat(amount) / 10)} pts`],
+                ['Status',         '✅ Paid'],
+              ].map(([k,v]) => (
+                <div key={k} style={{ display:'flex',justifyContent:'space-between',
+                                       padding:'9px 0',borderBottom:'1px solid rgba(255,255,255,0.05)' }}>
+                  <span style={{ color:'#555570',fontSize:13 }}>{k}</span>
+                  <span style={{ color:'#f0f0f8',fontWeight:700,fontSize:13 }}>{v}</span>
+                </div>
               ))}
             </div>
 
-            {amount && parseFloat(amount) > 0 && (
-              <div style={{ background: '#f0fdf4', borderRadius: 12, padding: '10px 14px', marginBottom: 12 }}>
-                <p style={{ color: '#16a34a', fontSize: 13 }}>🎁 You'll get ₹{Math.floor(parseFloat(amount) * 0.02)} cashback (2%)</p>
-              </div>
-            )}
-
-            {error && <p style={s.error}>{error}</p>}
-
-            <button style={{ ...s.btn, opacity: loading ? 0.7 : 1 }} onClick={handlePay} disabled={loading}>
-              {loading ? '⏳ Processing...' : `Pay ${selected.label} Bill →`}
+            <button style={S.goldBtn} onClick={reset}>Pay Another Bill</button>
+            <button style={{ ...S.goldBtn,background:'transparent',border:'1px solid rgba(255,255,255,0.1)',
+                              color:'#f0f0f8',marginTop:10 }}
+              onClick={() => navigate('/dashboard')}>
+              Back to Home
             </button>
-            <p style={{ textAlign: 'center', color: '#9ca3af', fontSize: 12, marginTop: 8 }}>
-              💰 Balance: ₹{(userProfile?.balance || 0).toLocaleString('en-IN')}
-            </p>
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }
 
-const s: Record<string, React.CSSProperties> = {
-  page: { maxWidth: 480, margin: '0 auto', minHeight: '100vh', background: '#f8fafc', fontFamily: "'DM Sans', sans-serif", paddingBottom: 40 },
-  header: { display: 'flex', alignItems: 'center', gap: 14, padding: '52px 16px 16px', background: 'linear-gradient(160deg,#001a2e,#002a45)' },
-  back: { background: 'rgba(255,255,255,0.1)', border: 'none', borderRadius: 12, width: 40, height: 40, fontSize: 18, cursor: 'pointer', color: '#fff' },
-  title: { fontWeight: 800, fontSize: 20, color: '#fff' },
-  banner: { background: '#fef3c7', borderRadius: 16, padding: 16, marginBottom: 8 },
-  grid: { display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 10 },
-  catBtn: { background: '#fff', border: '1px solid #f1f5f9', borderRadius: 16, padding: '14px 0', display: 'flex', flexDirection: 'column', alignItems: 'center', cursor: 'pointer', boxShadow: '0 2px 8px rgba(0,0,0,0.04)' },
-  card: { background: '#fff', borderRadius: 18, padding: 18, boxShadow: '0 2px 8px rgba(0,0,0,0.04)' },
-  label: { color: '#9ca3af', fontSize: 11, letterSpacing: 1, fontWeight: 700, marginBottom: 8 },
-  provBtn: { borderRadius: 20, padding: '7px 14px', fontSize: 12, fontWeight: 700, cursor: 'pointer' },
-  input: { width: '100%', border: '2px solid #e5e7eb', borderRadius: 12, padding: '13px 14px', fontSize: 15, outline: 'none', fontFamily: 'inherit', boxSizing: 'border-box', marginBottom: 14 },
-  btn: { width: '100%', padding: '16px 0', background: '#00b9f1', border: 'none', borderRadius: 16, color: '#fff', fontWeight: 700, fontSize: 16, cursor: 'pointer', fontFamily: 'inherit' },
-  error: { color: '#ef4444', fontSize: 13, background: '#fef2f2', padding: '10px 14px', borderRadius: 10, marginBottom: 12 },
+const S: Record<string, React.CSSProperties> = {
+  page:         { maxWidth:480,margin:'0 auto',minHeight:'100vh',background:'#0a0a0f',fontFamily:"'DM Sans',sans-serif" },
+  header:       { display:'flex',alignItems:'center',gap:14,padding:'52px 16px 16px',background:'linear-gradient(160deg,#0f0f1a,#0a0a0f)' },
+  back:         { background:'rgba(255,255,255,0.06)',border:'1px solid rgba(255,255,255,0.07)',borderRadius:12,width:40,height:40,fontSize:18,cursor:'pointer',color:'#f0f0f8',flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center' },
+  title:        { fontFamily:"'Syne',sans-serif",fontWeight:800,fontSize:20,color:'#f0f0f8',flex:1 },
+  sectionTitle: { fontFamily:"'Syne',sans-serif",fontWeight:700,fontSize:16,color:'#f0f0f8',marginBottom:0 },
+  card:         { background:'#16161f',border:'1px solid rgba(255,255,255,0.07)',borderRadius:18,padding:20 },
+  fieldLabel:   { color:'#555570',fontSize:10,fontWeight:700,letterSpacing:0.8,marginBottom:8,textTransform:'uppercase' as const },
+  input:        { width:'100%',background:'#1e1e2a',border:'1px solid rgba(255,255,255,0.07)',borderRadius:12,padding:'13px 14px',fontSize:15,outline:'none',color:'#f0f0f8',fontFamily:'inherit',boxSizing:'border-box' as const },
+  goldBtn:      { width:'100%',padding:'15px',background:'linear-gradient(135deg,#f0b429,#ff8c00)',border:'none',borderRadius:14,color:'#000',fontWeight:700,fontSize:16,cursor:'pointer',fontFamily:'inherit' },
+  errBox:       { color:'#ef4444',fontSize:13,padding:'10px 12px',background:'rgba(239,68,68,0.1)',borderRadius:10,border:'1px solid rgba(239,68,68,0.2)',marginBottom:12 },
 };

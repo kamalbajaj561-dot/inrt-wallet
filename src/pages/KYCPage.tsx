@@ -1,313 +1,280 @@
 import { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { doc, updateDoc, serverTimestamp } from 'firebase/firestore';
-import { db } from '../lib/firebase';
+import {
+  doc, updateDoc, setDoc, getDoc, serverTimestamp
+} from 'firebase/firestore';
+import {
+  ref, uploadBytes, getDownloadURL
+} from 'firebase/storage';
+import { db, storage } from '../lib/firebase';
 
-// ─── Types ────────────────────────────────────────────────────
-type KYCStatus = 'not_started' | 'pending' | 'verified' | 'rejected';
-type Step = 1 | 2 | 3 | 4;
-
-interface KYCForm {
-  // Step 1 - Personal Info
-  fullName: string;
-  dob: string;
-  gender: string;
-  // Step 2 - Identity
-  aadhaar: string;
-  pan: string;
-  // Step 3 - Address
-  address: string;
-  city: string;
-  state: string;
-  pincode: string;
-  // Step 4 - Documents
-  aadhaarFront: File | null;
-  aadhaarBack: File | null;
-  panPhoto: File | null;
-  selfie: File | null;
-  // Previews
-  aadhaarFrontPreview: string;
-  aadhaarBackPreview: string;
-  panPhotoPreview: string;
-  selfiePreview: string;
-}
+type KYCStatus = 'not_started'|'in_progress'|'pending'|'verified'|'rejected';
+type Step = 1|2|3|4;
 
 const STATES = [
-  'Andhra Pradesh', 'Arunachal Pradesh', 'Assam', 'Bihar', 'Chhattisgarh',
-  'Goa', 'Gujarat', 'Haryana', 'Himachal Pradesh', 'Jharkhand', 'Karnataka',
-  'Kerala', 'Madhya Pradesh', 'Maharashtra', 'Manipur', 'Meghalaya', 'Mizoram',
-  'Nagaland', 'Odisha', 'Punjab', 'Rajasthan', 'Sikkim', 'Tamil Nadu',
-  'Telangana', 'Tripura', 'Uttar Pradesh', 'Uttarakhand', 'West Bengal',
-  'Delhi', 'Jammu & Kashmir', 'Ladakh', 'Puducherry', 'Chandigarh',
+  'Andhra Pradesh','Arunachal Pradesh','Assam','Bihar','Chhattisgarh',
+  'Goa','Gujarat','Haryana','Himachal Pradesh','Jharkhand','Karnataka',
+  'Kerala','Madhya Pradesh','Maharashtra','Manipur','Meghalaya','Mizoram',
+  'Nagaland','Odisha','Punjab','Rajasthan','Sikkim','Tamil Nadu',
+  'Telangana','Tripura','Uttar Pradesh','Uttarakhand','West Bengal',
+  'Delhi','Jammu & Kashmir','Ladakh','Puducherry','Chandigarh',
 ];
 
 export default function KYCPage() {
   const { user, userProfile, refreshProfile } = useAuth();
   const navigate = useNavigate();
-  const [step, setStep] = useState<Step>(1);
-  const [loading, setLoading] = useState(false);
-  const [submitted, setSubmitted] = useState(false);
-  const [errors, setErrors] = useState<Partial<KYCForm & { general: string }>>({});
 
-  const aadhaarFrontRef = useRef<HTMLInputElement>(null);
-  const aadhaarBackRef = useRef<HTMLInputElement>(null);
-  const panPhotoRef = useRef<HTMLInputElement>(null);
-  const selfieRef = useRef<HTMLInputElement>(null);
+  const [step,     setStep]    = useState<Step>(1);
+  const [loading,  setLoading] = useState(false);
+  const [errors,   setErrors]  = useState<Record<string,string>>({});
+  const [toast,    setToast]   = useState('');
 
-  const [form, setForm] = useState<KYCForm>({
-    fullName: userProfile?.name || '',
-    dob: '',
-    gender: '',
-    aadhaar: '',
-    pan: '',
-    address: '',
-    city: '',
-    state: 'Maharashtra',
-    pincode: '',
-    aadhaarFront: null,
-    aadhaarBack: null,
-    panPhoto: null,
-    selfie: null,
-    aadhaarFrontPreview: '',
-    aadhaarBackPreview: '',
-    panPhotoPreview: '',
-    selfiePreview: '',
-  });
+  // Form data
+  const [fullName,  setFullName]  = useState(userProfile?.name || '');
+  const [dob,       setDob]       = useState('');
+  const [gender,    setGender]    = useState('');
+  const [aadhaar,   setAadhaar]   = useState('');
+  const [pan,       setPan]       = useState('');
+  const [address,   setAddress]   = useState('');
+  const [city,      setCity]      = useState('');
+  const [state,     setState]     = useState('Maharashtra');
+  const [pincode,   setPincode]   = useState('');
 
-  // If already verified, show status
+  // Document files + previews
+  const [aadhaarF,  setAadhaarF]  = useState<File|null>(null);
+  const [aadhaarB,  setAadhaarB]  = useState<File|null>(null);
+  const [panDoc,    setPanDoc]    = useState<File|null>(null);
+  const [selfie,    setSelfie]    = useState<File|null>(null);
+  const [prevAF,    setPrevAF]    = useState('');
+  const [prevAB,    setPrevAB]    = useState('');
+  const [prevPan,   setPrevPan]   = useState('');
+  const [prevSel,   setPrevSel]   = useState('');
+
+  const refAF  = useRef<HTMLInputElement>(null);
+  const refAB  = useRef<HTMLInputElement>(null);
+  const refPan = useRef<HTMLInputElement>(null);
+  const refSel = useRef<HTMLInputElement>(null);
+
   const kycStatus: KYCStatus = userProfile?.kycStatus || 'not_started';
 
-  const set = (key: keyof KYCForm, value: any) => {
-    setForm(f => ({ ...f, [key]: value }));
-    setErrors(e => ({ ...e, [key]: '' }));
+  const showToast = (msg: string) => { setToast(msg); setTimeout(()=>setToast(''),3000); };
+
+  const setFile = (
+    file: File,
+    setter: (f:File|null)=>void,
+    prevSetter: (s:string)=>void,
+    key: string
+  ) => {
+    if (file.size > 5*1024*1024) { setErrors(e=>({...e,[key]:'File too large (max 5MB)'})); return; }
+    setter(file);
+    prevSetter(URL.createObjectURL(file));
+    setErrors(e=>({...e,[key]:''}));
   };
 
-  const handleFile = (key: keyof KYCForm, previewKey: keyof KYCForm, file: File) => {
-    if (file.size > 5 * 1024 * 1024) {
-      setErrors(e => ({ ...e, [key]: 'File size must be under 5MB' }));
-      return;
-    }
-    const preview = URL.createObjectURL(file);
-    setForm(f => ({ ...f, [key]: file, [previewKey]: preview }));
-    setErrors(e => ({ ...e, [key]: '' }));
-  };
-
-  // ── Validation ─────────────────────────────────────────────
-  const validateStep = (s: Step): boolean => {
-    const newErrors: any = {};
-
-    if (s === 1) {
-      if (!form.fullName.trim() || form.fullName.length < 3)
-        newErrors.fullName = 'Enter your full name (min 3 chars)';
-      if (!form.dob)
-        newErrors.dob = 'Enter your date of birth';
+  // ── Validate each step ────────────────────────────────────────
+  const validate = (s: Step): boolean => {
+    const e: Record<string,string> = {};
+    if (s===1) {
+      if (!fullName.trim()||fullName.length<3) e.fullName='Enter full name (min 3 chars)';
+      if (!dob) e.dob='Date of birth required';
       else {
-        const age = new Date().getFullYear() - new Date(form.dob).getFullYear();
-        if (age < 18) newErrors.dob = 'You must be at least 18 years old';
+        const age = new Date().getFullYear() - new Date(dob).getFullYear();
+        if (age<18) e.dob='Must be 18 or older';
       }
-      if (!form.gender)
-        newErrors.gender = 'Select your gender';
+      if (!gender) e.gender='Select gender';
     }
-
-    if (s === 2) {
-      if (!form.aadhaar || form.aadhaar.length !== 12)
-        newErrors.aadhaar = 'Aadhaar must be exactly 12 digits';
-      if (!form.pan || !/^[A-Z]{5}[0-9]{4}[A-Z]{1}$/.test(form.pan.toUpperCase()))
-        newErrors.pan = 'PAN format: ABCDE1234F';
+    if (s===2) {
+      if (!aadhaar||aadhaar.replace(/\s/g,'').length!==12) e.aadhaar='Aadhaar must be 12 digits';
+      if (!pan||!/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(pan)) e.pan='PAN format: ABCDE1234F';
     }
-
-    if (s === 3) {
-      if (!form.address.trim() || form.address.length < 10)
-        newErrors.address = 'Enter complete address (min 10 chars)';
-      if (!form.city.trim())
-        newErrors.city = 'Enter city name';
-      if (!form.pincode || !/^\d{6}$/.test(form.pincode))
-        newErrors.pincode = 'Pincode must be 6 digits';
+    if (s===3) {
+      if (!address.trim()||address.length<10) e.address='Enter complete address';
+      if (!city.trim()) e.city='City required';
+      if (!pincode||!/^\d{6}$/.test(pincode)) e.pincode='Enter valid 6-digit PIN';
     }
-
-    if (s === 4) {
-      if (!form.aadhaarFront) newErrors.aadhaarFront = 'Upload Aadhaar front side';
-      if (!form.aadhaarBack) newErrors.aadhaarBack = 'Upload Aadhaar back side';
-      if (!form.panPhoto) newErrors.panPhoto = 'Upload PAN card photo';
-      if (!form.selfie) newErrors.selfie = 'Take a selfie photo';
+    if (s===4) {
+      if (!aadhaarF)  e.aadhaarF='Upload Aadhaar front';
+      if (!aadhaarB)  e.aadhaarB='Upload Aadhaar back';
+      if (!panDoc)    e.panDoc='Upload PAN card';
+      if (!selfie)    e.selfie='Upload selfie photo';
     }
+    setErrors(e);
+    return Object.keys(e).length===0;
+  };
 
-    setErrors(newErrors);
-    return Object.keys(newErrors).length === 0;
+  const uploadDoc = async (file: File, path: string): Promise<string> => {
+    const storageRef = ref(storage, path);
+    const snap = await uploadBytes(storageRef, file);
+    return getDownloadURL(snap.ref);
   };
 
   const handleNext = () => {
-    if (validateStep(step)) {
-      if (step < 4) setStep((step + 1) as Step);
-      else handleSubmit();
-    }
+    if (!validate(step)) return;
+    if (step < 4) setStep((step+1) as Step);
+    else handleSubmit();
   };
 
   const handleSubmit = async () => {
-    if (!validateStep(4)) return;
+    if (!validate(4)||!user) return;
     setLoading(true);
     try {
-      // Save KYC data to Firestore (without files for now - in production use Firebase Storage)
-      await updateDoc(doc(db, 'users', user!.uid), {
-        kycStatus: 'pending',
-        kycSubmittedAt: serverTimestamp(),
-        kycData: {
-          fullName: form.fullName,
-          dob: form.dob,
-          gender: form.gender,
-          aadhaarLast4: form.aadhaar.slice(-4),
-          panMasked: form.pan.slice(0, 2) + '***' + form.pan.slice(-3),
-          address: form.address,
-          city: form.city,
-          state: form.state,
-          pincode: form.pincode,
+      // Upload documents to Firebase Storage
+      showToast('Uploading documents...');
+      const basePath = `kyc/${user.uid}`;
+      const [urlAF, urlAB, urlPan, urlSel] = await Promise.all([
+        uploadDoc(aadhaarF!,  `${basePath}/aadhaar_front`),
+        uploadDoc(aadhaarB!,  `${basePath}/aadhaar_back`),
+        uploadDoc(panDoc!,    `${basePath}/pan_card`),
+        uploadDoc(selfie!,    `${basePath}/selfie`),
+      ]);
+
+      const cleanAadhaar = aadhaar.replace(/\s/g,'');
+
+      // Save KYC data to Firestore
+      await setDoc(doc(db,'kyc',user.uid), {
+        userId:       user.uid,
+        status:       'pending',
+        step:         4,
+        personalInfo: { fullName:fullName.trim(), dob, gender },
+        identity: {
+          aadhaarLast4: cleanAadhaar.slice(-4),
+          aadhaarHash:  btoa(cleanAadhaar), // base64 encode (not true hash, use server for prod)
+          panMasked:    pan.slice(0,2)+'XXX'+pan.slice(5),
         },
-        updatedAt: serverTimestamp(),
+        address: { address:address.trim(), city:city.trim(), state, pincode },
+        documents: {
+          aadhaarFront: urlAF,
+          aadhaarBack:  urlAB,
+          panCard:      urlPan,
+          selfie:       urlSel,
+        },
+        submittedAt:  serverTimestamp(),
+        updatedAt:    serverTimestamp(),
       });
+
+      // Update user record
+      await updateDoc(doc(db,'users',user.uid), {
+        kycStatus:      'pending',
+        kycSubmittedAt: serverTimestamp(),
+        updatedAt:      serverTimestamp(),
+      });
+
       await refreshProfile();
-      setSubmitted(true);
-    } catch (e: any) {
-      setErrors({ general: e.message || 'Submission failed. Please try again.' });
+      showToast('✅ KYC submitted successfully!');
+    } catch (e:any) {
+      showToast(e.message||'Submission failed. Try again.');
     }
     setLoading(false);
   };
 
-  // ── Already Submitted / Verified ──────────────────────────
-  if (submitted || kycStatus === 'pending') {
-    return (
-      <div style={s.page}>
-        <div style={s.header}>
-          <button onClick={() => navigate('/dashboard')} style={s.back}>←</button>
-          <h1 style={s.title}>KYC Status</h1>
+  // ── STATUS SCREENS ────────────────────────────────────────────
+  if (kycStatus==='verified') return (
+    <div style={S.page}>
+      <Header onBack={()=>navigate('/dashboard')} title="KYC Verified" />
+      <div style={S.centred}>
+        <div style={S.statusIcon('#10b981')}>✅</div>
+        <h2 style={S.statusTitle}>KYC Complete!</h2>
+        <p style={S.statusDesc}>Your identity is verified. You have full access to all INRT Wallet features.</p>
+        <div style={S.perksBox}>
+          {['Higher limit: ₹1 Lakh/day','International transfers','Instant loans eligible','500 bonus reward points'].map(p=>(
+            <p key={p} style={{ color:'#10b981',fontSize:13,padding:'6px 0',borderBottom:'1px solid rgba(16,185,129,0.1)' }}>✓ {p}</p>
+          ))}
         </div>
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '60px 24px', textAlign: 'center' }}>
-          <div style={{ fontSize: 80, marginBottom: 20 }}>⏳</div>
-          <h2 style={{ fontWeight: 800, fontSize: 24, color: '#111', marginBottom: 12 }}>KYC Under Review</h2>
-          <p style={{ color: '#6b7280', fontSize: 15, lineHeight: 1.6, marginBottom: 24 }}>
-            Your KYC documents have been submitted successfully. Our team will verify your details within <strong>24-48 hours</strong>.
-          </p>
-          <div style={s.statusCard}>
-            <p style={s.statusLabel}>SUBMITTED DETAILS</p>
-            {[
-              ['Name', form.fullName || userProfile?.kycData?.fullName],
-              ['Aadhaar', `****${form.aadhaar.slice(-4) || userProfile?.kycData?.aadhaarLast4}`],
-              ['PAN', form.pan ? form.pan.slice(0, 2) + '***' + form.pan.slice(-3) : userProfile?.kycData?.panMasked],
-              ['City', form.city || userProfile?.kycData?.city],
-              ['State', form.state || userProfile?.kycData?.state],
-            ].filter(([_, v]) => v).map(([k, v]) => (
-              <div key={k} style={s.statusRow}>
-                <span style={{ color: '#9ca3af', fontSize: 13 }}>{k}</span>
-                <span style={{ fontWeight: 600, fontSize: 13, color: '#111' }}>{v}</span>
-              </div>
-            ))}
-          </div>
-          <div style={s.infoBanner}>
-            <p style={{ color: '#1d4ed8', fontSize: 13, fontWeight: 600 }}>📧 You'll get notified once verified</p>
-            <p style={{ color: '#3b82f6', fontSize: 12, marginTop: 4 }}>Check notifications for updates</p>
-          </div>
-          <button style={s.btn} onClick={() => navigate('/dashboard')}>Back to Dashboard</button>
-        </div>
+        <button style={S.goldBtn} onClick={()=>navigate('/dashboard')}>Back to Dashboard</button>
       </div>
-    );
-  }
+    </div>
+  );
 
-  if (kycStatus === 'verified') {
-    return (
-      <div style={s.page}>
-        <div style={s.header}>
-          <button onClick={() => navigate('/dashboard')} style={s.back}>←</button>
-          <h1 style={s.title}>KYC Verified</h1>
+  if (kycStatus==='pending') return (
+    <div style={S.page}>
+      <Header onBack={()=>navigate('/dashboard')} title="KYC Status" />
+      <div style={S.centred}>
+        <div style={S.statusIcon('#f0b429')}>⏳</div>
+        <h2 style={S.statusTitle}>Under Review</h2>
+        <p style={S.statusDesc}>Documents submitted. Verification takes 24–48 hours. You'll be notified once done.</p>
+        <div style={{ ...S.perksBox,borderColor:'rgba(240,180,41,0.2)',background:'rgba(240,180,41,0.05)' }}>
+          <p style={{ color:'#f0b429',fontSize:13,fontWeight:600,marginBottom:8 }}>What happens next?</p>
+          {['Our team reviews your documents','Identity is verified against records','You get notified on completion','Higher limits are unlocked automatically'].map((s,i)=>(
+            <p key={i} style={{ color:'#8888a8',fontSize:13,padding:'5px 0' }}>{i+1}. {s}</p>
+          ))}
         </div>
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '60px 24px', textAlign: 'center' }}>
-          <div style={{ fontSize: 80, marginBottom: 20 }}>✅</div>
-          <h2 style={{ fontWeight: 800, fontSize: 24, color: '#111', marginBottom: 12 }}>KYC Complete!</h2>
-          <p style={{ color: '#6b7280', fontSize: 15, marginBottom: 24 }}>Your identity is verified. You have full access to all INRT Wallet features.</p>
-          <div style={{ ...s.infoBanner, background: '#f0fdf4', border: '1px solid #bbf7d0' }}>
-            <p style={{ color: '#15803d', fontSize: 14, fontWeight: 700 }}>🎉 Benefits Unlocked:</p>
-            {['Higher transaction limits (₹1 Lakh/day)', 'International transfers', 'Loan & credit access', '500 bonus reward points credited'].map(b => (
-              <p key={b} style={{ color: '#166534', fontSize: 13, marginTop: 4 }}>✓ {b}</p>
-            ))}
-          </div>
-          <button style={s.btn} onClick={() => navigate('/dashboard')}>Back to Dashboard</button>
-        </div>
+        <button style={S.goldBtn} onClick={()=>navigate('/dashboard')}>Back to Dashboard</button>
       </div>
-    );
-  }
+    </div>
+  );
 
-  if (kycStatus === 'rejected') {
-    return (
-      <div style={s.page}>
-        <div style={s.header}>
-          <button onClick={() => navigate('/dashboard')} style={s.back}>←</button>
-          <h1 style={s.title}>KYC Rejected</h1>
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '60px 24px', textAlign: 'center' }}>
-          <div style={{ fontSize: 80, marginBottom: 20 }}>❌</div>
-          <h2 style={{ fontWeight: 800, fontSize: 24, color: '#111', marginBottom: 12 }}>KYC Rejected</h2>
-          <p style={{ color: '#6b7280', fontSize: 15, marginBottom: 24 }}>
-            {userProfile?.kycRejectionReason || 'Your documents could not be verified. Please resubmit with clear, valid documents.'}
-          </p>
-          <button style={s.btn} onClick={() => { setStep(1); }}>Resubmit KYC</button>
-        </div>
+  if (kycStatus==='rejected') return (
+    <div style={S.page}>
+      <Header onBack={()=>navigate('/dashboard')} title="KYC Rejected" />
+      <div style={S.centred}>
+        <div style={S.statusIcon('#ef4444')}>❌</div>
+        <h2 style={S.statusTitle}>Verification Failed</h2>
+        <p style={S.statusDesc}>{userProfile?.kycRejectionReason||'Documents could not be verified. Please resubmit with clear photos.'}</p>
+        <button style={S.goldBtn} onClick={()=>{ setStep(1); }}>Resubmit KYC</button>
       </div>
-    );
-  }
+    </div>
+  );
 
-  // ── Main KYC Form ─────────────────────────────────────────
-  const steps = ['Personal Info', 'Identity', 'Address', 'Documents'];
+  // ── MAIN FORM ─────────────────────────────────────────────────
+  const STEPS = ['Personal','Identity','Address','Documents'];
 
   return (
-    <div style={s.page}>
-      {/* Header */}
-      <div style={s.header}>
-        <button onClick={() => step > 1 ? setStep((step - 1) as Step) : navigate('/dashboard')} style={s.back}>←</button>
-        <h1 style={s.title}>KYC Verification</h1>
-      </div>
+    <div style={S.page}>
+      {toast && <div style={S.toast}>{toast}</div>}
 
-      {/* Progress Bar */}
-      <div style={s.progressBar}>
-        {steps.map((label, i) => (
-          <div key={label} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-            <div style={{ display: 'flex', alignItems: 'center', width: '100%' }}>
-              {i > 0 && <div style={{ flex: 1, height: 3, background: step > i ? '#00b9f1' : '#e5e7eb', transition: 'background 0.3s' }} />}
-              <div style={{ ...s.stepDot, background: step > i + 1 ? '#00b9f1' : step === i + 1 ? '#001a2e' : '#e5e7eb', color: step >= i + 1 ? '#fff' : '#9ca3af', border: `3px solid ${step === i + 1 ? '#00b9f1' : step > i + 1 ? '#00b9f1' : '#e5e7eb'}` }}>
-                {step > i + 1 ? '✓' : i + 1}
+      <Header
+        onBack={()=>step>1?setStep((step-1) as Step):navigate('/dashboard')}
+        title="KYC Verification" />
+
+      {/* Progress */}
+      <div style={{ background:'linear-gradient(160deg,#0f0f1a,#0a0a0f)',padding:'0 16px 20px' }}>
+        <div style={{ display:'flex',alignItems:'center' }}>
+          {STEPS.map((label,i)=>(
+            <div key={label} style={{ flex:1,display:'flex',flexDirection:'column' as const,alignItems:'center' }}>
+              <div style={{ display:'flex',alignItems:'center',width:'100%' }}>
+                {i>0 && <div style={{ flex:1,height:2,background:step>i?'#f0b429':'#1e1e2a',transition:'background 0.3s' }} />}
+                <div style={{ width:28,height:28,borderRadius:'50%',flexShrink:0,
+                               display:'flex',alignItems:'center',justifyContent:'center',
+                               fontWeight:700,fontSize:12,transition:'all 0.3s',
+                               background:step>i+1?'#f0b429':step===i+1?'#1e1e2a':'#111118',
+                               border:`2px solid ${step>=i+1?'#f0b429':'#1e1e2a'}`,
+                               color:step>i+1?'#000':step===i+1?'#f0b429':'#555570' }}>
+                  {step>i+1?'✓':i+1}
+                </div>
+                {i<STEPS.length-1 && <div style={{ flex:1,height:2,background:step>i+1?'#f0b429':'#1e1e2a',transition:'background 0.3s' }} />}
               </div>
-              {i < steps.length - 1 && <div style={{ flex: 1, height: 3, background: step > i + 1 ? '#00b9f1' : '#e5e7eb', transition: 'background 0.3s' }} />}
+              <span style={{ fontSize:9,marginTop:4,color:step===i+1?'#f0b429':'#555570',fontWeight:600 }}>
+                {label}
+              </span>
             </div>
-            <span style={{ fontSize: 10, color: step === i + 1 ? '#00b9f1' : '#9ca3af', marginTop: 6, fontWeight: step === i + 1 ? 700 : 400 }}>{label}</span>
-          </div>
-        ))}
+          ))}
+        </div>
       </div>
 
-      {/* Why KYC Banner */}
-      {step === 1 && (
-        <div style={s.whyBanner}>
-          <p style={{ fontWeight: 700, color: '#1d4ed8', fontSize: 14, marginBottom: 4 }}>🔒 Why KYC?</p>
-          <p style={{ color: '#3b82f6', fontSize: 12, lineHeight: 1.5 }}>KYC verification is required by RBI for all digital wallets. It unlocks higher limits and keeps your money safe.</p>
-        </div>
-      )}
+      <div style={{ padding:'16px 16px 100px' }}>
 
-      <div style={{ padding: '0 16px 40px' }}>
-        {/* ── STEP 1: Personal Info ── */}
-        {step === 1 && (
-          <div style={s.card}>
-            <h3 style={s.stepTitle}>👤 Personal Information</h3>
-
-            <Field label="Full Name (as per Aadhaar)" error={errors.fullName}>
-              <input style={s.input} placeholder="Enter your full name" value={form.fullName} onChange={e => set('fullName', e.target.value)} />
+        {/* ── STEP 1: Personal ── */}
+        {step===1 && (
+          <div style={S.card}>
+            <p style={S.cardTitle}>👤 Personal Information</p>
+            <Field label="Full Name (as on Aadhaar)" error={errors.fullName}>
+              <input style={S.input} value={fullName} placeholder="Your full legal name"
+                onChange={e=>{setFullName(e.target.value);setErrors(x=>({...x,fullName:''}))}} />
             </Field>
-
             <Field label="Date of Birth" error={errors.dob}>
-              <input style={s.input} type="date" value={form.dob} max={new Date().toISOString().split('T')[0]} onChange={e => set('dob', e.target.value)} />
+              <input style={S.input} type="date" value={dob}
+                max={new Date(Date.now()-18*365.25*24*3600*1000).toISOString().split('T')[0]}
+                onChange={e=>{setDob(e.target.value);setErrors(x=>({...x,dob:''}))}} />
             </Field>
-
             <Field label="Gender" error={errors.gender}>
-              <div style={{ display: 'flex', gap: 10 }}>
-                {['Male', 'Female', 'Other'].map(g => (
-                  <button key={g} onClick={() => set('gender', g)} style={{ flex: 1, padding: '12px 0', borderRadius: 12, border: `2px solid ${form.gender === g ? '#00b9f1' : '#e5e7eb'}`, background: form.gender === g ? '#dbeafe' : '#f8fafc', color: form.gender === g ? '#0369a1' : '#374151', fontWeight: 700, fontSize: 14, cursor: 'pointer' }}>
-                    {g === 'Male' ? '👨 Male' : g === 'Female' ? '👩 Female' : '🧑 Other'}
+              <div style={{ display:'flex',gap:10 }}>
+                {['Male','Female','Other'].map(g=>(
+                  <button key={g} onClick={()=>{setGender(g);setErrors(x=>({...x,gender:''}))}}
+                    style={{ flex:1,padding:'12px 0',borderRadius:12,border:`2px solid ${gender===g?'#f0b429':'rgba(255,255,255,0.07)'}`,
+                             background:gender===g?'rgba(240,180,41,0.1)':'#1e1e2a',
+                             color:gender===g?'#f0b429':'#8888a8',fontWeight:700,fontSize:13,cursor:'pointer' }}>
+                    {g}
                   </button>
                 ))}
               </div>
@@ -316,143 +283,101 @@ export default function KYCPage() {
         )}
 
         {/* ── STEP 2: Identity ── */}
-        {step === 2 && (
-          <div style={s.card}>
-            <h3 style={s.stepTitle}>🪪 Identity Details</h3>
-
+        {step===2 && (
+          <div style={S.card}>
+            <p style={S.cardTitle}>🪪 Identity Details</p>
             <Field label="Aadhaar Number (12 digits)" error={errors.aadhaar}>
-              <input style={s.input} type="tel" maxLength={12} placeholder="XXXX XXXX XXXX"
-                value={form.aadhaar.replace(/(\d{4})(?=\d)/g, '$1 ').trim()}
-                onChange={e => set('aadhaar', e.target.value.replace(/\s/g, '').replace(/\D/g, ''))} />
-              {form.aadhaar.length === 12 && <p style={s.successHint}>✓ Valid Aadhaar format</p>}
+              <input style={S.input} type="tel" maxLength={14}
+                placeholder="XXXX XXXX XXXX"
+                value={aadhaar.replace(/(\d{4})(?=\d)/g,'$1 ').trim()}
+                onChange={e=>{setAadhaar(e.target.value.replace(/\s/g,'').replace(/\D/g,''));setErrors(x=>({...x,aadhaar:''}))}} />
+              {aadhaar.replace(/\s/g,'').length===12 && <p style={S.hint}>✓ Valid format</p>}
             </Field>
-
             <Field label="PAN Card Number" error={errors.pan}>
-              <input style={{ ...s.input, textTransform: 'uppercase', letterSpacing: 2 }} maxLength={10} placeholder="ABCDE1234F"
-                value={form.pan.toUpperCase()}
-                onChange={e => set('pan', e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ''))} />
-              {/^[A-Z]{5}[0-9]{4}[A-Z]{1}$/.test(form.pan) && <p style={s.successHint}>✓ Valid PAN format</p>}
+              <input style={{ ...S.input,textTransform:'uppercase' as const,letterSpacing:3 }}
+                maxLength={10} placeholder="ABCDE1234F"
+                value={pan}
+                onChange={e=>{setPan(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g,''));setErrors(x=>({...x,pan:''}))}} />
+              {/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(pan) && <p style={S.hint}>✓ Valid format</p>}
             </Field>
-
-            <div style={s.secureNote}>
-              <span style={{ fontSize: 18 }}>🔐</span>
-              <p style={{ color: '#374151', fontSize: 12, lineHeight: 1.5 }}>Your Aadhaar and PAN details are encrypted and stored securely. We never share them with third parties.</p>
+            <div style={{ background:'rgba(255,255,255,0.03)',borderRadius:12,padding:'12px 14px',marginTop:8 }}>
+              <p style={{ color:'#555570',fontSize:12 }}>🔐 Your data is encrypted and never shared with third parties.</p>
             </div>
           </div>
         )}
 
         {/* ── STEP 3: Address ── */}
-        {step === 3 && (
-          <div style={s.card}>
-            <h3 style={s.stepTitle}>🏠 Address Details</h3>
-            <p style={{ color: '#9ca3af', fontSize: 12, marginBottom: 16 }}>Enter address as per your Aadhaar card</p>
-
+        {step===3 && (
+          <div style={S.card}>
+            <p style={S.cardTitle}>🏠 Address (as on Aadhaar)</p>
             <Field label="Full Address" error={errors.address}>
-              <textarea style={{ ...s.input, height: 90, resize: 'none' }} placeholder="House No, Street Name, Area, Landmark"
-                value={form.address} onChange={e => set('address', e.target.value)} />
+              <textarea style={{ ...S.input,height:80,resize:'none' as const }}
+                placeholder="House no, Street, Area, Landmark"
+                value={address}
+                onChange={e=>{setAddress(e.target.value);setErrors(x=>({...x,address:''}))}} />
             </Field>
-
             <Field label="City" error={errors.city}>
-              <input style={s.input} placeholder="Enter city name" value={form.city} onChange={e => set('city', e.target.value)} />
+              <input style={S.input} placeholder="City" value={city}
+                onChange={e=>{setCity(e.target.value);setErrors(x=>({...x,city:''}))}} />
             </Field>
-
-            <Field label="State" error={''}>
-              <select style={{ ...s.input, cursor: 'pointer' }} value={form.state} onChange={e => set('state', e.target.value)}>
-                {STATES.map(st => <option key={st} value={st}>{st}</option>)}
+            <Field label="State" error="">
+              <select style={{ ...S.input,cursor:'pointer' }} value={state} onChange={e=>setState(e.target.value)}>
+                {STATES.map(s=><option key={s} value={s}>{s}</option>)}
               </select>
             </Field>
-
             <Field label="PIN Code" error={errors.pincode}>
-              <input style={s.input} type="tel" maxLength={6} placeholder="6-digit PIN code"
-                value={form.pincode} onChange={e => set('pincode', e.target.value.replace(/\D/g, ''))} />
+              <input style={S.input} type="tel" maxLength={6} placeholder="6-digit PIN"
+                value={pincode}
+                onChange={e=>{setPincode(e.target.value.replace(/\D/g,''));setErrors(x=>({...x,pincode:''}))}} />
             </Field>
           </div>
         )}
 
         {/* ── STEP 4: Documents ── */}
-        {step === 4 && (
-          <div style={s.card}>
-            <h3 style={s.stepTitle}>📄 Upload Documents</h3>
-            <p style={{ color: '#9ca3af', fontSize: 12, marginBottom: 20 }}>Upload clear photos • Max 5MB each • JPG/PNG only</p>
-
-            {/* Aadhaar Front */}
-            <DocUpload
-              label="Aadhaar Card — Front Side"
-              icon="🪪"
-              preview={form.aadhaarFrontPreview}
-              error={errors.aadhaarFront}
-              inputRef={aadhaarFrontRef}
-              onChange={f => handleFile('aadhaarFront', 'aadhaarFrontPreview', f)}
-              onRetake={() => set('aadhaarFrontPreview', '')}
-            />
-
-            {/* Aadhaar Back */}
-            <DocUpload
-              label="Aadhaar Card — Back Side"
-              icon="🪪"
-              preview={form.aadhaarBackPreview}
-              error={errors.aadhaarBack}
-              inputRef={aadhaarBackRef}
-              onChange={f => handleFile('aadhaarBack', 'aadhaarBackPreview', f)}
-              onRetake={() => set('aadhaarBackPreview', '')}
-            />
-
-            {/* PAN Card */}
-            <DocUpload
-              label="PAN Card"
-              icon="💳"
-              preview={form.panPhotoPreview}
-              error={errors.panPhoto}
-              inputRef={panPhotoRef}
-              onChange={f => handleFile('panPhoto', 'panPhotoPreview', f)}
-              onRetake={() => set('panPhotoPreview', '')}
-            />
-
-            {/* Selfie */}
-            <DocUpload
-              label="Selfie Photo"
-              icon="🤳"
-              preview={form.selfiePreview}
-              error={errors.selfie}
-              inputRef={selfieRef}
-              onChange={f => handleFile('selfie', 'selfiePreview', f)}
-              onRetake={() => set('selfiePreview', '')}
-              capture="user"
-              hint="Take a clear selfie in good lighting"
-            />
-
-            <div style={s.secureNote}>
-              <span style={{ fontSize: 18 }}>🛡️</span>
-              <p style={{ color: '#374151', fontSize: 12, lineHeight: 1.5 }}>Documents are encrypted with 256-bit SSL and stored securely. Only used for identity verification.</p>
+        {step===4 && (
+          <div style={S.card}>
+            <p style={S.cardTitle}>📄 Upload Documents</p>
+            <p style={{ color:'#555570',fontSize:12,marginBottom:16 }}>
+              Clear photos only · Max 5MB each · JPG or PNG
+            </p>
+            <DocUpload label="Aadhaar Card — Front" icon="🪪" preview={prevAF}
+              inputRef={refAF} error={errors.aadhaarF}
+              onChange={f=>setFile(f,setAadhaarF,setPrevAF,'aadhaarF')}
+              onRetake={()=>{setAadhaarF(null);setPrevAF('')}} />
+            <DocUpload label="Aadhaar Card — Back" icon="🪪" preview={prevAB}
+              inputRef={refAB} error={errors.aadhaarB}
+              onChange={f=>setFile(f,setAadhaarB,setPrevAB,'aadhaarB')}
+              onRetake={()=>{setAadhaarB(null);setPrevAB('')}} />
+            <DocUpload label="PAN Card" icon="💳" preview={prevPan}
+              inputRef={refPan} error={errors.panDoc}
+              onChange={f=>setFile(f,setPanDoc,setPrevPan,'panDoc')}
+              onRetake={()=>{setPanDoc(null);setPrevPan('')}} />
+            <DocUpload label="Selfie Photo" icon="🤳" preview={prevSel}
+              inputRef={refSel} error={errors.selfie} capture="user"
+              hint="Look straight at camera, good lighting"
+              onChange={f=>setFile(f,setSelfie,setPrevSel,'selfie')}
+              onRetake={()=>{setSelfie(null);setPrevSel('')}} />
+            <div style={{ background:'rgba(255,255,255,0.03)',borderRadius:12,padding:'12px 14px' }}>
+              <p style={{ color:'#555570',fontSize:12 }}>🛡️ Encrypted with 256-bit SSL · Stored in insured vaults</p>
             </div>
           </div>
         )}
 
-        {/* Error */}
-        {errors.general && (
-          <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 14, padding: '12px 16px', marginTop: 12, marginBottom: 12 }}>
-            <p style={{ color: '#dc2626', fontSize: 14 }}>⚠️ {errors.general}</p>
-          </div>
-        )}
-
         {/* Navigation */}
-        <div style={{ display: 'flex', gap: 12, marginTop: 20 }}>
-          {step > 1 && (
-            <button style={s.backBtn} onClick={() => setStep((step - 1) as Step)}>
+        <div style={{ display:'flex',gap:10,marginTop:16 }}>
+          {step>1 && (
+            <button onClick={()=>setStep((step-1) as Step)}
+              style={{ flex:0.5,padding:'15px',background:'#1e1e2a',border:'1px solid rgba(255,255,255,0.07)',
+                       borderRadius:14,color:'#f0f0f8',fontWeight:600,fontSize:15,cursor:'pointer' }}>
               ← Back
             </button>
           )}
-          <button
-            style={{ ...s.btn, opacity: loading ? 0.7 : 1 }}
-            onClick={handleNext}
-            disabled={loading}
-          >
-            {loading ? '⏳ Submitting...' : step < 4 ? `Continue →` : '✓ Submit KYC'}
+          <button onClick={handleNext} disabled={loading}
+            style={{ ...S.goldBtn,flex:1,opacity:loading?0.6:1 }}>
+            {loading?'⏳ Uploading...':(step<4?'Continue →':'Submit KYC ✓')}
           </button>
         </div>
-
-        {/* Step indicator */}
-        <p style={{ textAlign: 'center', color: '#9ca3af', fontSize: 12, marginTop: 12 }}>
+        <p style={{ textAlign:'center' as const,color:'#555570',fontSize:12,marginTop:10 }}>
           Step {step} of 4
         </p>
       </div>
@@ -460,100 +385,91 @@ export default function KYCPage() {
   );
 }
 
-// ─── Helper Components ────────────────────────────────────────
-function Field({ label, error, children }: { label: string; error?: string; children: React.ReactNode }) {
+// ── Helper components ─────────────────────────────────────────
+function Header({ onBack, title }: { onBack:()=>void; title:string }) {
   return (
-    <div style={{ marginBottom: 16 }}>
-      <p style={{ color: '#374151', fontSize: 12, fontWeight: 700, marginBottom: 8, letterSpacing: 0.5 }}>
-        {label.toUpperCase()}
-      </p>
-      {children}
-      {error && <p style={{ color: '#ef4444', fontSize: 12, marginTop: 6 }}>⚠️ {error}</p>}
+    <div style={{ display:'flex',alignItems:'center',gap:14,
+                   padding:'52px 16px 16px',background:'linear-gradient(160deg,#0f0f1a,#0a0a0f)' }}>
+      <button onClick={onBack}
+        style={{ background:'rgba(255,255,255,0.06)',border:'1px solid rgba(255,255,255,0.07)',
+                  borderRadius:12,width:40,height:40,fontSize:18,cursor:'pointer',
+                  color:'#f0f0f8',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0 }}>
+        ←
+      </button>
+      <h1 style={{ fontFamily:"'Syne',sans-serif",fontWeight:700,fontSize:20,color:'#f0f0f8' }}>
+        {title}
+      </h1>
     </div>
   );
 }
 
-function DocUpload({ label, icon, preview, error, inputRef, onChange, onRetake, capture, hint }: {
-  label: string;
-  icon: string;
-  preview: string;
-  error?: string;
-  inputRef: React.RefObject<HTMLInputElement>;
-  onChange: (f: File) => void;
-  onRetake: () => void;
-  capture?: 'user' | 'environment';
-  hint?: string;
-}) {
+function Field({ label, error, children }: { label:string; error:string; children:React.ReactNode }) {
   return (
-    <div style={{ marginBottom: 18 }}>
-      <p style={{ color: '#374151', fontSize: 12, fontWeight: 700, marginBottom: 8, letterSpacing: 0.5 }}>
-        {label.toUpperCase()}
-      </p>
-      {hint && <p style={{ color: '#9ca3af', fontSize: 11, marginBottom: 8 }}>{hint}</p>}
-      <input
-        ref={inputRef}
-        type="file"
-        accept="image/*"
-        capture={capture}
-        style={{ display: 'none' }}
-        onChange={e => { const f = e.target.files?.[0]; if (f) onChange(f); }}
-      />
+    <div style={{ marginBottom:16 }}>
+      <p style={{ color:'#555570',fontSize:10,fontWeight:700,letterSpacing:0.8,
+                   marginBottom:8,textTransform:'uppercase' as const }}>{label}</p>
+      {children}
+      {error && <p style={{ color:'#ef4444',fontSize:12,marginTop:6 }}>⚠️ {error}</p>}
+    </div>
+  );
+}
+
+function DocUpload({ label, icon, preview, error, inputRef, onChange, onRetake, capture, hint }:
+  { label:string;icon:string;preview:string;error:string;inputRef:React.RefObject<HTMLInputElement>;
+    onChange:(f:File)=>void;onRetake:()=>void;capture?:'user'|'environment';hint?:string }) {
+  return (
+    <div style={{ marginBottom:18 }}>
+      <p style={{ color:'#555570',fontSize:10,fontWeight:700,letterSpacing:0.8,
+                   marginBottom:6,textTransform:'uppercase' as const }}>{label}</p>
+      {hint && <p style={{ color:'#444458',fontSize:11,marginBottom:8 }}>{hint}</p>}
+      <input ref={inputRef} type="file" accept="image/*" capture={capture}
+        style={{ display:'none' }}
+        onChange={e=>{ const f=e.target.files?.[0]; if(f) onChange(f); }} />
       {!preview ? (
-        <button
-          onClick={() => inputRef.current?.click()}
-          style={docUploadStyle}
-        >
-          <span style={{ fontSize: 36 }}>{icon}</span>
-          <span style={{ color: '#00b9f1', fontWeight: 700, fontSize: 14 }}>Tap to upload</span>
-          <span style={{ color: '#9ca3af', fontSize: 11 }}>JPG, PNG • Max 5MB</span>
+        <button onClick={()=>inputRef.current?.click()}
+          style={{ width:'100%',background:'rgba(240,180,41,0.05)',
+                    border:'2px dashed rgba(240,180,41,0.3)',borderRadius:14,
+                    padding:'20px 0',display:'flex',flexDirection:'column' as const,
+                    alignItems:'center',gap:8,cursor:'pointer' }}>
+          <span style={{ fontSize:32 }}>{icon}</span>
+          <span style={{ color:'#f0b429',fontWeight:700,fontSize:13 }}>Tap to upload</span>
+          <span style={{ color:'#555570',fontSize:11 }}>JPG · PNG · Max 5MB</span>
         </button>
       ) : (
-        <div style={{ position: 'relative' }}>
-          <img src={preview} alt={label} style={{ width: '100%', height: 160, objectFit: 'cover', borderRadius: 14, border: '2px solid #00b9f1' }} />
-          <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, borderRadius: 14, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.3)' }}>
-            <button onClick={onRetake} style={{ background: '#fff', border: 'none', borderRadius: 10, padding: '8px 16px', fontWeight: 700, fontSize: 13, cursor: 'pointer', color: '#374151' }}>
+        <div style={{ position:'relative' }}>
+          <img src={preview} alt={label}
+            style={{ width:'100%',height:140,objectFit:'cover' as const,
+                      borderRadius:14,border:'2px solid #f0b429' }} />
+          <div style={{ position:'absolute',top:0,left:0,right:0,bottom:0,
+                          borderRadius:14,background:'rgba(0,0,0,0.4)',
+                          display:'flex',alignItems:'center',justifyContent:'center' }}>
+            <button onClick={onRetake}
+              style={{ background:'#fff',border:'none',borderRadius:10,
+                        padding:'8px 16px',fontWeight:700,fontSize:13,cursor:'pointer' }}>
               🔄 Retake
             </button>
           </div>
-          <div style={{ position: 'absolute', top: 8, right: 8, background: '#16a34a', borderRadius: '50%', width: 24, height: 24, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 12, fontWeight: 700 }}>✓</div>
+          <div style={{ position:'absolute',top:8,right:8,background:'#10b981',
+                          borderRadius:'50%',width:24,height:24,display:'flex',
+                          alignItems:'center',justifyContent:'center',color:'#fff',fontSize:12 }}>✓</div>
         </div>
       )}
-      {error && <p style={{ color: '#ef4444', fontSize: 12, marginTop: 6 }}>⚠️ {error}</p>}
+      {error && <p style={{ color:'#ef4444',fontSize:12,marginTop:6 }}>⚠️ {error}</p>}
     </div>
   );
 }
 
-const docUploadStyle: React.CSSProperties = {
-  width: '100%',
-  background: '#f0f9ff',
-  border: '2px dashed #00b9f1',
-  borderRadius: 14,
-  padding: '24px 0',
-  display: 'flex',
-  flexDirection: 'column',
-  alignItems: 'center',
-  gap: 8,
-  cursor: 'pointer',
-};
-
-// ─── Styles ───────────────────────────────────────────────────
-const s: Record<string, React.CSSProperties> = {
-  page: { maxWidth: 480, margin: '0 auto', minHeight: '100vh', background: '#f8fafc', fontFamily: "'DM Sans', sans-serif", paddingBottom: 40 },
-  header: { display: 'flex', alignItems: 'center', gap: 14, padding: '52px 16px 16px', background: 'linear-gradient(160deg,#001a2e,#002a45)' },
-  back: { background: 'rgba(255,255,255,0.1)', border: 'none', borderRadius: 12, width: 40, height: 40, fontSize: 18, cursor: 'pointer', color: '#fff', flexShrink: 0 },
-  title: { fontWeight: 800, fontSize: 20, color: '#fff' },
-  progressBar: { background: 'linear-gradient(160deg,#001a2e,#002a45)', padding: '8px 20px 20px', display: 'flex', alignItems: 'flex-start' },
-  stepDot: { width: 32, height: 32, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, fontSize: 13, flexShrink: 0, transition: 'all 0.3s' },
-  whyBanner: { background: '#dbeafe', padding: '14px 16px', borderBottom: '1px solid #bfdbfe' },
-  card: { background: '#fff', borderRadius: 18, padding: '20px 18px', boxShadow: '0 2px 12px rgba(0,0,0,0.06)', marginTop: 16 },
-  stepTitle: { fontWeight: 800, fontSize: 18, color: '#111', marginBottom: 20 },
-  input: { width: '100%', border: '2px solid #e5e7eb', borderRadius: 12, padding: '13px 14px', fontSize: 15, outline: 'none', color: '#111', fontFamily: 'inherit', boxSizing: 'border-box', background: '#fff' },
-  successHint: { color: '#16a34a', fontSize: 12, marginTop: 6, fontWeight: 600 },
-  secureNote: { background: '#f8fafc', borderRadius: 12, padding: '12px 14px', display: 'flex', gap: 10, alignItems: 'flex-start', marginTop: 8 },
-  btn: { flex: 1, padding: '16px 0', background: 'linear-gradient(135deg,#00b9f1,#0090c0)', border: 'none', borderRadius: 16, color: '#fff', fontWeight: 700, fontSize: 16, cursor: 'pointer', fontFamily: 'inherit' },
-  backBtn: { flex: 0.5, padding: '16px 0', background: '#fff', border: '2px solid #e5e7eb', borderRadius: 16, color: '#374151', fontWeight: 600, fontSize: 15, cursor: 'pointer' },
-  statusCard: { background: '#f8fafc', borderRadius: 16, padding: 16, width: '100%', marginBottom: 16 },
-  statusLabel: { color: '#9ca3af', fontSize: 11, letterSpacing: 1, fontWeight: 700, marginBottom: 10 },
-  statusRow: { display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid #f1f5f9' },
-  infoBanner: { background: '#dbeafe', border: '1px solid #bfdbfe', borderRadius: 14, padding: '14px 16px', marginBottom: 20, width: '100%', textAlign: 'left' },
+const S: Record<string,React.CSSProperties> = {
+  page:       { maxWidth:480,margin:'0 auto',minHeight:'100vh',background:'#0a0a0f',fontFamily:"'DM Sans',sans-serif" },
+  card:       { background:'#16161f',border:'1px solid rgba(255,255,255,0.07)',borderRadius:18,padding:20 },
+  cardTitle:  { fontFamily:"'Syne',sans-serif",fontWeight:700,fontSize:17,color:'#f0f0f8',marginBottom:20 },
+  input:      { width:'100%',background:'#1e1e2a',border:'1px solid rgba(255,255,255,0.07)',borderRadius:12,padding:'13px 14px',fontSize:15,outline:'none',color:'#f0f0f8',fontFamily:'inherit',boxSizing:'border-box' as const },
+  hint:       { color:'#10b981',fontSize:12,marginTop:6,fontWeight:600 },
+  goldBtn:    { width:'100%',padding:'15px 0',background:'linear-gradient(135deg,#f0b429,#ff8c00)',border:'none',borderRadius:14,color:'#000',fontWeight:700,fontSize:16,cursor:'pointer',fontFamily:'inherit' },
+  toast:      { position:'fixed',top:20,left:'50%',transform:'translateX(-50%)',background:'#1e1e2a',border:'1px solid rgba(255,255,255,0.14)',borderRadius:14,padding:'12px 20px',fontSize:14,fontWeight:600,color:'#f0f0f8',zIndex:999 },
+  centred:    { display:'flex',flexDirection:'column' as const,alignItems:'center',padding:'60px 24px',textAlign:'center' as const },
+  statusIcon: (c:string)=>({ width:72,height:72,borderRadius:'50%',background:`${c}15`,border:`2px solid ${c}`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:32,marginBottom:16 }),
+  statusTitle:{ fontFamily:"'Syne',sans-serif",fontWeight:800,fontSize:22,color:'#f0f0f8',marginBottom:10 },
+  statusDesc: { color:'#8888a8',fontSize:14,lineHeight:1.6,marginBottom:24,maxWidth:320 },
+  perksBox:   { background:'rgba(16,185,129,0.06)',border:'1px solid rgba(16,185,129,0.2)',borderRadius:16,padding:'16px',width:'100%',marginBottom:24,textAlign:'left' as const },
 };
