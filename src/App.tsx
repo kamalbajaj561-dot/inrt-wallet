@@ -4,7 +4,7 @@ import { AuthProvider, useAuth } from './context/AuthContext';
 
 // ── Eager ──────────────────────────────────────────────────────
 import LoginPage   from './pages/LoginPage';
-import Dashboard   from './pages/Dashboard';
+import Dashboard   from './pages/dashboard';
 import AddMoney    from './pages/AddMoney';
 import SendMoney   from './pages/SendMoney';
 
