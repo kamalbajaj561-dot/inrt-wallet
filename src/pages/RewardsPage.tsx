@@ -1,156 +1,135 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { redeemRewardPoints } from '../lib/db';
+import { doc, updateDoc, increment, serverTimestamp, collection, addDoc } from 'firebase/firestore';
+import { db } from '../lib/firebase';
+import BottomNav from '../components/BottomNav';
+import '../styles/theme.css';
+
+const TIERS = [
+  {name:'Silver', min:0,    max:999,  color:'#9ca3af',icon:'🥈'},
+  {name:'Gold',   min:1000, max:4999, color:'#f4b942',icon:'🥇'},
+  {name:'Plat',   min:5000, max:19999,color:'#00e5cc',icon:'💎'},
+  {name:'Diamond',min:20000,max:99999,color:'#a78bfa',icon:'👑'},
+];
+const OFFERS = [
+  {title:'5X on Recharge',desc:'This month only',icon:'📱',pts:'+50 pts'},
+  {title:'2% Bill Cashback',desc:'All categories',icon:'⚡',pts:'2% back'},
+  {title:'Refer & Earn',desc:'₹100 per friend',icon:'👥',pts:'₹100'},
+  {title:'KYC Bonus',desc:'One-time',icon:'🪪',pts:'+500 pts'},
+];
 
 export default function RewardsPage() {
   const { user, userProfile, refreshProfile } = useAuth();
   const navigate = useNavigate();
-  const [scratched, setScratched] = useState<Record<number, boolean>>({});
-  const [scratchValues, setScratchValues] = useState<Record<number, number>>({});
-  const [redeeming, setRedeeming] = useState(false);
-  const [toast, setToast] = useState('');
+  const [tab,setTab] = useState<'overview'|'offers'>('overview');
+  const [redeem,setRedeem] = useState(100);
+  const [loading,setLoading] = useState(false);
+  const [toast,setToast] = useState('');
 
-  const showToast = (msg: string) => { setToast(msg); setTimeout(() => setToast(''), 3000); };
+  const pts = userProfile?.rewardPoints || 0;
+  const tier = TIERS.find(t=>pts>=t.min&&pts<=t.max)||TIERS[0];
+  const next = TIERS[TIERS.indexOf(tier)+1];
+  const prog = next?((pts-tier.min)/(next.min-tier.min))*100:100;
+  const showToast = (m:string)=>{setToast(m);setTimeout(()=>setToast(''),2500);};
 
-  const scratch = (id: number) => {
-    if (scratched[id]) return;
-    const val = [0, 5, 10, 25, 50, 100][Math.floor(Math.random() * 6)];
-    setScratchValues(v => ({ ...v, [id]: val }));
-    setScratched(s => ({ ...s, [id]: true }));
-    if (val > 0) showToast(`🎉 You won ₹${val} cashback!`);
-  };
-
-  const redeemAll = async () => {
-    const pts = userProfile?.rewardPoints || 0;
-    if (pts < 10) return showToast('Need at least 10 points to redeem');
-    setRedeeming(true);
+  const doRedeem = async () => {
+    if (!user||pts<redeem||redeem<100) return showToast('Minimum 100 points');
+    setLoading(true);
     try {
-      await redeemRewardPoints(user!.uid, pts);
+      const cash = redeem*0.25;
+      await updateDoc(doc(db,'users',user.uid),{
+        rewardPoints:increment(-redeem),balance:increment(cash),cashback:increment(cash),updatedAt:serverTimestamp()
+      });
+      await addDoc(collection(db,'transactions'),{uid:user.uid,type:'credit',amount:cash,note:`Rewards redemption (${redeem} pts)`,cat:'rewards',status:'success',createdAt:serverTimestamp()});
       await refreshProfile();
-      showToast(`✅ ₹${pts} added to wallet!`);
-    } catch (e: any) {
-      showToast(e.message);
-    }
-    setRedeeming(false);
+      showToast(`✅ ₹${cash} added to wallet!`);
+    } catch(e:any){showToast(e.message||'Failed');}
+    setLoading(false);
   };
-
-  const cards = [1, 2, 3, 4, 5, 6];
 
   return (
-    <div style={s.page}>
-      {toast && <div style={s.toast}>{toast}</div>}
-
-      <div style={s.header}>
-        <button onClick={() => navigate('/dashboard')} style={s.back}>←</button>
-        <h1 style={s.title}>Rewards & Cashback</h1>
-      </div>
-
-      {/* Points Balance */}
-      <div style={s.pointsCard}>
-        <div style={{ position: 'absolute', top: -20, right: -20, width: 100, height: 100, borderRadius: '50%', background: 'rgba(255,215,0,0.1)' }} />
-        <p style={{ color: 'rgba(255,255,255,0.6)', fontSize: 12, letterSpacing: 1 }}>REWARD POINTS</p>
-        <p style={{ color: '#FFD700', fontSize: 48, fontWeight: 900 }}>{(userProfile?.rewardPoints || 0).toLocaleString()}</p>
-        <p style={{ color: 'rgba(255,255,255,0.5)', fontSize: 13 }}>1 point = ₹1 · Redeem anytime</p>
-        <div style={{ display: 'flex', gap: 12, marginTop: 16 }}>
-          <button style={s.redeemBtn} onClick={redeemAll} disabled={redeeming}>
-            {redeeming ? 'Redeeming...' : '💰 Redeem All Points'}
-          </button>
+    <div className="page">
+      {toast&&<div className="toast">{toast}</div>}
+      <div style={{background:'linear-gradient(160deg,#050914,#0a1428)',padding:'52px 20px 20px'}}>
+        <div style={{display:'flex',alignItems:'center',gap:14,marginBottom:16}}>
+          <button onClick={()=>navigate('/dashboard')} className="back-btn">←</button>
+          <h1 className="page-title">Rewards</h1>
+        </div>
+        <div style={{background:'rgba(255,255,255,0.03)',border:'1px solid rgba(244,185,66,0.2)',borderRadius:'var(--r3)',padding:'20px'}}>
+          <p style={{color:'rgba(244,185,66,0.6)',fontSize:10,fontWeight:700,letterSpacing:1}}>YOUR POINTS</p>
+          <p style={{fontFamily:'var(--f-display)',fontWeight:700,fontSize:44,color:'var(--gold)',lineHeight:1,marginTop:4}}>{pts.toLocaleString()}</p>
+          <p style={{color:'var(--t3)',fontSize:13,marginTop:4}}>≈ ₹{(pts*0.25).toFixed(0)} cashback value</p>
+          <div style={{display:'flex',alignItems:'center',gap:10,marginTop:14,paddingTop:14,borderTop:'1px solid rgba(255,255,255,0.06)'}}>
+            <span style={{fontSize:20}}>{tier.icon}</span>
+            <div style={{flex:1}}>
+              <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
+                <span style={{color:tier.color,fontSize:12,fontWeight:700}}>{tier.name}</span>
+                {next&&<span style={{color:'var(--t3)',fontSize:11}}>{(next.min-pts).toLocaleString()} to {next.name}</span>}
+              </div>
+              <div style={{background:'rgba(255,255,255,0.06)',borderRadius:8,height:6,overflow:'hidden'}}>
+                <div style={{width:`${Math.min(prog,100)}%`,height:'100%',background:tier.color,borderRadius:8}}/>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
-
-      {/* Stats */}
-      <div style={{ display: 'flex', gap: 10, marginBottom: 20 }}>
-        {[
-          { label: 'Total Cashback', value: `₹${(userProfile?.cashback || 0).toLocaleString('en-IN')}`, icon: '💵', color: '#dcfce7' },
-          { label: 'Points Earned', value: (userProfile?.rewardPoints || 0).toString(), icon: '⭐', color: '#fef9c3' },
-        ].map(item => (
-          <div key={item.label} style={{ ...s.statCard, background: item.color }}>
-            <span style={{ fontSize: 28 }}>{item.icon}</span>
-            <p style={{ fontWeight: 800, fontSize: 20, color: '#111' }}>{item.value}</p>
-            <p style={{ color: '#555', fontSize: 12 }}>{item.label}</p>
-          </div>
-        ))}
-      </div>
-
-      {/* How to Earn */}
-      <div style={s.earnCard}>
-        <p style={{ fontWeight: 700, fontSize: 15, color: '#111', marginBottom: 12 }}>⭐ How to Earn Points</p>
-        {[
-          ['Send Money', '10 pts per ₹100 sent'],
-          ['Pay Bills', '15 pts per bill paid'],
-          ['Recharge', '5 pts per recharge'],
-          ['Book Tickets', '20 pts per booking'],
-          ['Complete KYC', '500 bonus pts'],
-        ].map(([a, b]) => (
-          <div key={a} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid #f1f5f9' }}>
-            <span style={{ color: '#374151', fontSize: 14 }}>{a}</span>
-            <span style={{ color: '#16a34a', fontWeight: 600, fontSize: 14 }}>{b}</span>
-          </div>
-        ))}
-      </div>
-
-      {/* Scratch Cards */}
-      <p style={s.sectionTitle}>🎴 Scratch Cards</p>
-      <div style={s.scratchGrid}>
-        {cards.map(id => (
-          <button key={id} onClick={() => scratch(id)} style={{ ...s.scratchCard, background: scratched[id] ? (scratchValues[id] > 0 ? '#dcfce7' : '#f1f5f9') : 'linear-gradient(135deg,#00b9f1,#0090c0)' }}>
-            {!scratched[id] ? (
-              <>
-                <span style={{ fontSize: 28 }}>🎴</span>
-                <span style={{ color: '#fff', fontSize: 12, fontWeight: 700 }}>Scratch!</span>
-              </>
-            ) : scratchValues[id] > 0 ? (
-              <>
-                <span style={{ fontSize: 28 }}>🎉</span>
-                <span style={{ color: '#15803d', fontWeight: 800, fontSize: 16 }}>₹{scratchValues[id]}</span>
-              </>
-            ) : (
-              <>
-                <span style={{ fontSize: 28 }}>😢</span>
-                <span style={{ color: '#9ca3af', fontSize: 12 }}>Better luck!</span>
-              </>
-            )}
+      <div style={{display:'flex',gap:8,padding:'12px 16px 0'}}>
+        {(['overview','offers'] as const).map(t=>(
+          <button key={t} onClick={()=>setTab(t)}
+            style={{flex:1,padding:'9px 0',borderRadius:10,fontSize:13,fontWeight:700,cursor:'pointer',
+                     background:tab===t?'var(--gold)':'var(--bg-card)',border:`1px solid ${tab===t?'var(--gold)':'var(--b1)'}`,
+                     color:tab===t?'#000':'var(--t2)'}}>
+            {t.charAt(0).toUpperCase()+t.slice(1)}
           </button>
         ))}
       </div>
-
-      {/* Offers */}
-      <p style={s.sectionTitle}>🔥 Hot Deals</p>
-      {[
-        { icon: '⚡', title: '₹50 Cashback', desc: 'On electricity bill ≥ ₹500', code: 'ELEC50', color: '#fef9c3' },
-        { icon: '📱', title: '5% Cashback', desc: 'On mobile recharge ≥ ₹199', code: 'RCHRG5', color: '#dbeafe' },
-        { icon: '🎬', title: '₹100 Off', desc: 'On first movie booking', code: 'MOVIE1', color: '#fce7f3' },
-        { icon: '🚂', title: '₹75 Off', desc: 'On train ticket booking', code: 'TRAIN75', color: '#dcfce7' },
-      ].map(offer => (
-        <div key={offer.code} style={{ ...s.offerCard, background: offer.color }}>
-          <span style={{ fontSize: 32 }}>{offer.icon}</span>
-          <div style={{ flex: 1 }}>
-            <p style={{ fontWeight: 700, fontSize: 16, color: '#111' }}>{offer.title}</p>
-            <p style={{ color: '#555', fontSize: 13 }}>{offer.desc}</p>
+      <div style={{padding:'16px 16px 0'}}>
+        {tab==='overview'&&(
+          <>
+            <div className="card" style={{marginBottom:14}}>
+              <p className="s-title">Redeem Points</p>
+              <p style={{color:'var(--t2)',fontSize:13,marginBottom:14}}>100 pts = ₹25 cashback</p>
+              <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:14}}>
+                {[100,200,500,1000].filter(v=>v<=Math.max(pts,100)).map(v=>(
+                  <button key={v} onClick={()=>setRedeem(v)}
+                    style={{padding:'8px 14px',borderRadius:'var(--r1)',fontSize:12,fontWeight:700,cursor:'pointer',
+                             background:redeem===v?'var(--gold-dim)':'var(--bg-elevated)',border:`1px solid ${redeem===v?'var(--gold)':'var(--b1)'}`,color:redeem===v?'var(--gold)':'var(--t2)'}}>
+                    {v} pts
+                  </button>
+                ))}
+              </div>
+              <button className="btn-gold" onClick={doRedeem} disabled={loading||pts<redeem||redeem<100} style={{opacity:loading||pts<redeem||redeem<100?0.5:1}}>
+                {loading?'⏳ Redeeming…':`Redeem ${redeem} pts → ₹${(redeem*0.25).toFixed(0)}`}
+              </button>
+            </div>
+            <div className="card">
+              <p className="s-title">How to Earn</p>
+              {[['Send Money','10 pts/₹100'],['Add Money','10 pts/₹100'],['Pay Bills','10 pts/₹100'],['KYC Complete','500 pts'],['Refer Friend','250 pts']].map(([a,p])=>(
+                <div key={a} style={{display:'flex',justifyContent:'space-between',padding:'10px 0',borderBottom:'1px solid var(--b1)'}}>
+                  <span style={{color:'var(--t2)',fontSize:13}}>{a}</span>
+                  <span style={{color:'var(--gold)',fontSize:12,fontWeight:700}}>{p}</span>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+        {tab==='offers'&&(
+          <div style={{display:'flex',flexDirection:'column',gap:12}}>
+            {OFFERS.map(o=>(
+              <div key={o.title} className="card" style={{display:'flex',gap:14,alignItems:'center'}}>
+                <div style={{width:50,height:50,borderRadius:'var(--r2)',background:'var(--bg-elevated)',border:'1px solid var(--b1)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:24,flexShrink:0}}>{o.icon}</div>
+                <div style={{flex:1}}>
+                  <p style={{color:'var(--t1)',fontWeight:700,fontSize:14}}>{o.title}</p>
+                  <p style={{color:'var(--t2)',fontSize:12,marginTop:3}}>{o.desc}</p>
+                </div>
+                <span className="badge-gold">{o.pts}</span>
+              </div>
+            ))}
           </div>
-          <div style={{ textAlign: 'right' }}>
-            <p style={{ color: '#374151', fontSize: 11, marginBottom: 4 }}>Code:</p>
-            <p style={{ fontWeight: 800, fontSize: 13, color: '#111' }}>{offer.code}</p>
-          </div>
-        </div>
-      ))}
+        )}
+      </div>
+      <BottomNav />
     </div>
   );
 }
-
-const s: Record<string, React.CSSProperties> = {
-  page: { maxWidth: 480, margin: '0 auto', minHeight: '100vh', background: '#f8fafc', padding: '20px 16px 40px', fontFamily: "'DM Sans', sans-serif" },
-  toast: { position: 'fixed', top: 20, left: '50%', transform: 'translateX(-50%)', background: '#111', color: '#fff', borderRadius: 14, padding: '12px 20px', fontSize: 14, fontWeight: 600, zIndex: 999, whiteSpace: 'nowrap' },
-  header: { display: 'flex', alignItems: 'center', gap: 14, marginBottom: 20 },
-  back: { background: '#fff', border: '2px solid #e5e7eb', borderRadius: 12, width: 40, height: 40, fontSize: 18, cursor: 'pointer' },
-  title: { fontWeight: 800, fontSize: 22, color: '#111' },
-  pointsCard: { background: 'linear-gradient(135deg,#1a1a2e,#001a3e)', borderRadius: 22, padding: 24, marginBottom: 16, position: 'relative', overflow: 'hidden' },
-  redeemBtn: { background: '#FFD700', border: 'none', borderRadius: 12, padding: '10px 18px', fontWeight: 700, fontSize: 14, cursor: 'pointer', color: '#000' },
-  statCard: { flex: 1, borderRadius: 16, padding: 16, display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'center' },
-  earnCard: { background: '#fff', borderRadius: 18, padding: 18, marginBottom: 20, boxShadow: '0 4px 16px rgba(0,0,0,0.06)' },
-  sectionTitle: { fontWeight: 800, fontSize: 16, color: '#111', marginBottom: 12 },
-  scratchGrid: { display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10, marginBottom: 24 },
-  scratchCard: { borderRadius: 16, padding: '20px 0', border: 'none', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, cursor: 'pointer', minHeight: 90 },
-  offerCard: { borderRadius: 16, padding: 16, marginBottom: 10, display: 'flex', alignItems: 'center', gap: 14 },
-};

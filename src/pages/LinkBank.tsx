@@ -1,146 +1,59 @@
-import React, { useState } from 'react';
-import { useAuth } from '@/context/AuthContext';
-import { db } from '@/lib/firebase';
-import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
-import { Button, Input, Card } from '@/components/ui';
-import { Building, CheckCircle } from 'lucide-react';
-import { toast } from 'react-hot-toast';
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import '../styles/theme.css';
+
+const BANKS = [
+  'HDFC Bank','SBI','ICICI Bank','Axis Bank','Kotak Mahindra',
+  'Punjab National Bank','Bank of Baroda','Canara Bank','IDFC First','Yes Bank',
+];
 
 export default function LinkBank() {
-  const { user, userProfile } = useAuth();
   const navigate = useNavigate();
-  const [loading, setLoading] = useState(false);
-  const [step, setStep] = useState<'FORM' | 'SUCCESS'>('FORM');
-  
-  const [formData, setFormData] = useState({
-    bankName: '',
-    accountNumber: '',
-    ifsc: '',
-    holderName: ''
-  });
+  const [linked,  setLinked]  = useState<string[]>([]);
+  const [loading, setLoading] = useState('');
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setFormData({ ...formData, [e.target.name]: e.target.value });
+  const toggle = async (bank: string) => {
+    setLoading(bank);
+    await new Promise(r => setTimeout(r, 1200));
+    setLinked(prev => prev.includes(bank) ? prev.filter(b=>b!==bank) : [...prev,bank]);
+    setLoading('');
   };
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!user) return;
-
-    if (!formData.bankName || !formData.accountNumber || !formData.ifsc || !formData.holderName) {
-      toast.error("Please fill all fields");
-      return;
-    }
-
-    setLoading(true);
-    try {
-      // Store in root collection 'bankAccounts' as per previous implementation pattern
-      // but with userId field for querying
-      await addDoc(collection(db, 'bankAccounts'), {
-        userId: user.uid,
-        bankName: formData.bankName,
-        accountNumberMasked: 'XXXX' + formData.accountNumber.slice(-4),
-        ifsc: formData.ifsc.toUpperCase(),
-        holderName: formData.holderName,
-        upiId: `${userProfile?.phoneNumber}@${formData.bankName.toLowerCase().replace(/\s/g, '')}`,
-        verified: true, // Auto-verify for demo
-        createdAt: Date.now()
-      });
-
-      setStep('SUCCESS');
-      toast.success("Bank account linked successfully!");
-    } catch (error) {
-      console.error(error);
-      toast.error("Failed to link bank account");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  if (step === 'SUCCESS') {
-    return (
-      <div className="flex flex-col items-center justify-center py-12 text-center">
-        <div className="w-20 h-20 bg-green-100 rounded-full flex items-center justify-center text-green-600 mb-6">
-          <CheckCircle size={40} />
-        </div>
-        <h2 className="text-2xl font-bold mb-2">Bank Linked!</h2>
-        <p className="text-slate-500 mb-6">Your bank account has been successfully verified and linked.</p>
-        <Button onClick={() => navigate('/dashboard')} className="w-full max-w-xs">
-          Go to Dashboard
-        </Button>
-      </div>
-    );
-  }
 
   return (
-    <div className="space-y-6">
-      <h1 className="text-2xl font-bold">Link Bank Account</h1>
-
-      <Card className="p-6">
-        <div className="flex items-center space-x-3 mb-6">
-          <div className="w-12 h-12 bg-orange-100 rounded-full flex items-center justify-center text-orange-600">
-            <Building size={24} />
-          </div>
-          <div>
-            <h3 className="font-bold text-lg">Add New Bank</h3>
-            <p className="text-sm text-slate-500">Securely link your bank account</p>
-          </div>
+    <div style={{ maxWidth:480,margin:'0 auto',minHeight:'100vh',background:'var(--bg)',fontFamily:'var(--f-body)' }}>
+      <div style={{ background:'linear-gradient(160deg,#050914,#0a1428)',padding:'52px 20px 20px' }}>
+        <div style={{ display:'flex',alignItems:'center',gap:14 }}>
+          <button onClick={()=>navigate('/dashboard')} className="back-btn">←</button>
+          <h1 className="page-title">Link Bank Account</h1>
         </div>
-
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">Bank Name</label>
-            <Input 
-              name="bankName"
-              placeholder="e.g. HDFC Bank"
-              value={formData.bankName}
-              onChange={handleChange}
-            />
+      </div>
+      <div style={{ padding:'20px 16px 40px' }}>
+        <div style={{ background:'rgba(0,229,204,0.06)',border:'1px solid rgba(0,229,204,0.15)',
+                       borderRadius:'var(--r2)',padding:'12px 16px',marginBottom:20 }}>
+          <p style={{ color:'var(--teal)',fontSize:13,fontWeight:600 }}>
+            🔒 Bank-grade security · UPI 2.0 · Instant verification
+          </p>
+        </div>
+        {BANKS.map(bank => (
+          <div key={bank} style={{ background:'var(--bg-card)',border:`1px solid ${linked.includes(bank)?'var(--teal)':'var(--b1)'}`,
+                                    borderRadius:'var(--r2)',padding:'16px',marginBottom:10,
+                                    display:'flex',alignItems:'center',gap:14 }}>
+            <div style={{ width:42,height:42,borderRadius:'var(--r1)',background:'var(--bg-elevated)',
+                           display:'flex',alignItems:'center',justifyContent:'center',
+                           fontSize:14,fontWeight:700,color:'var(--teal)',flexShrink:0 }}>
+              {bank.slice(0,2).toUpperCase()}
+            </div>
+            <p style={{ flex:1,color:'var(--t1)',fontWeight:600,fontSize:14 }}>{bank}</p>
+            <button onClick={() => toggle(bank)} disabled={loading===bank}
+              style={{ padding:'8px 16px',borderRadius:'var(--r1)',fontSize:12,fontWeight:700,
+                         cursor:'pointer',border:'none',
+                         background:linked.includes(bank)?'rgba(255,77,106,0.1)':'var(--teal-dim)',
+                         color:linked.includes(bank)?'var(--red)':'var(--teal)' }}>
+              {loading===bank?'…':linked.includes(bank)?'Unlink':'Link'}
+            </button>
           </div>
-
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">Account Number</label>
-            <Input 
-              name="accountNumber"
-              type="password"
-              placeholder="Enter account number"
-              value={formData.accountNumber}
-              onChange={handleChange}
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">IFSC Code</label>
-            <Input 
-              name="ifsc"
-              placeholder="e.g. HDFC0001234"
-              value={formData.ifsc}
-              onChange={handleChange}
-              className="uppercase"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">Account Holder Name</label>
-            <Input 
-              name="holderName"
-              placeholder="Name as per bank records"
-              value={formData.holderName}
-              onChange={handleChange}
-            />
-          </div>
-
-          <Button type="submit" className="w-full mt-4" isLoading={loading}>
-            Verify & Link
-          </Button>
-        </form>
-      </Card>
-      
-      <p className="text-xs text-center text-slate-400">
-        Your bank details are encrypted and stored securely.
-        <br/>We verify your account by depositing ₹1.
-      </p>
+        ))}
+      </div>
     </div>
   );
 }

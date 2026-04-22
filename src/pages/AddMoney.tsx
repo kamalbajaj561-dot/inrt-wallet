@@ -1,328 +1,191 @@
-import React, { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
-import { getAuth } from "firebase/auth";
-import { collection, doc, runTransaction, serverTimestamp } from "firebase/firestore";
-import { toast } from "react-hot-toast";
-import { db } from "@/lib/firebase";
-import { useAuth } from "@/context/AuthContext";
-import { Button, Card } from "@/components/ui";
-import { formatCurrency } from "@/lib/utils";
+import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';
+import '../styles/theme.css';
 
-declare global {
-  interface Window {
-    Razorpay: any;
-  }
-}
+const API = import.meta.env.VITE_API_URL || '';
+// PLACEHOLDER: Replace with rzp_live_XXXXX for production
+const RZP_KEY = import.meta.env.VITE_RAZORPAY_KEY_ID || 'YOUR_RAZORPAY_KEY_ID';
 
-type CreateOrderResponse =
-  | { success: true; orderId: string; amount: number; currency: string; keyId: string; simulated?: boolean }
-  | { success: false; error: string; details?: string };
-
-type VerifyPaymentResponse =
-  | { success: true; amount: number | null; userId: string | null }
-  | { success: false; error: string; details?: string };
+declare global { interface Window { Razorpay: any; } }
 
 export default function AddMoney() {
+  const { user, userProfile, refreshProfile } = useAuth();
   const navigate = useNavigate();
-  const { userProfile } = useAuth();
-
-  const auth = useMemo(() => getAuth(), []);
-  const userId = auth.currentUser?.uid;
-
-  const [amount, setAmount] = useState<string>("");
+  const [amount,  setAmount]  = useState('');
   const [loading, setLoading] = useState(false);
+  const [success, setSuccess] = useState<any>(null);
+  const [err,     setErr]     = useState('');
 
-  const amountNum = useMemo(() => {
-    const n = Number(amount);
-    return Number.isFinite(n) ? n : 0;
-  }, [amount]);
+  const bal   = userProfile?.balance || 0;
+  const QUICK = [100, 200, 500, 1000, 2000, 5000];
 
-  // Razorpay script loader (idempotent)
-  useEffect(() => {
-    if (!document.getElementById("razorpay-script")) {
-      const script = document.createElement("script");
-      script.id = "razorpay-script";
-      script.src = "https://checkout.razorpay.com/v1/checkout.js";
-      script.async = true;
-      document.body.appendChild(script);
-    }
-  }, []);
-
-  const quickAmounts = [100, 200, 500, 1000, 2000, 5000];
-
-  const creditWallet = async (uid: string, amt: number, razorpayOrderId: string, razorpayPaymentId: string) => {
-    const rewardPoints = Math.floor(amt / 10); // 1 point per ₹10
-    await runTransaction(db, async (tx) => {
-      const userRef = doc(db, "users", uid);
-      const snap = await tx.get(userRef);
-      if (!snap.exists()) throw new Error("User profile not found");
-
-      const data: any = snap.data();
-      const nextBalance = Number(data.balance ?? 0) + amt;
-      const nextPoints = Number(data.rewardPoints ?? 0) + rewardPoints;
-
-      tx.update(userRef, {
-        balance: nextBalance,
-        rewardPoints: nextPoints,
-        updatedAt: serverTimestamp(),
-      });
-
-      const txRef = doc(collection(db, "transactions"));
-      tx.set(txRef, {
-        uid,
-        type: "credit",
-        amount: amt,
-        note: "Added via Razorpay",
-        ref: razorpayOrderId,
-        status: "success",
-        createdAt: serverTimestamp(),
-        razorpayPaymentId: razorpayPaymentId,
-      });
+  const loadRazorpay = (): Promise<boolean> =>
+    new Promise(resolve => {
+      if (window.Razorpay) return resolve(true);
+      const s = document.createElement('script');
+      s.src = 'https://checkout.razorpay.com/v1/checkout.js';
+      s.onload  = () => resolve(true);
+      s.onerror = () => resolve(false);
+      document.body.appendChild(s);
     });
-  };
 
-  const handleAddMoney = async () => {
-    if (!userId) {
-      toast.error("Please log in first");
-      navigate("/login");
-      return;
-    }
-
-    if (!amountNum || amountNum < 10) {
-      toast.error("Enter a valid amount (min ₹10)");
-      return;
-    }
-
-    if (!window.Razorpay) {
-      toast.error("Razorpay SDK not loaded. Refresh and try again.");
-      return;
-    }
-
-    setLoading(true);
-
+  const handlePay = async () => {
+    const amt = parseFloat(amount);
+    if (!amt || amt < 10) return setErr('Minimum ₹10');
+    setLoading(true); setErr('');
     try {
-      const orderRes = await fetch("http://localhost:4000/create-order", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ amount: amountNum, userId }),
+      const loaded = await loadRazorpay();
+      if (!loaded) throw new Error('Razorpay SDK failed to load. Check your internet connection.');
+
+      // Create order
+      const r   = await fetch(`${API}/create-order`, {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ amount: amt, userId: user?.uid }),
       });
+      const { orderId, keyId } = await r.json();
+      if (!orderId) throw new Error('Order creation failed. Check your backend.');
 
-      const orderData = (await orderRes.json()) as CreateOrderResponse;
-      if (!orderRes.ok || orderData.success === false) {
-        throw new Error(orderData.success === false ? orderData.error : "Failed to create order");
-      }
-
-      const orderId = orderData.orderId;
-
-      // If backend simulates the order (e.g. Razorpay auth failure), skip the popup
-      // and complete the flow end-to-end via verify-payment + wallet credit.
-      if ("simulated" in orderData && orderData.simulated) {
-        const simulatedPaymentId = `simulated_payment_${Date.now()}`;
-        const verifyRes = await fetch("http://localhost:4000/verify-payment", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            razorpay_order_id: orderId,
-            razorpay_payment_id: simulatedPaymentId,
-            razorpay_signature: "simulated",
-            userId,
-            amount: amountNum,
-          }),
-        });
-
-        const verifyData = (await verifyRes.json()) as VerifyPaymentResponse;
-        if (!verifyRes.ok || verifyData.success === false) {
-          throw new Error(verifyData.success === false ? verifyData.error : "Verification failed");
-        }
-
-        await creditWallet(userId, amountNum, orderId, simulatedPaymentId);
-        toast.success(`✅ ₹${amountNum} added successfully (simulated)`);
-        setTimeout(() => navigate("/dashboard"), 2000);
-        setLoading(false);
-        return;
-      }
-
-      const options = {
-        key: orderData.keyId,
-        amount: orderData.amount,
-        currency: orderData.currency,
-        name: "INRT Wallet",
-        description: "Add Money to Wallet",
-        order_id: orderId,
-        method: {
-          upi: true,
-          card: true,
-          netbanking: true,
-          wallet: true,
-          emi: true,
-          paylater: true,
-        },
-        theme: { color: "#2563eb" },
-        handler: async (response: any) => {
-          try {
-            const verifyRes = await fetch("http://localhost:4000/verify-payment", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                razorpay_order_id: response.razorpay_order_id,
-                razorpay_payment_id: response.razorpay_payment_id,
-                razorpay_signature: response.razorpay_signature,
-                userId,
-                amount: amountNum,
-              }),
-            });
-
-            const verifyData = (await verifyRes.json()) as VerifyPaymentResponse;
-            if (!verifyRes.ok || verifyData.success === false) {
-              throw new Error(verifyData.success === false ? verifyData.error : "Payment verification failed");
-            }
-
-            await creditWallet(userId, amountNum, orderId, response.razorpay_payment_id);
-            toast.success(`✅ ₹${amountNum} added successfully`);
-
-            setTimeout(() => navigate("/dashboard"), 2000);
-          } catch (e: any) {
-            console.error("verify-payment/credit error:", e);
-            toast.error(e?.message || "Payment failed");
-          } finally {
-            setLoading(false);
-          }
-        },
-        prefill: {
-          contact: userProfile?.phone || "",
-          name: userProfile?.name || "",
-        },
-        modal: {
-          ondismiss: () => {
-            setLoading(false);
-            toast("Payment cancelled");
+      // Open payment modal
+      await new Promise<void>((res, rej) => {
+        const rzp = new window.Razorpay({
+          key:         keyId || RZP_KEY,
+          amount:      amt * 100,
+          currency:    'INR',
+          name:        'INRT Wallet',
+          description: 'Add Money',
+          order_id:    orderId,
+          prefill:     { name: userProfile?.name, contact: userProfile?.phone },
+          theme:       { color: '#00e5cc' },
+          handler: async (response: any) => {
+            try {
+              const v = await fetch(`${API}/verify-payment`, {
+                method:'POST', headers:{'Content-Type':'application/json'},
+                body: JSON.stringify({ ...response, userId: user?.uid, amount: amt }),
+              });
+              const vd = await v.json();
+              if (!vd.success) throw new Error(vd.error || 'Verification failed');
+              await refreshProfile();
+              setSuccess({ amount: amt, ref: response.razorpay_payment_id });
+              setAmount('');
+              res();
+            } catch (ve) { rej(ve); }
           },
-        },
-      };
-
-      const rzp = new window.Razorpay(options);
-      rzp.on("payment.failed", (resp: any) => {
-        console.error("Razorpay payment.failed:", resp?.error);
-        toast.error(resp?.error?.description || "Payment failed");
-        setLoading(false);
+          modal: { ondismiss: () => { setLoading(false); rej(new Error('cancelled')); } },
+        });
+        rzp.open();
       });
-      rzp.open();
     } catch (e: any) {
-      console.error("AddMoney error:", e);
-      toast.error(e?.message || "Failed to initiate payment");
-      setLoading(false);
+      if (e.message !== 'cancelled') setErr(e.message || 'Payment failed');
     }
+    setLoading(false);
   };
+
+  if (success) return (
+    <div style={{ maxWidth:480,margin:'0 auto',minHeight:'100vh',background:'var(--bg)',
+                   fontFamily:'var(--f-body)',display:'flex',flexDirection:'column',
+                   alignItems:'center',padding:'80px 24px',textAlign:'center' }}>
+      <div style={{ width:80,height:80,borderRadius:'50%',background:'rgba(0,214,143,0.1)',
+                     border:'2px solid var(--green)',display:'flex',alignItems:'center',
+                     justifyContent:'center',fontSize:36,marginBottom:20 }}>✅</div>
+      <h2 style={{ fontFamily:'var(--f-display)',fontWeight:700,fontSize:24,
+                    color:'var(--t1)',marginBottom:8 }}>Money Added!</h2>
+      <p style={{ color:'var(--t2)',fontSize:16,marginBottom:24 }}>
+        ₹{success.amount.toLocaleString('en-IN')} added to your wallet
+      </p>
+      <div style={{ background:'var(--bg-card)',border:'1px solid var(--b1)',borderRadius:'var(--r3)',
+                     padding:20,width:'100%',marginBottom:24 }}>
+        {[['Amount',`₹${success.amount}`],['Reference',success.ref],['Status','✅ Success']].map(([k,v])=>(
+          <div key={k} style={{ display:'flex',justifyContent:'space-between',padding:'9px 0',
+                                  borderBottom:'1px solid var(--b1)' }}>
+            <span style={{ color:'var(--t2)',fontSize:13 }}>{k}</span>
+            <span style={{ color:'var(--t1)',fontWeight:700,fontSize:13 }}>{v}</span>
+          </div>
+        ))}
+      </div>
+      <button className="btn-primary" onClick={() => navigate('/dashboard')}>Back to Home</button>
+      <button className="btn-outline" style={{ marginTop:10 }}
+        onClick={() => setSuccess(null)}>Add More Money</button>
+    </div>
+  );
 
   return (
-    <div className="max-w-md mx-auto pb-10">
+    <div style={{ maxWidth:480,margin:'0 auto',minHeight:'100vh',
+                   background:'var(--bg)',fontFamily:'var(--f-body)' }}>
       {/* Header */}
-      <div className="bg-slate-950 text-white p-4 pt-6 rounded-b-3xl shadow-md mb-6">
-        <div className="flex items-center justify-between">
-          <button
-            type="button"
-            onClick={() => navigate("/dashboard")}
-            className="p-2 rounded-full hover:bg-white/10 transition-colors"
-            aria-label="Back"
-          >
-            ←
-          </button>
-          <h1 className="text-xl font-extrabold tracking-tight">Add Money</h1>
-          <div className="w-10" />
+      <div style={{ background:'linear-gradient(160deg,#050914,#0a1428)',
+                     padding:'52px 20px 24px' }}>
+        <div style={{ display:'flex',alignItems:'center',gap:14,marginBottom:20 }}>
+          <button onClick={() => navigate('/dashboard')} className="back-btn">←</button>
+          <h1 className="page-title">Add Money</h1>
+        </div>
+        {/* Balance */}
+        <div style={{ background:'rgba(255,255,255,0.03)',border:'1px solid var(--b1)',
+                       borderRadius:'var(--r3)',padding:'16px 20px' }}>
+          <p style={{ color:'var(--t3)',fontSize:11,letterSpacing:1 }}>WALLET BALANCE</p>
+          <p style={{ fontFamily:'var(--f-display)',fontWeight:700,fontSize:30,
+                       color:'var(--t1)',marginTop:6 }}>
+            ₹{bal.toLocaleString('en-IN')}
+          </p>
         </div>
       </div>
 
-      {/* Balance card */}
-      <Card className="p-5 mb-5 bg-gradient-to-br from-slate-950 to-slate-800 text-white border-0 shadow-lg">
-        <p className="text-white/70 text-xs font-bold tracking-widest">CURRENT BALANCE</p>
-        <p className="text-4xl font-extrabold mt-2">
-          ₹{(userProfile?.balance ?? 0).toLocaleString("en-IN")}
-        </p>
-      </Card>
-
-      <div className="space-y-4 px-2">
+      <div style={{ padding:'20px 16px 40px' }}>
         {/* Amount input */}
-        <div className="flex items-center justify-center gap-2">
-          <span className="text-4xl font-extrabold text-sky-500">₹</span>
-          <input
-            className="w-full bg-white rounded-2xl border border-slate-200 text-3xl font-extrabold text-center py-3"
-            type="number"
-            inputMode="decimal"
-            placeholder="0"
-            value={amount}
-            onChange={(e) => setAmount(e.target.value)}
-            disabled={loading}
-          />
-        </div>
-
-        {/* Quick amounts (2x3 grid) */}
-        <div className="grid grid-cols-3 gap-3">
-          {quickAmounts.map((v) => (
-            <button
-              key={v}
-              type="button"
-              onClick={() => setAmount(String(v))}
-              disabled={loading}
-              className={`py-2 rounded-xl text-sm font-bold transition-colors ${
-                amountNum === v ? "bg-blue-100 text-blue-700 border border-blue-200" : "bg-slate-100 text-slate-700 hover:bg-slate-200 border border-slate-100"
-              }`}
-            >
-              ₹{v}
-            </button>
-          ))}
-        </div>
-
-        {/* Payment methods */}
-        <div className="flex flex-wrap gap-2">
-          {[
-            { label: "UPI", color: "bg-emerald-50 text-emerald-700 border-emerald-200" },
-            { label: "Debit Card", color: "bg-emerald-50 text-emerald-700 border-emerald-200" },
-            { label: "Credit Card", color: "bg-emerald-50 text-emerald-700 border-emerald-200" },
-            { label: "Net Banking", color: "bg-emerald-50 text-emerald-700 border-emerald-200" },
-          ].map((m) => (
-            <span
-              key={m.label}
-              className={`px-3 py-1 rounded-full text-xs font-bold border ${m.color}`}
-            >
-              ✓ {m.label}
-            </span>
-          ))}
-        </div>
-
-        {/* Add button */}
-        <Button
-          className="w-full h-14 text-lg bg-gradient-to-r from-blue-600 to-sky-500 hover:from-blue-700 hover:to-sky-600"
-          size="lg"
-          isLoading={loading}
-          onClick={handleAddMoney}
-          disabled={!amountNum || amountNum <= 0 || loading}
-        >
-          Add ₹{amountNum ? amountNum : 0} to Wallet →
-        </Button>
-
-        <p className="text-xs text-slate-500 text-center pt-1">
-          100% Secure · Powered by Razorpay · RBI Compliant
-        </p>
-
-        {/* How it works */}
-        <div className="pt-2">
-          <p className="font-extrabold text-slate-900 mb-3">How it works</p>
-          <div className="space-y-3">
-            {[
-              "Enter amount and tap Add",
-              "Select UPI / Card / Net Banking in Razorpay",
-              "Complete payment in Razorpay popup",
-              "Money instantly added to your INRT wallet",
-            ].map((t, idx) => (
-              <div key={t} className="flex gap-3 items-start">
-                <div className="w-8 h-8 rounded-full bg-blue-50 text-blue-700 flex items-center justify-center font-extrabold text-sm">
-                  {idx + 1}
-                </div>
-                <p className="text-sm text-slate-700 pt-1">{t}</p>
-              </div>
+        <div className="card" style={{ marginBottom:16 }}>
+          <p className="s-label">ENTER AMOUNT</p>
+          <div className="amount-box" style={{ marginBottom:14 }}>
+            <span style={{ color:'var(--teal)',fontSize:24,fontWeight:700 }}>₹</span>
+            <input className="amount-input" type="number" min={10}
+              placeholder="0" value={amount}
+              onChange={e => { setAmount(e.target.value); setErr(''); }} />
+          </div>
+          {/* Quick amounts */}
+          <div style={{ display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:8 }}>
+            {QUICK.map(a => (
+              <button key={a} onClick={() => setAmount(String(a))}
+                style={{ padding:'10px 0',borderRadius:'var(--r1)',fontSize:13,fontWeight:700,
+                           cursor:'pointer',
+                           background:amount===String(a)?'var(--teal-dim)':'var(--bg-elevated)',
+                           border:`1px solid ${amount===String(a)?'var(--teal)':'var(--b1)'}`,
+                           color:amount===String(a)?'var(--teal)':'var(--t2)' }}>
+                ₹{a}
+              </button>
             ))}
           </div>
         </div>
+
+        {/* Methods */}
+        <div className="card" style={{ marginBottom:16 }}>
+          <p className="s-label">ACCEPTED PAYMENT METHODS</p>
+          <div style={{ display:'flex',gap:8,flexWrap:'wrap' as const }}>
+            {['UPI','Credit Card','Debit Card','Net Banking','Wallet'].map(m => (
+              <span key={m} className="badge-teal">{m}</span>
+            ))}
+          </div>
+        </div>
+
+        {/* Info */}
+        {amount && parseFloat(amount) >= 10 && (
+          <div style={{ background:'rgba(0,229,204,0.06)',border:'1px solid rgba(0,229,204,0.15)',
+                         borderRadius:'var(--r2)',padding:'12px 16px',marginBottom:16 }}>
+            <p style={{ color:'var(--teal)',fontSize:13,fontWeight:600 }}>
+              🎁 Earn {Math.floor(parseFloat(amount)/10)} reward points for this transaction!
+            </p>
+          </div>
+        )}
+
+        {err && <p className="err-box" style={{ marginBottom:14 }}>⚠️ {err}</p>}
+
+        <button className="btn-primary"
+          onClick={handlePay}
+          disabled={loading || !amount || parseFloat(amount) < 10}
+          style={{ opacity:loading||!amount||parseFloat(amount)<10?0.5:1 }}>
+          {loading ? '⏳ Processing…' : amount ? `Add ₹${parseFloat(amount).toLocaleString('en-IN')} →` : 'Enter amount'}
+        </button>
+        <p style={{ textAlign:'center',color:'var(--t3)',fontSize:11,marginTop:12 }}>
+          🔒 Secured by Razorpay · RBI Compliant · 256-bit SSL
+        </p>
       </div>
     </div>
   );

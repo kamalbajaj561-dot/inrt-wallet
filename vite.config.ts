@@ -1,28 +1,23 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
-import tailwindcss from '@tailwindcss/vite'
 import path from 'path'
 
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [react()],
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
     },
   },
   build: {
-    outDir: 'dist',
-    sourcemap: false,
     rollupOptions: {
-      onwarn(warning, warn) {
-        if (warning.code === 'MODULE_LEVEL_DIRECTIVE') return
-        warn(warning)
-      }
-    }
+      output: {
+        manualChunks: {
+          'firebase':  ['firebase/app','firebase/auth','firebase/firestore','firebase/storage'],
+          'react-core':['react','react-dom','react-router-dom'],
+        },
+      },
+    },
+    chunkSizeWarningLimit: 1000,
   },
-  server: {
-    headers: {
-      'Content-Security-Policy': "script-src 'self' 'unsafe-inline' 'unsafe-eval';"
-    }
-  }
 })

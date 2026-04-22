@@ -1,238 +1,272 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { subscribeToUser, subscribeToTransactions } from '../lib/db';
-import AIAssistant from '../components/AIAssistant';
-import QRCode from 'qrcode';
+import BottomNav from '../components/BottomNav';
+import '../styles/theme.css';
+
+const SERVICES = [
+  { icon:'↑',   label:'Send',       path:'/send',          color:'#00e5cc' },
+  { icon:'📷',  label:'Scan & Pay', path:'/scan',          color:'#4d8af0' },
+  { icon:'+',   label:'Add Money',  path:'/add-money',     color:'#00d68f' },
+  { icon:'↓',   label:'Request',    path:'/request',       color:'#a78bfa' },
+  { icon:'📱',  label:'Recharge',   path:'/recharge',      color:'#f4b942' },
+  { icon:'⚡',  label:'Bills',      path:'/bill-payments', color:'#00e5cc' },
+  { icon:'📺',  label:'DTH',        path:'/recharge',      color:'#4d8af0' },
+  { icon:'🏦',  label:'Bank',       path:'/link-bank',     color:'#00d68f' },
+  { icon:'₿',   label:'Crypto',     path:'/crypto',        color:'#f7931a' },
+  { icon:'🥇',  label:'Gold',       path:'/gold',          color:'#f4b942' },
+  { icon:'📈',  label:'Stocks',     path:'/stocks',        color:'#00d68f' },
+  { icon:'🏦',  label:'CIBIL',      path:'/cibil',         color:'#a78bfa' },
+  { icon:'🛡️',  label:'Insurance',  path:'/insurance',     color:'#4d8af0' },
+  { icon:'💸',  label:'Loans',      path:'/loans',         color:'#f4b942' },
+  { icon:'🎬',  label:'Movies',     path:'/movies',        color:'#ff4d6a' },
+  { icon:'✈️',  label:'Travel',     path:'/travel',        color:'#00e5cc' },
+];
 
 export default function Dashboard() {
   const { user, userProfile, logout } = useAuth();
   const navigate = useNavigate();
-  const [profile, setProfile] = useState<any>(userProfile);
-
-  // Guard against undefined profile on initial render
-  if (!userProfile) return null;
-  const [txs, setTxs] = useState<any[]>([]);
-  const [qrUrl, setQrUrl] = useState('');
-  const [showAI, setShowAI] = useState(false);
-  const [greeting, setGreeting] = useState('');
-
-  useEffect(() => {
-    const h = new Date().getHours();
-    setGreeting(h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening');
-  }, []);
+  const [profile,  setProfile]  = useState<any>(userProfile);
+  const [txns,     setTxns]     = useState<any[]>([]);
+  const [balVis,   setBalVis]   = useState(true);
 
   useEffect(() => {
     if (!user) return;
-    const unsub1 = subscribeToUser(user.uid, setProfile);
-    const unsub2 = subscribeToTransactions(user.uid, setTxs);
-    return () => { unsub1(); unsub2(); };
+    const u1 = subscribeToUser(user.uid, setProfile);
+    const u2 = subscribeToTransactions(user.uid, t => setTxns(t.slice(0, 4)));
+    return () => { u1(); u2(); };
   }, [user]);
 
-  useEffect(() => {
-    if (profile?.upiId) {
-      QRCode.toDataURL(`upi://pay?pa=${profile.upiId}&pn=${encodeURIComponent(profile.name)}&cu=INR`, {
-        width: 200, margin: 2, color: { dark: '#001a2e', light: '#ffffff' }
-      }).then(setQrUrl).catch(() => {});
-    }
-  }, [profile?.upiId]);
+  const bal    = profile?.balance || 0;
+  const points = profile?.rewardPoints || 0;
+  const name   = profile?.name || 'User';
+  const kyc    = profile?.kycStatus || 'not_started';
+  const fmt    = (n: number) => `₹${n.toLocaleString('en-IN', { maximumFractionDigits:2 })}`;
 
-  const fmt = (n: number | undefined) => `₹${(n ?? 0).toLocaleString('en-IN')}`;
+  const greet = () => {
+    const h = new Date().getHours();
+    return h < 12 ? '☀️ Good morning' : h < 17 ? '🌤 Good afternoon' : '🌙 Good evening';
+  };
 
-  const services = [
-    { icon: '📤', label: 'Send', path: '/send' },
-    { icon: '📷', label: 'Scan QR', path: '/scan' },
-    { icon: '➕', label: 'Add Money', path: '/add-money' },
-    { icon: '📥', label: 'Request', path: '/request' },
-    { icon: '📱', label: 'Recharge', path: '/recharge' },
-    { icon: '⚡', label: 'Bills', path: '/bills' },
-    { icon: '🎫', label: 'Bookings', path: '/bookings' },
-    { icon: '🥇', label: 'Gold', path: '/gold' },
-    { icon: '📈', label: 'Invest', path: '/invest' },
-    { icon: '🛡️', label: 'Insurance', path: '/insurance' },
-    { icon: '🎁', label: 'Rewards', path: '/rewards' },
-    { icon: '📊', label: 'CIBIL', path: '/cibil' },
-  ];
-
-  if (!profile) return (
-    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <div style={{ textAlign: 'center' }}>
-        <div style={{ width: 40, height: 40, border: '4px solid #00b9f1', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 0.8s linear infinite', margin: '0 auto 16px' }} />
-        <p style={{ color: '#666' }}>Loading your wallet...</p>
-      </div>
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-    </div>
-  );
+  const fmtDate = (ts: any) => {
+    if (!ts?.toDate) return '';
+    const d   = ts.toDate();
+    const now = new Date();
+    const diff= now.getTime() - d.getTime();
+    if (diff < 86400000) return d.toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'});
+    return d.toLocaleDateString('en-IN',{day:'numeric',month:'short'});
+  };
 
   return (
-    <div style={s.page}>
-      {/* Header */}
-      <div style={s.header}>
-        <div>
-          <p style={s.greet}>{greeting}, {profile.name?.split(' ')[0]} 👋</p>
-          <p style={s.upi}>{profile.upiId}</p>
-        </div>
-        <div style={{ display: 'flex', gap: 10 }}>
-          <button onClick={() => navigate('/notifications')} style={s.iconBtn}>🔔</button>
-          <button onClick={() => navigate('/profile')} style={s.iconBtn}>👤</button>
-        </div>
-      </div>
+    <div className="page" style={{ paddingBottom:'calc(var(--nav-h) + 16px)' }}>
 
-      {/* KYC Banner */}
-      {profile.kycStatus !== 'verified' && (
-        <div style={s.kycBanner} onClick={() => navigate('/kyc')}>
-          <span>🪪 Complete KYC to unlock higher limits</span>
-          <span style={{ fontWeight: 700 }}>Verify Now →</span>
-        </div>
-      )}
+      {/* ── HERO HEADER ── */}
+      <div style={{ background:'linear-gradient(160deg,#050914 0%,#0a1428 60%,#050e1e 100%)',
+                     padding:'52px 20px 0' }}>
 
-      {/* Balance Card */}
-      <div style={s.balanceCard}>
-        <div style={{ position: 'absolute', top: -30, right: -30, width: 120, height: 120, borderRadius: '50%', background: 'rgba(255,255,255,0.05)' }} />
-        <p style={s.balLabel}>TOTAL BALANCE</p>
-        <p style={s.balance}>{fmt(profile.balance)}</p>
-        <div style={{ display: 'flex', gap: 12, marginTop: 16 }}>
-          <div style={s.balStat}>
-            <span style={{ color: '#4ade80', fontSize: 12 }}>↓ Received</span>
-            <span style={{ color: '#fff', fontWeight: 700 }}>{fmt(txs.filter(t => t.type === 'credit').reduce((s, t) => s + t.amount, 0))}</span>
-          </div>
-          <div style={{ width: 1, background: 'rgba(255,255,255,0.15)' }} />
-          <div style={s.balStat}>
-            <span style={{ color: '#f87171', fontSize: 12 }}>↑ Sent</span>
-            <span style={{ color: '#fff', fontWeight: 700 }}>{fmt(txs.filter(t => t.type === 'debit').reduce((s, t) => s + t.amount, 0))}</span>
-          </div>
-          <div style={{ width: 1, background: 'rgba(255,255,255,0.15)' }} />
-          <div style={s.balStat}>
-            <span style={{ color: '#fbbf24', fontSize: 12 }}>⭐ Points</span>
-            <span style={{ color: '#fff', fontWeight: 700 }}>{profile.rewardPoints || 0}</span>
-          </div>
-        </div>
-      </div>
-
-      {/* Quick Actions */}
-      <div style={s.quickRow}>
-        {[
-          { icon: '📤', label: 'Send', path: '/send', color: '#dbeafe' },
-          { icon: '📷', label: 'Scan', path: '/scan', color: '#dcfce7' },
-          { icon: '➕', label: 'Add', path: '/add-money', color: '#fef9c3' },
-          { icon: '📥', label: 'Request', path: '/request', color: '#fce7f3' },
-        ].map(item => (
-          <button key={item.label} onClick={() => navigate(item.path)} style={{ ...s.quickBtn, background: item.color }}>
-            <span style={{ fontSize: 24 }}>{item.icon}</span>
-            <span style={s.quickLabel}>{item.label}</span>
-          </button>
-        ))}
-      </div>
-
-      {/* QR Code */}
-      <div style={s.qrSection}>
-        <p style={s.sectionTitle}>Your QR Code</p>
-        <div style={s.qrCard}>
-          {qrUrl && <img src={qrUrl} alt="QR" style={{ width: 140, height: 140 }} />}
-          <div>
-            <p style={{ fontWeight: 700, fontSize: 16, color: '#111' }}>{profile.name}</p>
-            <p style={{ color: '#666', fontSize: 13 }}>{profile.upiId}</p>
-            <button style={s.shareBtn}>📤 Share QR</button>
-          </div>
-        </div>
-      </div>
-
-      {/* All Services */}
-      <p style={s.sectionTitle}>All Services</p>
-      <div style={s.grid}>
-        {services.map(item => (
-          <button key={item.label} onClick={() => navigate(item.path)} style={s.serviceBtn}>
-            <span style={{ fontSize: 26 }}>{item.icon}</span>
-            <span style={s.serviceLabel}>{item.label}</span>
-          </button>
-        ))}
-      </div>
-
-      {/* Recent Transactions */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 24, marginBottom: 12 }}>
-        <p style={s.sectionTitle}>Recent Transactions</p>
-        <button onClick={() => navigate('/history')} style={s.viewAll}>View All →</button>
-      </div>
-      {txs.length === 0 ? (
-        <div style={s.emptyTx}>
-          <span style={{ fontSize: 32 }}>💳</span>
-          <p>No transactions yet. Send money to get started!</p>
-        </div>
-      ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {txs.slice(0, 6).map(tx => (
-            <div key={tx.id} style={s.txRow}>
-              <div style={{ ...s.txIcon, background: tx.type === 'credit' ? '#dcfce7' : tx.type === 'cashback' ? '#fef9c3' : '#fee2e2' }}>
-                {tx.type === 'credit' ? '↙' : tx.type === 'cashback' ? '🎁' : '↗'}
-              </div>
-              <div style={{ flex: 1 }}>
-                <p style={s.txLabel}>{tx.toName ? `To: ${tx.toName}` : tx.fromName ? `From: ${tx.fromName}` : tx.note || 'Transaction'}</p>
-                <p style={s.txSub}>{tx.ref} · {tx.createdAt?.toDate?.()?.toLocaleDateString('en-IN') || 'Just now'}</p>
-              </div>
-              <span style={{ color: tx.type === 'debit' ? '#ef4444' : '#22c55e', fontWeight: 700 }}>
-                {tx.type === 'debit' ? '-' : '+'}{fmt(tx.amount)}
-              </span>
+        {/* Top row */}
+        <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:20 }}>
+          <div style={{ display:'flex',alignItems:'center',gap:12 }}>
+            <button onClick={() => navigate('/profile')}
+              style={{ width:44,height:44,borderRadius:'50%',background:'linear-gradient(135deg,#00e5cc,#00b4a0)',
+                        border:'none',cursor:'pointer',
+                        display:'flex',alignItems:'center',justifyContent:'center',
+                        fontFamily:'Space Grotesk,sans-serif',fontWeight:800,fontSize:16,color:'#000' }}>
+              {name.charAt(0).toUpperCase()}
+            </button>
+            <div>
+              <p style={{ color:'var(--t2)',fontSize:11 }}>{greet()},</p>
+              <p style={{ fontFamily:'var(--f-display)',fontWeight:700,fontSize:17,color:'var(--t1)' }}>
+                {name.split(' ')[0]}
+              </p>
             </div>
+          </div>
+          <div style={{ display:'flex',gap:8 }}>
+            <button onClick={() => navigate('/notifications')} style={iconBtn}>🔔</button>
+            <button onClick={() => navigate('/scan')}          style={iconBtn}>⬜</button>
+          </div>
+        </div>
+
+        {/* Balance card */}
+        <div style={{ background:'rgba(255,255,255,0.03)',border:'1px solid var(--b1)',
+                       borderRadius:'var(--r3)',padding:'22px 20px',
+                       backdropFilter:'blur(20px)',marginBottom:20 }}>
+
+          {/* KYC banner */}
+          {kyc !== 'verified' && (
+            <button onClick={() => navigate('/kyc')}
+              style={{ display:'flex',alignItems:'center',gap:8,width:'100%',
+                        background:'rgba(244,185,66,0.08)',border:'1px solid rgba(244,185,66,0.2)',
+                        borderRadius:'var(--r1)',padding:'9px 12px',marginBottom:16,
+                        cursor:'pointer' }}>
+              <span style={{ fontSize:14 }}>⚠️</span>
+              <span style={{ color:'var(--gold)',fontSize:12,fontWeight:600,flex:1,textAlign:'left' }}>
+                Complete KYC to unlock ₹1L/day limit
+              </span>
+              <span style={{ color:'var(--gold)',fontSize:12 }}>→</span>
+            </button>
+          )}
+
+          <div style={{ display:'flex',justifyContent:'space-between',alignItems:'flex-start' }}>
+            <div>
+              <p style={{ color:'var(--t3)',fontSize:11,letterSpacing:1,marginBottom:8 }}>WALLET BALANCE</p>
+              <div style={{ display:'flex',alignItems:'baseline',gap:6 }}>
+                <span style={{ color:'var(--t2)',fontSize:20 }}>₹</span>
+                <span style={{ fontFamily:'var(--f-display)',fontWeight:700,fontSize:40,
+                               color:'var(--t1)',letterSpacing:-1,lineHeight:1 }}>
+                  {balVis ? bal.toLocaleString('en-IN') : '••••••'}
+                </span>
+              </div>
+              <p style={{ color:'var(--t3)',fontSize:12,marginTop:6 }}>
+                {profile?.phone ? `${profile.phone}@inrt` : ''}
+              </p>
+            </div>
+            <button onClick={() => setBalVis(v => !v)}
+              style={{ background:'var(--bg-elevated)',border:'1px solid var(--b1)',
+                        borderRadius:'var(--r1)',padding:'8px 10px',color:'var(--t2)',
+                        cursor:'pointer',fontSize:14 }}>
+              {balVis ? '👁' : '👁‍🗨'}
+            </button>
+          </div>
+
+          {/* Stats row */}
+          <div style={{ display:'flex',gap:8,marginTop:18,paddingTop:16,borderTop:'1px solid var(--b1)' }}>
+            {[
+              { label:'Received', val:fmt(profile?.totalReceived||0), color:'var(--green)' },
+              { label:'Sent',     val:fmt(profile?.totalSent||0),     color:'var(--red)' },
+              { label:'Points',   val:points.toLocaleString(),         color:'var(--gold)' },
+            ].map(s => (
+              <div key={s.label} style={{ flex:1,textAlign:'center' }}>
+                <p style={{ color:s.color,fontWeight:700,fontSize:14 }}>{s.val}</p>
+                <p style={{ color:'var(--t3)',fontSize:10,marginTop:2 }}>{s.label}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Quick actions */}
+        <div style={{ display:'flex',gap:10,paddingBottom:24 }}>
+          {[
+            { icon:'↑', label:'Send',    path:'/send' },
+            { icon:'📷',label:'Scan',    path:'/scan' },
+            { icon:'+', label:'Add',     path:'/add-money' },
+            { icon:'↓', label:'Request', path:'/request' },
+          ].map(a => (
+            <button key={a.label} onClick={() => navigate(a.path)}
+              style={{ flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:8,
+                        background:'rgba(255,255,255,0.04)',border:'1px solid var(--b1)',
+                        borderRadius:'var(--r2)',padding:'14px 0',cursor:'pointer',transition:'all 0.2s' }}>
+              <div style={{ width:40,height:40,borderRadius:'var(--r1)',
+                             background:'var(--g-teal)',display:'flex',alignItems:'center',
+                             justifyContent:'center',fontSize:16,fontWeight:700,color:'#000' }}>
+                {a.icon}
+              </div>
+              <span style={{ color:'var(--t1)',fontSize:11,fontWeight:600 }}>{a.label}</span>
+            </button>
           ))}
         </div>
-      )}
-
-      {/* AI Assistant FAB */}
-      <button style={s.fab} onClick={() => setShowAI(true)}>
-        🤖
-        <span style={s.fabLabel}>AI Help</span>
-      </button>
-
-      {showAI && <AIAssistant onClose={() => setShowAI(false)} />}
-
-      {/* Bottom Nav */}
-      <div style={s.nav}>
-        {[
-          { icon: '🏠', label: 'Home', path: '/dashboard' },
-          { icon: '📋', label: 'History', path: '/history' },
-          { icon: '🎁', label: 'Rewards', path: '/rewards' },
-          { icon: '👤', label: 'Profile', path: '/profile' },
-        ].map(item => (
-          <button key={item.label} onClick={() => navigate(item.path)} style={s.navBtn}>
-            <span style={{ fontSize: 22 }}>{item.icon}</span>
-            <span style={s.navLabel}>{item.label}</span>
-          </button>
-        ))}
       </div>
+
+      {/* ── BODY ── */}
+      <div style={{ padding:'20px 16px 0' }}>
+
+        {/* Services grid */}
+        <p className="s-title">All Services</p>
+        <div style={{ display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:12,marginBottom:24 }}>
+          {SERVICES.map(svc => (
+            <button key={svc.label + svc.path} onClick={() => navigate(svc.path)}
+              style={{ display:'flex',flexDirection:'column',alignItems:'center',gap:8,
+                        background:'var(--bg-card)',border:'1px solid var(--b1)',
+                        borderRadius:'var(--r2)',padding:'16px 8px',cursor:'pointer',
+                        transition:'all 0.2s' }}>
+              <div style={{ width:44,height:44,borderRadius:'var(--r1)',
+                             background:`${svc.color}18`,border:`1px solid ${svc.color}28`,
+                             display:'flex',alignItems:'center',justifyContent:'center',fontSize:20 }}>
+                {svc.icon}
+              </div>
+              <span style={{ color:'var(--t2)',fontSize:10,fontWeight:600,textAlign:'center',
+                              lineHeight:1.3 }}>
+                {svc.label}
+              </span>
+            </button>
+          ))}
+        </div>
+
+        {/* Rewards banner */}
+        <button onClick={() => navigate('/rewards')}
+          style={{ width:'100%',background:'linear-gradient(135deg,rgba(244,185,66,0.1),rgba(244,185,66,0.04))',
+                    border:'1px solid rgba(244,185,66,0.2)',borderRadius:'var(--r3)',
+                    padding:'16px 20px',display:'flex',alignItems:'center',gap:16,
+                    cursor:'pointer',marginBottom:24,textAlign:'left' }}>
+          <div style={{ width:48,height:48,borderRadius:'var(--r2)',background:'var(--g-gold)',
+                         display:'flex',alignItems:'center',justifyContent:'center',
+                         fontSize:24,flexShrink:0 }}>🎁</div>
+          <div style={{ flex:1 }}>
+            <p style={{ fontFamily:'var(--f-display)',fontWeight:700,color:'var(--gold)',fontSize:15 }}>
+              {points} Reward Points
+            </p>
+            <p style={{ color:'var(--t3)',fontSize:12,marginTop:2 }}>
+              ≈ ₹{(points * 0.25).toFixed(0)} cashback available
+            </p>
+          </div>
+          <span style={{ color:'var(--gold)',fontSize:18 }}>→</span>
+        </button>
+
+        {/* Recent Transactions */}
+        <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:14 }}>
+          <p className="s-title" style={{ marginBottom:0 }}>Recent Transactions</p>
+          <button onClick={() => navigate('/history')} className="btn-ghost" style={{ fontSize:13 }}>
+            View all →
+          </button>
+        </div>
+
+        {txns.length === 0 ? (
+          <div style={{ textAlign:'center',padding:'40px 0',color:'var(--t3)' }}>
+            <p style={{ fontSize:36,marginBottom:12 }}>💳</p>
+            <p style={{ fontWeight:600,fontSize:14,color:'var(--t2)' }}>No transactions yet</p>
+            <p style={{ fontSize:12,marginTop:4 }}>Start by adding money to your wallet</p>
+          </div>
+        ) : (
+          <div style={{ display:'flex',flexDirection:'column',gap:10 }}>
+            {txns.map(tx => (
+              <div key={tx.id}
+                style={{ background:'var(--bg-card)',border:'1px solid var(--b1)',
+                          borderRadius:'var(--r2)',padding:'14px',
+                          display:'flex',alignItems:'center',gap:14 }}>
+                <div style={{ width:42,height:42,borderRadius:'var(--r1)',flexShrink:0,
+                               background:tx.type==='debit'?'rgba(255,77,106,0.1)':'rgba(0,214,143,0.1)',
+                               display:'flex',alignItems:'center',justifyContent:'center',fontSize:18 }}>
+                  {tx.type==='debit'?'↑':'↓'}
+                </div>
+                <div style={{ flex:1,minWidth:0 }}>
+                  <p style={{ fontWeight:600,fontSize:14,color:'var(--t1)',
+                               whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis' }}>
+                    {tx.note || (tx.type==='debit'?'Sent':'Received')}
+                  </p>
+                  <p style={{ fontSize:11,color:'var(--t3)',marginTop:2 }}>
+                    {fmtDate(tx.createdAt)}
+                  </p>
+                </div>
+                <span style={{ fontWeight:800,fontSize:15,flexShrink:0,
+                               color:tx.type==='debit'?'var(--red)':'var(--green)' }}>
+                  {tx.type==='debit'?'-':'+'}₹{(tx.amount||0).toLocaleString('en-IN')}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <BottomNav />
     </div>
   );
 }
 
-const s: Record<string, React.CSSProperties> = {
-  page: { maxWidth: 480, margin: '0 auto', background: '#f8fafc', minHeight: '100vh', paddingBottom: 80, fontFamily: "'DM Sans', sans-serif" },
-  header: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '52px 20px 16px', background: 'linear-gradient(160deg,#001a2e,#002a45)' },
-  greet: { color: '#fff', fontWeight: 700, fontSize: 18 },
-  upi: { color: 'rgba(255,255,255,0.55)', fontSize: 13, marginTop: 2 },
-  iconBtn: { background: 'rgba(255,255,255,0.1)', border: 'none', borderRadius: 12, width: 40, height: 40, fontSize: 18, cursor: 'pointer' },
-  kycBanner: { background: '#fef3c7', padding: '12px 20px', display: 'flex', justifyContent: 'space-between', cursor: 'pointer', fontSize: 13, color: '#92400e' },
-  balanceCard: { background: 'linear-gradient(135deg,#001a2e,#002a45)', margin: '0 16px 16px', borderRadius: 20, padding: '24px 20px', position: 'relative', overflow: 'hidden' },
-  balLabel: { color: 'rgba(255,255,255,0.5)', fontSize: 11, letterSpacing: 1.5, marginBottom: 4 },
-  balance: { color: '#fff', fontSize: 44, fontWeight: 900, letterSpacing: -1 },
-  balStat: { display: 'flex', flexDirection: 'column', gap: 4 },
-  quickRow: { display: 'flex', gap: 10, padding: '0 16px 16px' },
-  quickBtn: { flex: 1, border: 'none', borderRadius: 16, padding: '14px 0', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, cursor: 'pointer' },
-  quickLabel: { fontSize: 11, fontWeight: 700, color: '#374151' },
-  qrSection: { padding: '0 16px 16px' },
-  sectionTitle: { fontWeight: 800, fontSize: 16, color: '#111', marginBottom: 12 },
-  qrCard: { background: '#fff', borderRadius: 18, padding: 20, display: 'flex', gap: 20, alignItems: 'center', boxShadow: '0 4px 16px rgba(0,0,0,0.06)' },
-  shareBtn: { marginTop: 10, background: '#f0f9ff', border: '1px solid #bae6fd', borderRadius: 10, padding: '8px 14px', color: '#0369a1', fontWeight: 600, fontSize: 13, cursor: 'pointer' },
-  grid: { display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 10, padding: '0 16px' },
-  serviceBtn: { background: '#fff', border: '1px solid #f1f5f9', borderRadius: 16, padding: '14px 0', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, cursor: 'pointer', boxShadow: '0 2px 8px rgba(0,0,0,0.04)' },
-  serviceLabel: { fontSize: 11, fontWeight: 600, color: '#374151' },
-  viewAll: { background: 'none', border: 'none', color: '#00b9f1', fontWeight: 600, fontSize: 13, cursor: 'pointer' },
-  emptyTx: { textAlign: 'center', padding: '32px 0', color: '#9ca3af', fontSize: 14, display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'center' },
-  txRow: { background: '#fff', borderRadius: 14, padding: '14px 16px', display: 'flex', alignItems: 'center', gap: 14, boxShadow: '0 2px 8px rgba(0,0,0,0.04)' },
-  txIcon: { width: 42, height: 42, borderRadius: 14, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18, flexShrink: 0 },
-  txLabel: { fontWeight: 600, fontSize: 14, color: '#111' },
-  txSub: { fontSize: 11, color: '#9ca3af', marginTop: 2 },
-  fab: { position: 'fixed', bottom: 90, right: 20, background: 'linear-gradient(135deg,#001a2e,#00b9f1)', border: 'none', borderRadius: 20, padding: '12px 16px', color: '#fff', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, boxShadow: '0 8px 24px rgba(0,185,241,0.4)', fontSize: 22, zIndex: 100 },
-  fabLabel: { fontSize: 10, fontWeight: 700 },
-  nav: { position: 'fixed', bottom: 0, left: '50%', transform: 'translateX(-50%)', width: '100%', maxWidth: 480, background: '#fff', borderTop: '1px solid #f1f5f9', display: 'flex', justifyContent: 'space-around', padding: '8px 0 16px' },
-  navBtn: { background: 'none', border: 'none', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3, cursor: 'pointer', padding: '4px 16px' },
-  navLabel: { fontSize: 10, color: '#6b7280', fontWeight: 600 },
+const iconBtn: React.CSSProperties = {
+  width:42,height:42,borderRadius:'var(--r1)',
+  background:'rgba(255,255,255,0.04)',
+  border:'1px solid var(--b1)',color:'var(--t1)',
+  fontSize:16,cursor:'pointer',
+  display:'flex',alignItems:'center',justifyContent:'center',
 };

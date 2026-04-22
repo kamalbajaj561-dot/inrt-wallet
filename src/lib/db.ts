@@ -1,32 +1,34 @@
 import {
-  doc, setDoc, getDoc, updateDoc, collection,
-  addDoc, query, where, orderBy, limit,
-  getDocs, serverTimestamp, increment, onSnapshot
+  doc, setDoc, getDoc, updateDoc,
+  collection, query, where, orderBy,
+  limit, getDocs, serverTimestamp,
+  increment, addDoc, onSnapshot,
+  type DocumentSnapshot,
 } from 'firebase/firestore';
 import { db } from './firebase';
 
-// ─── USER PROFILE ─────────────────────────────────────────────
+// ── User profile ──────────────────────────────────────────────
 export async function createUserProfile(uid: string, data: {
-  phone: string;
-  name: string;
-  email?: string;
+  phone: string; name: string; email: string;
 }) {
-  const upiId = `${data.phone}@inrt`;
   await setDoc(doc(db, 'users', uid), {
-    uid,
-    name: data.name,
-    phone: data.phone,
-    email: data.email || '',
-    upiId,
-    balance: 0,
-    rewardPoints: 0,
-    cashback: 0,
-    kycStatus: 'pending', // pending | submitted | verified | rejected
-    kycData: {},
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp(),
+    uid, ...data,
+    balance:        0,
+    rewardPoints:   0,
+    cashback:       0,
+    kycStatus:      'not_started',
+    goldGrams:      0,
+    goldInvested:   0,
+    cryptoHoldings: {},
+    notifPush:      true,
+    notifEmail:     true,
+    createdAt:      serverTimestamp(),
+    updatedAt:      serverTimestamp(),
   });
-  return upiId;
+  // phone index for login lookup
+  await setDoc(doc(db, 'phoneIndex', data.phone), {
+    uid, phone: data.phone,
+  });
 }
 
 export async function getUserProfile(uid: string) {
@@ -34,221 +36,59 @@ export async function getUserProfile(uid: string) {
   return snap.exists() ? snap.data() : null;
 }
 
-export async function updateUserProfile(uid: string, data: object) {
-  await updateDoc(doc(db, 'users', uid), {
-    ...data,
-    updatedAt: serverTimestamp(),
-  });
-}
-
-export function subscribeToUser(uid: string, callback: (data: any) => void) {
+export function subscribeToUser(uid: string, cb: (d: any) => void) {
   return onSnapshot(doc(db, 'users', uid), (snap) => {
-    if (snap.exists()) callback(snap.data());
+    if (snap.exists()) cb(snap.data());
   });
 }
 
-// ─── KYC ──────────────────────────────────────────────────────
-export async function submitKYC(uid: string, kycData: {
-  aadhaar: string;
-  pan: string;
-  dob: string;
-  address: string;
-  selfieUrl?: string;
-}) {
-  await updateDoc(doc(db, 'users', uid), {
-    kycStatus: 'submitted',
-    kycData,
-    kycSubmittedAt: serverTimestamp(),
-    updatedAt: serverTimestamp(),
-  });
+export async function getUserByPhone(phone: string) {
+  const snap = await getDoc(doc(db, 'phoneIndex', phone));
+  if (!snap.exists()) return null;
+  const { uid } = snap.data();
+  return getUserProfile(uid);
 }
 
-// ─── TRANSACTIONS ──────────────────────────────────────────────
-export async function sendMoney(params: {
-  fromUid: string;
-  toUpiId: string;
+// ── Transactions ──────────────────────────────────────────────
+export async function addTransaction(uid: string, data: {
+  type: 'credit' | 'debit';
   amount: number;
-  note?: string;
+  note: string;
+  cat?: string;
+  ref?: string;
 }) {
-  const { fromUid, toUpiId, amount, note } = params;
-
-  // Find recipient
-  const q = query(collection(db, 'users'), where('upiId', '==', toUpiId));
-  const snap = await getDocs(q);
-  if (snap.empty) throw new Error('UPI ID not found');
-
-  const toUser = snap.docs[0].data();
-  const toUid = toUser.uid;
-
-  // Check sender balance
-  const fromSnap = await getDoc(doc(db, 'users', fromUid));
-  const fromUser = fromSnap.data()!;
-  if (fromUser.balance < amount) throw new Error('Insufficient balance');
-
-  // Deduct from sender
-  await updateDoc(doc(db, 'users', fromUid), {
-    balance: increment(-amount),
-    updatedAt: serverTimestamp(),
-  });
-
-  // Add to receiver
-  await updateDoc(doc(db, 'users', toUid), {
-    balance: increment(amount),
-    updatedAt: serverTimestamp(),
-  });
-
-  const txRef = `TXN${Date.now()}`;
-
-  // Record debit tx
-  await addDoc(collection(db, 'transactions'), {
-    uid: fromUid,
-    type: 'debit',
-    amount,
-    toUpiId,
-    toName: toUser.name,
-    note: note || '',
-    ref: txRef,
-    status: 'success',
-    createdAt: serverTimestamp(),
-  });
-
-  // Record credit tx
-  await addDoc(collection(db, 'transactions'), {
-    uid: toUid,
-    type: 'credit',
-    amount,
-    fromUpiId: fromUser.upiId,
-    fromName: fromUser.name,
-    note: note || '',
-    ref: txRef,
-    status: 'success',
-    createdAt: serverTimestamp(),
-  });
-
-  // Give cashback (2%)
-  const cashback = Math.floor(amount * 0.02);
-  if (cashback > 0) {
-    await updateDoc(doc(db, 'users', fromUid), {
-      cashback: increment(cashback),
-      rewardPoints: increment(Math.floor(amount / 10)),
-    });
-    await addDoc(collection(db, 'transactions'), {
-      uid: fromUid,
-      type: 'cashback',
-      amount: cashback,
-      note: `2% cashback on ₹${amount} transfer`,
-      ref: `CB${Date.now()}`,
-      status: 'success',
-      createdAt: serverTimestamp(),
-    });
-  }
-
-  return txRef;
-}
-
-export async function addMoney(uid: string, amount: number, razorpayOrderId: string) {
-  await updateDoc(doc(db, 'users', uid), {
-    balance: increment(amount),
-    updatedAt: serverTimestamp(),
-  });
-  await addDoc(collection(db, 'transactions'), {
-    uid,
-    type: 'credit',
-    amount,
-    note: 'Added via Razorpay',
-    ref: razorpayOrderId,
-    status: 'success',
+  return addDoc(collection(db, 'transactions'), {
+    uid, ...data,
+    status:    'success',
     createdAt: serverTimestamp(),
   });
 }
 
-export async function getTransactions(uid: string, count = 20) {
+export function subscribeToTransactions(uid: string, cb: (t: any[]) => void) {
   const q = query(
     collection(db, 'transactions'),
     where('uid', '==', uid),
     orderBy('createdAt', 'desc'),
-    limit(count)
+    limit(20),
   );
-  const snap = await getDocs(q);
-  return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  return onSnapshot(q, (snap) =>
+    cb(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
+  );
 }
 
-export function subscribeToTransactions(uid: string, callback: (txs: any[]) => void) {
-  const q = query(
-    collection(db, 'transactions'),
-    where('uid', '==', uid),
-    orderBy('createdAt', 'desc'),
-    limit(20)
-  );
-  return onSnapshot(q, (snap) => {
-    callback(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-  });
-}
-
-// ─── REWARDS ──────────────────────────────────────────────────
-export async function redeemRewardPoints(uid: string, points: number) {
-  const snap = await getDoc(doc(db, 'users', uid));
-  const user = snap.data()!;
-  if (user.rewardPoints < points) throw new Error('Not enough points');
-  const cashValue = points; // 1 point = ₹1
+// ── Balance ───────────────────────────────────────────────────
+export async function updateBalance(uid: string, delta: number) {
   await updateDoc(doc(db, 'users', uid), {
-    rewardPoints: increment(-points),
-    balance: increment(cashValue),
+    balance:   increment(delta),
     updatedAt: serverTimestamp(),
   });
-  await addDoc(collection(db, 'transactions'), {
-    uid,
-    type: 'credit',
-    amount: cashValue,
-    note: `Redeemed ${points} reward points`,
-    ref: `RWD${Date.now()}`,
-    status: 'success',
-    createdAt: serverTimestamp(),
-  });
 }
 
-// ─── BOOKINGS ─────────────────────────────────────────────────
-export async function createBooking(uid: string, booking: {
-  type: 'movie' | 'bus' | 'train' | 'flight';
-  details: object;
-  amount: number;
-}) {
-  const snap = await getDoc(doc(db, 'users', uid));
-  const user = snap.data()!;
-  if (user.balance < booking.amount) throw new Error('Insufficient balance');
-
-  await updateDoc(doc(db, 'users', uid), {
-    balance: increment(-booking.amount),
-    updatedAt: serverTimestamp(),
-  });
-
-  const ref = await addDoc(collection(db, 'bookings'), {
-    uid,
-    ...booking,
-    bookingId: `BK${Date.now()}`,
-    status: 'confirmed',
+// ── Notifications ─────────────────────────────────────────────
+export async function addNotification(uid: string, title: string, body: string, type = 'info') {
+  await addDoc(collection(db, 'notifications'), {
+    uid, title, body, type,
+    read:      false,
     createdAt: serverTimestamp(),
   });
-
-  await addDoc(collection(db, 'transactions'), {
-    uid,
-    type: 'debit',
-    amount: booking.amount,
-    note: `${booking.type.toUpperCase()} Booking`,
-    ref: `BK${Date.now()}`,
-    status: 'success',
-    createdAt: serverTimestamp(),
-  });
-
-  return ref.id;
-}
-
-export async function getBookings(uid: string) {
-  const q = query(
-    collection(db, 'bookings'),
-    where('uid', '==', uid),
-    orderBy('createdAt', 'desc')
-  );
-  const snap = await getDocs(q);
-  return snap.docs.map(d => ({ id: d.id, ...d.data() }));
 }

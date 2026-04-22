@@ -1,471 +1,62 @@
-import React, { useState, useEffect } from 'react';
-import { useAuth } from '@/context/AuthContext';
-import { db } from '@/lib/firebase';
-import { sendMoney } from '@/lib/db';
-import { collection, query, where, getDocs, addDoc, onSnapshot, orderBy, updateDoc, doc, runTransaction, serverTimestamp } from 'firebase/firestore';
-import { getFunctions, httpsCallable } from 'firebase/functions';
-import { Button, Input, Card } from '@/components/ui';
-import { formatCurrency } from '@/lib/utils';
-import { PaymentRequest, UserProfile } from '@/types';
-import { toast } from 'react-hot-toast';
-import { ArrowDownLeft, ArrowUpRight, Check, X, Clock, Search, Wallet, Building } from 'lucide-react';
-import { format } from 'date-fns';
-
-import { PinVerificationModal } from '@/components/PinVerificationModal';
-
-declare global {
-  interface Window {
-    Razorpay: any;
-  }
-}
+import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';
+import '../styles/theme.css';
 
 export default function RequestMoney() {
-  const { user, userProfile } = useAuth();
-  const functions = getFunctions();
-  const [activeTab, setActiveTab] = useState<'received' | 'sent'>('received');
-  const [requests, setRequests] = useState<PaymentRequest[]>([]);
-  const [loading, setLoading] = useState(false);
-  
-  // New Request State
-  const [showNewRequest, setShowNewRequest] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
+  const { userProfile } = useAuth();
+  const navigate = useNavigate();
   const [amount, setAmount] = useState('');
-  const [description, setDescription] = useState('');
-  const [foundUser, setFoundUser] = useState<UserProfile | null>(null);
+  const [note,   setNote]   = useState('');
+  const [copied, setCopied] = useState(false);
 
-  // Payment Modal State
-  const [selectedRequest, setSelectedRequest] = useState<PaymentRequest | null>(null);
-  const [showPaymentModal, setShowPaymentModal] = useState(false);
-  const [paymentMode, setPaymentMode] = useState<'WALLET' | 'BANK'>('WALLET');
-  const [showPinModal, setShowPinModal] = useState(false);
+  const link = `https://inrtwallet.app/pay/${userProfile?.phone}?amount=${amount}&note=${encodeURIComponent(note)}`;
 
-  useEffect(() => {
-    if (!user || !db) return;
-
-    const reqRef = collection(db, 'payment_requests');
-    let q;
-
-    if (activeTab === 'received') {
-      // Requests sent TO me (I need to pay)
-      q = query(reqRef, where('receiverId', '==', user.uid), orderBy('timestamp', 'desc'));
-    } else {
-      // Requests sent BY me (I want money)
-      q = query(reqRef, where('senderId', '==', user.uid), orderBy('timestamp', 'desc'));
-    }
-
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const reqs = snapshot.docs.map(doc => {
-        const data = doc.data() as PaymentRequest;
-        // Check for expiration (24 hours)
-        if (data.status === 'pending' && Date.now() - data.timestamp > 24 * 60 * 60 * 1000) {
-           // Ideally update in DB, but for display we can mark as expired
-           return { ...data, requestId: doc.id, status: 'expired' };
-        }
-        return { ...data, requestId: doc.id };
-      });
-      setRequests(reqs);
-    });
-
-    return () => unsubscribe();
-  }, [user, activeTab]);
-
-  const handleSearch = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!searchQuery) return;
-    
-    setLoading(true);
-    try {
-      const usersRef = collection(db!, 'users');
-      let querySnapshot;
-
-      if (searchQuery.includes('@')) {
-        const q = query(usersRef, where('upiId', '==', searchQuery));
-        querySnapshot = await getDocs(q);
-      } else {
-        let formattedQuery = searchQuery;
-        if (!searchQuery.startsWith('+') && /^\d+$/.test(searchQuery)) {
-           formattedQuery = `+91${searchQuery}`;
-        }
-        const q = query(usersRef, where('phoneNumber', '==', formattedQuery));
-        querySnapshot = await getDocs(q);
-      }
-
-      if (!querySnapshot.empty) {
-        const userData = querySnapshot.docs[0].data() as UserProfile;
-        if (userData.uid === user?.uid) {
-          toast.error("You cannot request money from yourself");
-          setFoundUser(null);
-        } else {
-          setFoundUser(userData);
-        }
-      } else {
-        toast.error("User not found");
-        setFoundUser(null);
-      }
-    } catch (error) {
-      console.error(error);
-      toast.error("Error searching user");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const sendRequest = async () => {
-    if (!foundUser || !amount || !user || !userProfile) return;
-
-    setLoading(true);
-    try {
-      await addDoc(collection(db!, 'payment_requests'), {
-        senderId: user.uid,
-        senderName: userProfile.fullName || userProfile.phoneNumber,
-        senderUpiId: userProfile.upiId,
-        receiverId: foundUser.uid,
-        receiverUpiId: foundUser.upiId,
-        amount: parseFloat(amount),
-        status: 'pending',
-        timestamp: Date.now(),
-        description: description || 'Payment Request'
-      });
-
-      // Create Notification for Receiver
-      await addDoc(collection(db!, 'notifications'), {
-        userId: foundUser.uid,
-        type: 'payment_request',
-        title: 'Payment Request',
-        message: `${userProfile.fullName || userProfile.phoneNumber} requested ${formatCurrency(parseFloat(amount))}`,
-        amount: parseFloat(amount),
-        status: 'unread',
-        timestamp: Date.now()
-      });
-      
-      toast.success("Request sent successfully!");
-      setShowNewRequest(false);
-      setSearchQuery('');
-      setAmount('');
-      setFoundUser(null);
-      setActiveTab('sent');
-    } catch (error) {
-      console.error(error);
-      toast.error("Failed to send request");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleDecline = async (request: PaymentRequest) => {
-    if (!user) return;
-    try {
-      await updateDoc(doc(db!, 'payment_requests', request.requestId), {
-        status: 'declined'
-      });
-
-      // Create Notification for Sender (Requester)
-      await addDoc(collection(db!, 'notifications'), {
-        userId: request.senderId,
-        type: 'request_declined',
-        title: 'Request Declined',
-        message: `${userProfile?.fullName || userProfile?.phoneNumber} declined your request of ${formatCurrency(request.amount)}`,
-        amount: request.amount,
-        status: 'unread',
-        timestamp: Date.now()
-      });
-
-      toast.success("Request declined");
-    } catch (e) {
-      toast.error("Error declining request");
-    }
-  };
-
-  const openPaymentModal = (request: PaymentRequest) => {
-    setSelectedRequest(request);
-    setShowPaymentModal(true);
-    setPaymentMode('WALLET');
-  };
-
-  const loadRazorpay = () => {
-    return new Promise((resolve) => {
-      if (window.Razorpay) {
-        resolve(true);
-        return;
-      }
-      const script = document.createElement("script");
-      script.src = "https://checkout.razorpay.com/v1/checkout.js";
-      script.onload = () => resolve(true);
-      script.onerror = () => resolve(false);
-      document.body.appendChild(script);
-    });
-  };
-
-  const initiatePayment = () => {
-    if (!selectedRequest || !user || !userProfile) return;
-
-    if (paymentMode === 'WALLET') {
-      if (selectedRequest.amount > (userProfile?.balance ?? 0)) {
-        toast.error("Insufficient wallet balance");
-        return;
-      }
-    }
-
-    setShowPinModal(true);
-  };
-
-  const processPayment = async () => {
-    if (paymentMode === 'WALLET') {
-      await processWalletPayment();
-    } else {
-      await processBankPayment();
-    }
-  };
-
-  const processWalletPayment = async () => {
-    if (!selectedRequest || !user) return;
-    setLoading(true);
-    try {
-      if (!selectedRequest.senderUpiId) {
-        throw new Error("Requester UPI ID not found");
-      }
-
-      const myName =
-        userProfile?.fullName ||
-        userProfile?.name ||
-        userProfile?.phoneNumber ||
-        userProfile?.phone ||
-        "You";
-
-      // Approve = pay the requester using wallet
-      const ref = await sendMoney({
-        fromUid: user.uid,
-        toUpiId: selectedRequest.senderUpiId,
-        amount: selectedRequest.amount,
-        note: selectedRequest.description || "Payment request",
-      });
-
-      await updateDoc(
-        doc(db!, "payment_requests", selectedRequest.requestId),
-        { status: "approved", transactionRef: ref }
-      );
-
-      await addDoc(collection(db!, "notifications"), {
-        userId: selectedRequest.senderId,
-        type: "request_approved",
-        title: "Request Approved",
-        message: `${myName} paid your request of ${formatCurrency(selectedRequest.amount)}`,
-        amount: selectedRequest.amount,
-        status: "unread",
-        timestamp: Date.now(),
-      });
-
-      toast.success("Payment successful!");
-      setShowPaymentModal(false);
-      setSelectedRequest(null);
-    } catch (error: any) {
-      console.error("Payment failed:", error);
-      toast.error(error?.message || "Payment failed");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const processBankPayment = async () => {
-    // For now, approve via wallet path to keep transaction schema consistent
-    await processWalletPayment();
+  const copy = () => {
+    navigator.clipboard.writeText(link);
+    setCopied(true); setTimeout(() => setCopied(false), 2000);
   };
 
   return (
-    <div className="space-y-6">
-      <div className="flex justify-between items-center">
-        <h1 className="text-2xl font-bold">Payment Requests</h1>
-        <Button onClick={() => setShowNewRequest(!showNewRequest)} variant={showNewRequest ? "secondary" : "default"}>
-          {showNewRequest ? "Cancel" : "New Request"}
-        </Button>
-      </div>
-
-      {showNewRequest && (
-        <Card className="p-4 bg-slate-50 border-slate-200">
-          <h3 className="font-bold mb-4">Request Money From</h3>
-          {!foundUser ? (
-            <form onSubmit={handleSearch} className="flex gap-2 mb-4">
-              <Input 
-                placeholder="Phone number or UPI ID" 
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-              />
-              <Button type="submit" isLoading={loading}>Search</Button>
-            </form>
-          ) : (
-            <div className="space-y-4">
-              <div className="flex items-center justify-between bg-white p-3 rounded border">
-                <div>
-                  <p className="font-bold">{foundUser.fullName}</p>
-                  <p className="text-xs text-slate-500">{foundUser.phoneNumber}</p>
-                  {foundUser.upiId && <p className="text-xs text-slate-500">{foundUser.upiId}</p>}
-                </div>
-                <Button variant="ghost" size="sm" onClick={() => setFoundUser(null)}>Change</Button>
-              </div>
-              
-              <div>
-                <label className="text-sm font-medium">Amount</label>
-                <Input 
-                  type="number" 
-                  value={amount} 
-                  onChange={(e) => setAmount(e.target.value)}
-                  placeholder="0.00"
-                />
-              </div>
-
-              <div>
-                <label className="text-sm font-medium">Note (Optional)</label>
-                <Input 
-                  value={description} 
-                  onChange={(e) => setDescription(e.target.value)}
-                  placeholder="Dinner, Rent, etc."
-                />
-              </div>
-
-              <Button className="w-full" onClick={sendRequest} isLoading={loading}>
-                Send Request
-              </Button>
-            </div>
-          )}
-        </Card>
-      )}
-
-      {showPaymentModal && selectedRequest && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <Card className="w-full max-w-md p-6 bg-white">
-            <h3 className="text-lg font-bold mb-4">Approve Payment Request</h3>
-            <div className="mb-6">
-              <p className="text-sm text-slate-500">Request from</p>
-              <p className="font-bold text-lg">{selectedRequest.senderName}</p>
-              <p className="text-2xl font-bold mt-2">{formatCurrency(selectedRequest.amount)}</p>
-              <p className="text-sm text-slate-500 mt-1">{selectedRequest.description}</p>
-            </div>
-
-            <div className="space-y-3 mb-6">
-              <label className="block text-sm font-medium text-slate-700">Select Payment Method</label>
-              <div 
-                className={`border rounded-xl p-3 cursor-pointer flex items-center justify-between ${paymentMode === 'WALLET' ? 'border-primary bg-primary/5 ring-1 ring-primary' : 'border-slate-200 hover:border-slate-300'}`}
-                onClick={() => setPaymentMode('WALLET')}
-              >
-                <div className="flex items-center space-x-3">
-                  <Wallet className={paymentMode === 'WALLET' ? 'text-primary' : 'text-slate-400'} />
-                  <div>
-                    <p className="font-bold text-sm">Wallet Balance</p>
-                    <p className="text-xs text-slate-500">Available: {formatCurrency(userProfile?.walletBalance || 0)}</p>
-                  </div>
-                </div>
-                {paymentMode === 'WALLET' && <Check size={16} className="text-primary" />}
-              </div>
-
-              <div 
-                className={`border rounded-xl p-3 cursor-pointer flex items-center justify-between ${paymentMode === 'BANK' ? 'border-primary bg-primary/5 ring-1 ring-primary' : 'border-slate-200 hover:border-slate-300'}`}
-                onClick={() => setPaymentMode('BANK')}
-              >
-                <div className="flex items-center space-x-3">
-                  <Building className={paymentMode === 'BANK' ? 'text-primary' : 'text-slate-400'} />
-                  <div>
-                    <p className="font-bold text-sm">Bank Account</p>
-                    <p className="text-xs text-slate-500">Pay via UPI/Card/Netbanking</p>
-                  </div>
-                </div>
-                {paymentMode === 'BANK' && <Check size={16} className="text-primary" />}
-              </div>
-            </div>
-
-            <div className="flex gap-3">
-              <Button className="flex-1" onClick={initiatePayment} isLoading={loading}>
-                Pay {formatCurrency(selectedRequest.amount)}
-              </Button>
-              <Button variant="outline" className="flex-1" onClick={() => setShowPaymentModal(false)} disabled={loading}>
-                Cancel
-              </Button>
-            </div>
-          </Card>
+    <div style={{ maxWidth:480,margin:'0 auto',minHeight:'100vh',background:'var(--bg)',fontFamily:'var(--f-body)' }}>
+      <div style={{ background:'linear-gradient(160deg,#050914,#0a1428)',padding:'52px 20px 20px' }}>
+        <div style={{ display:'flex',alignItems:'center',gap:14 }}>
+          <button onClick={()=>navigate('/dashboard')} className="back-btn">←</button>
+          <h1 className="page-title">Request Money</h1>
         </div>
-      )}
-
-      <PinVerificationModal
-        isOpen={showPinModal}
-        onClose={() => setShowPinModal(false)}
-        onSuccess={processPayment}
-      />
-
-      <div className="flex space-x-2 border-b border-slate-200">
-        <button
-          className={`pb-2 px-4 font-medium text-sm ${activeTab === 'received' ? 'border-b-2 border-primary text-primary' : 'text-slate-500'}`}
-          onClick={() => setActiveTab('received')}
-        >
-          Received (To Pay)
-        </button>
-        <button
-          className={`pb-2 px-4 font-medium text-sm ${activeTab === 'sent' ? 'border-b-2 border-primary text-primary' : 'text-slate-500'}`}
-          onClick={() => setActiveTab('sent')}
-        >
-          Sent (To Receive)
-        </button>
       </div>
-
-      <div className="space-y-3">
-        {requests.length === 0 ? (
-          <div className="text-center py-8 text-slate-400">
-            No {activeTab} requests found
+      <div style={{ padding:'20px 16px 40px' }}>
+        <div className="card" style={{ marginBottom:16 }}>
+          <p className="s-label">AMOUNT (OPTIONAL)</p>
+          <div className="amount-box" style={{ marginBottom:14 }}>
+            <span style={{ color:'var(--teal)',fontSize:24,fontWeight:700 }}>₹</span>
+            <input className="amount-input" type="number" placeholder="0"
+              value={amount} onChange={e => setAmount(e.target.value)} />
           </div>
-        ) : (
-          requests.map(req => (
-            <Card key={req.requestId} className="p-4">
-              <div className="flex justify-between items-start mb-3">
-                <div className="flex items-center space-x-3">
-                  <div className={`w-10 h-10 rounded-full flex items-center justify-center ${
-                    activeTab === 'received' ? 'bg-orange-100 text-orange-600' : 'bg-blue-100 text-blue-600'
-                  }`}>
-                    {activeTab === 'received' ? <ArrowDownLeft size={20} /> : <ArrowUpRight size={20} />}
-                  </div>
-                  <div>
-                    <p className="font-bold text-sm">
-                      {activeTab === 'received' ? `Request from ${req.senderName}` : `Request to ...`}
-                    </p>
-                    <p className="text-xs text-slate-500">
-                      {format(new Date(req.timestamp), 'MMM d, h:mm a')} • {req.description}
-                    </p>
-                  </div>
-                </div>
-                <div className="text-right">
-                  <p className="font-bold text-lg">{formatCurrency(req.amount)}</p>
-                  <span className={`text-xs px-2 py-0.5 rounded-full uppercase font-bold ${
-                    req.status === 'pending' ? 'bg-yellow-100 text-yellow-700' :
-                    req.status === 'approved' ? 'bg-green-100 text-green-700' :
-                    req.status === 'declined' ? 'bg-red-100 text-red-700' :
-                    'bg-slate-100 text-slate-700'
-                  }`}>
-                    {req.status}
-                  </span>
-                </div>
-              </div>
-
-              {activeTab === 'received' && req.status === 'pending' && (
-                <div className="flex gap-2 mt-2 pt-2 border-t border-slate-100">
-                  <Button 
-                    className="flex-1 bg-green-600 hover:bg-green-700" 
-                    size="sm"
-                    onClick={() => openPaymentModal(req)}
-                    isLoading={loading}
-                  >
-                    <Check size={16} className="mr-1" /> Approve
-                  </Button>
-                  <Button 
-                    variant="outline" 
-                    className="flex-1 text-red-600 border-red-200 hover:bg-red-50" 
-                    size="sm"
-                    onClick={() => handleDecline(req)}
-                    disabled={loading}
-                  >
-                    <X size={16} className="mr-1" /> Decline
-                  </Button>
-                </div>
-              )}
-            </Card>
-          ))
-        )}
+          <p className="s-label">NOTE</p>
+          <input className="inp" placeholder="What is this for?" value={note}
+            onChange={e => setNote(e.target.value)} />
+        </div>
+        <div className="card" style={{ marginBottom:16 }}>
+          <p className="s-label">PAYMENT LINK</p>
+          <div style={{ background:'var(--bg-elevated)',borderRadius:'var(--r1)',padding:'12px 14px',
+                         fontSize:12,color:'var(--t2)',wordBreak:'break-all',marginBottom:12 }}>
+            {link}
+          </div>
+          <button className="btn-primary" onClick={copy}>
+            {copied ? '✅ Copied!' : '📋 Copy Link'}
+          </button>
+        </div>
+        <div className="card">
+          <p className="s-label">SHARE VIA</p>
+          <div style={{ display:'flex',gap:10 }}>
+            {['WhatsApp','SMS','Email'].map(m => (
+              <button key={m} className="btn-outline" style={{ flex:1,fontSize:12,padding:'10px 0' }}>
+                {m}
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
     </div>
   );

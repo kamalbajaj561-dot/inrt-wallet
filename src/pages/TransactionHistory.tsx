@@ -1,261 +1,163 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import {
-  collection, query, where, orderBy,
-  limit, startAfter, getDocs, DocumentSnapshot
+  collection, query, where, orderBy, limit,
+  startAfter, getDocs, type DocumentSnapshot,
 } from 'firebase/firestore';
 import { db } from '../lib/firebase';
+import BottomNav from '../components/BottomNav';
+import '../styles/theme.css';
 
-interface Transaction {
-  id: string;
-  type: 'credit' | 'debit';
-  amount: number;
-  note: string;
-  cat: string;
-  status: string;
-  createdAt: any;
-  ref?: string;
-}
-
-const CAT_ICONS: Record<string, string> = {
-  transfer: '↑', recharge: '📱', bills: '⚡', crypto: '₿',
-  gold: '🥇', credit: '↓', add_money: '💳', rewards: '🎁',
-  default: '💰',
-};
-
-const CAT_LABELS: Record<string, string> = {
-  transfer: 'Transfer', recharge: 'Recharge', bills: 'Bill Payment',
-  crypto: 'Crypto', gold: 'Gold', credit: 'Received',
-  add_money: 'Added Money', rewards: 'Rewards', default: 'Transaction',
+const CAT_ICONS: Record<string,string> = {
+  transfer:'↑↓', recharge:'📱', bills:'⚡', crypto:'₿',
+  gold:'🥇', add_money:'💳', rewards:'🎁', default:'💰',
 };
 
 export default function TransactionHistory() {
   const { user } = useAuth();
-  const navigate  = useNavigate();
+  const navigate = useNavigate();
+  const [txns,    setTxns]    = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [hasMore, setHasMore] = useState(true);
+  const [lastDoc, setLastDoc] = useState<DocumentSnapshot|null>(null);
+  const [filter,  setFilter]  = useState<'all'|'credit'|'debit'>('all');
+  const [search,  setSearch]  = useState('');
+  const PAGE = 20;
 
-  const [txns,      setTxns]      = useState<Transaction[]>([]);
-  const [loading,   setLoading]   = useState(true);
-  const [loadMore,  setLoadMore]  = useState(false);
-  const [hasMore,   setHasMore]   = useState(true);
-  const [lastDoc,   setLastDoc]   = useState<DocumentSnapshot | null>(null);
-  const [filter,    setFilter]    = useState<'all'|'credit'|'debit'>('all');
-  const [search,    setSearch]    = useState('');
-  const PAGE_SIZE = 20;
-
-  const fetchTxns = async (isLoadMore = false) => {
+  const fetch = useCallback(async (more = false) => {
     if (!user) return;
-    isLoadMore ? setLoadMore(true) : setLoading(true);
-
+    more ? null : setLoading(true);
     try {
-      let q = query(
-        collection(db, 'transactions'),
-        where('uid', '==', user.uid),
-        orderBy('createdAt', 'desc'),
-        limit(PAGE_SIZE)
-      );
-
-      if (filter !== 'all') {
-        q = query(
-          collection(db, 'transactions'),
-          where('uid', '==', user.uid),
-          where('type', '==', filter),
-          orderBy('createdAt', 'desc'),
-          limit(PAGE_SIZE)
-        );
-      }
-
-      if (isLoadMore && lastDoc) {
-        q = query(q, startAfter(lastDoc));
-      }
-
+      let q = filter === 'all'
+        ? query(collection(db,'transactions'),where('uid','==',user.uid),orderBy('createdAt','desc'),limit(PAGE))
+        : query(collection(db,'transactions'),where('uid','==',user.uid),where('type','==',filter),orderBy('createdAt','desc'),limit(PAGE));
+      if (more && lastDoc) q = query(q, startAfter(lastDoc));
       const snap = await getDocs(q);
-      const docs = snap.docs.map(d => ({ id: d.id, ...d.data() } as Transaction));
+      const docs = snap.docs.map(d=>({id:d.id,...d.data()}));
+      setTxns(p => more ? [...p,...docs] : docs);
+      setLastDoc(snap.docs[snap.docs.length-1]||null);
+      setHasMore(snap.docs.length===PAGE);
+    } catch(e){ console.error(e); }
+    setLoading(false);
+  },[user,filter,lastDoc]);
 
-      setTxns(prev => isLoadMore ? [...prev, ...docs] : docs);
-      setLastDoc(snap.docs[snap.docs.length - 1] || null);
-      setHasMore(snap.docs.length === PAGE_SIZE);
-    } catch (e) {
-      console.error('Fetch transactions error:', e);
-    }
+  useEffect(()=>{ setTxns([]); setLastDoc(null); fetch(false); },[user,filter]);
 
-    isLoadMore ? setLoadMore(false) : setLoading(false);
+  const filtered = txns.filter(t => !search ||
+    (t.note||'').toLowerCase().includes(search.toLowerCase()));
+
+  const fmtDate = (ts: any) => {
+    if (!ts?.toDate) return '';
+    const d = ts.toDate();
+    const diff = Date.now() - d.getTime();
+    if (diff < 86400000) return d.toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'});
+    return d.toLocaleDateString('en-IN',{day:'numeric',month:'short'});
   };
 
-  useEffect(() => { fetchTxns(); }, [user, filter]);
+  const totals = txns.reduce((a,t)=>{
+    if (t.type==='credit') a.in+=t.amount||0;
+    else a.out+=t.amount||0;
+    return a;
+  },{in:0,out:0});
 
-  const filtered = txns.filter(t =>
-    !search ||
-    (t.note || '').toLowerCase().includes(search.toLowerCase()) ||
-    (t.cat  || '').toLowerCase().includes(search.toLowerCase())
-  );
-
-  const fmtDate = (ts: any): string => {
-    if (!ts) return '';
-    const d = ts.toDate ? ts.toDate() : new Date(ts);
-    const now = new Date();
-    const diff = now.getTime() - d.getTime();
-    if (diff < 60000)    return 'Just now';
-    if (diff < 3600000)  return `${Math.floor(diff/60000)}m ago`;
-    if (diff < 86400000) return `${Math.floor(diff/3600000)}h ago`;
-    if (diff < 172800000)return 'Yesterday';
-    return d.toLocaleDateString('en-IN', { day:'numeric', month:'short', year:'numeric' });
-  };
-
-  // Group by date
-  const grouped: Record<string, Transaction[]> = {};
+  const grouped: Record<string,any[]> = {};
   filtered.forEach(t => {
     const d = t.createdAt?.toDate ? t.createdAt.toDate() : new Date();
-    const key = d.toLocaleDateString('en-IN', { day:'numeric', month:'long', year:'numeric' });
-    if (!grouped[key]) grouped[key] = [];
-    grouped[key].push(t);
+    const k = d.toLocaleDateString('en-IN',{day:'numeric',month:'long',year:'numeric'});
+    if (!grouped[k]) grouped[k]=[];
+    grouped[k].push(t);
   });
 
-  // Monthly totals
-  const totals = txns.reduce((acc, t) => {
-    if (t.type === 'credit') acc.in  += t.amount || 0;
-    else                     acc.out += t.amount || 0;
-    return acc;
-  }, { in: 0, out: 0 });
-
   return (
-    <div style={S.page}>
-      {/* Header */}
-      <div style={S.header}>
-        <button onClick={() => navigate('/dashboard')} style={S.back}>←</button>
-        <h1 style={S.title}>Transactions</h1>
-        <button onClick={() => fetchTxns()}
-          style={{ background:'none',border:'none',color:'#f0b429',fontSize:20,cursor:'pointer' }}>
-          ↻
-        </button>
-      </div>
-
-      {/* Summary */}
-      <div style={{ background:'rgba(255,255,255,0.02)',padding:'12px 16px',
-                     display:'flex',gap:12 }}>
-        <div style={S.summaryCard}>
-          <p style={{ color:'#555570',fontSize:10,fontWeight:700,letterSpacing:1 }}>MONEY IN</p>
-          <p style={{ color:'#10b981',fontWeight:800,fontSize:16,marginTop:4 }}>
-            +₹{totals.in.toLocaleString('en-IN')}
-          </p>
+    <div className="page">
+      <div style={{background:'linear-gradient(160deg,#050914,#0a1428)',
+                    padding:'52px 20px 12px',borderBottom:'1px solid var(--b1)'}}>
+        <div style={{display:'flex',alignItems:'center',gap:14,marginBottom:14}}>
+          <button onClick={()=>navigate('/dashboard')} className="back-btn">←</button>
+          <h1 className="page-title">Transactions</h1>
+          <button onClick={()=>fetch(false)} style={{background:'none',border:'none',color:'var(--teal)',fontSize:20,cursor:'pointer'}}>↻</button>
         </div>
-        <div style={S.summaryCard}>
-          <p style={{ color:'#555570',fontSize:10,fontWeight:700,letterSpacing:1 }}>MONEY OUT</p>
-          <p style={{ color:'#ef4444',fontWeight:800,fontSize:16,marginTop:4 }}>
-            -₹{totals.out.toLocaleString('en-IN')}
-          </p>
+        {/* Summary */}
+        <div style={{display:'flex',gap:10,marginBottom:12}}>
+          {[{l:'Money In',v:`+₹${totals.in.toLocaleString('en-IN')}`,c:'var(--green)'},
+            {l:'Money Out',v:`-₹${totals.out.toLocaleString('en-IN')}`,c:'var(--red)'},
+            {l:'Net',v:`₹${(totals.in-totals.out).toLocaleString('en-IN')}`,c:totals.in-totals.out>=0?'var(--green)':'var(--red)'},
+          ].map(s=>(
+            <div key={s.l} style={{flex:1,background:'rgba(255,255,255,0.03)',border:'1px solid var(--b1)',borderRadius:'var(--r1)',padding:'10px 12px'}}>
+              <p style={{color:'var(--t3)',fontSize:9,fontWeight:700,letterSpacing:0.5}}>{s.l.toUpperCase()}</p>
+              <p style={{color:s.c,fontWeight:800,fontSize:13,marginTop:4}}>{s.v}</p>
+            </div>
+          ))}
         </div>
-        <div style={S.summaryCard}>
-          <p style={{ color:'#555570',fontSize:10,fontWeight:700,letterSpacing:1 }}>NET</p>
-          <p style={{ color: totals.in - totals.out >= 0 ? '#10b981' : '#ef4444',
-                       fontWeight:800,fontSize:16,marginTop:4 }}>
-            {totals.in - totals.out >= 0 ? '+' : ''}₹{(totals.in - totals.out).toLocaleString('en-IN')}
-          </p>
-        </div>
-      </div>
-
-      {/* Search + Filter */}
-      <div style={{ padding:'12px 16px 0' }}>
-        <input value={search} onChange={e => setSearch(e.target.value)}
-          placeholder="🔍 Search transactions..."
-          style={S.searchInput} />
-        <div style={{ display:'flex',gap:8,marginTop:8 }}>
-          {(['all','credit','debit'] as const).map(f => (
-            <button key={f} onClick={() => { setFilter(f); setTxns([]); setLastDoc(null); }}
-              style={{ flex:1,padding:'8px 0',borderRadius:10,fontSize:12,fontWeight:700,
-                       cursor:'pointer',
-                       background:filter===f?(f==='credit'?'rgba(16,185,129,0.15)':f==='debit'?'rgba(239,68,68,0.15)':'rgba(240,180,41,0.15)'):'#1e1e2a',
-                       border:`1px solid ${filter===f?(f==='credit'?'#10b981':f==='debit'?'#ef4444':'#f0b429'):'rgba(255,255,255,0.07)'}`,
-                       color:filter===f?(f==='credit'?'#10b981':f==='debit'?'#ef4444':'#f0b429'):'#555570' }}>
-              {f==='all'?'All':f==='credit'?'↓ Received':'↑ Sent'}
+        {/* Filters */}
+        <div style={{display:'flex',gap:8}}>
+          {(['all','credit','debit'] as const).map(f=>(
+            <button key={f} onClick={()=>{setFilter(f);setTxns([]);setLastDoc(null);}}
+              style={{flex:1,padding:'8px 0',borderRadius:10,fontSize:12,fontWeight:700,cursor:'pointer',
+                       background:filter===f?(f==='credit'?'rgba(0,214,143,0.12)':f==='debit'?'rgba(255,77,106,0.12)':'var(--teal-dim)'):'var(--bg-elevated)',
+                       border:`1px solid ${filter===f?(f==='credit'?'var(--green)':f==='debit'?'var(--red)':'var(--teal)'):'var(--b1)'}`,
+                       color:filter===f?(f==='credit'?'var(--green)':f==='debit'?'var(--red)':'var(--teal)'):'var(--t3)'}}>
+              {f==='all'?'All':f==='credit'?'↓ In':'↑ Out'}
             </button>
           ))}
         </div>
       </div>
 
-      {/* Transactions list */}
-      <div style={{ padding:'12px 16px 90px' }}>
-        {loading ? (
-          [1,2,3,4,5].map(i => (
-            <div key={i} style={{ background:'#16161f',borderRadius:14,height:70,
-                                   marginBottom:10,opacity:0.4 }} />
-          ))
-        ) : filtered.length === 0 ? (
-          <div style={{ textAlign:'center',padding:'60px 0' }}>
-            <p style={{ fontSize:48,marginBottom:12 }}>📭</p>
-            <p style={{ color:'#8888a8',fontWeight:600,fontSize:16 }}>
-              {search ? 'No results found' : 'No transactions yet'}
-            </p>
-            <p style={{ color:'#555570',fontSize:13,marginTop:6 }}>
-              {search ? 'Try a different search' : 'Start sending or receiving money'}
+      <div style={{padding:'12px 16px 0'}}>
+        <input value={search} onChange={e=>setSearch(e.target.value)}
+          placeholder="🔍 Search transactions…"
+          style={{width:'100%',background:'var(--bg-elevated)',border:'1px solid var(--b1)',borderRadius:'var(--r1)',
+                   padding:'11px 14px',fontSize:14,color:'var(--t1)',outline:'none',
+                   fontFamily:'inherit',boxSizing:'border-box',marginBottom:12}} />
+
+        {loading ? [1,2,3,4,5].map(i=>(
+          <div key={i} className="shimmer" style={{height:68,borderRadius:'var(--r2)',marginBottom:10}}/>
+        )) : filtered.length===0 ? (
+          <div style={{textAlign:'center',padding:'60px 0'}}>
+            <p style={{fontSize:48,marginBottom:12}}>📭</p>
+            <p style={{color:'var(--t2)',fontWeight:600,fontSize:16}}>
+              {search?'No results':'No transactions yet'}
             </p>
           </div>
         ) : (
-          Object.entries(grouped).map(([date, dayTxns]) => (
+          Object.entries(grouped).map(([date, dayTxns])=>(
             <div key={date}>
-              <p style={{ color:'#555570',fontSize:11,fontWeight:700,letterSpacing:0.5,
-                           padding:'8px 0 4px',textTransform:'uppercase' as const }}>
-                {date}
-              </p>
-              {dayTxns.map(tx => (
-                <div key={tx.id} style={S.txRow}>
-                  <div style={{ ...S.txIcon,
-                    background: tx.type==='credit'?'rgba(16,185,129,0.1)':'rgba(239,68,68,0.1)',
-                    color:       tx.type==='credit'?'#10b981':'#ef4444' }}>
-                    {CAT_ICONS[tx.cat] || (tx.type==='credit'?'↓':'↑')}
+              <p style={{color:'var(--t3)',fontSize:10,fontWeight:700,letterSpacing:0.5,
+                           padding:'8px 0 4px',textTransform:'uppercase'}}>{date}</p>
+              {dayTxns.map(tx=>(
+                <div key={tx.id} style={{background:'var(--bg-card)',border:'1px solid var(--b1)',
+                                          borderRadius:'var(--r2)',padding:'13px',
+                                          display:'flex',alignItems:'center',gap:12,marginBottom:8}}>
+                  <div style={{width:42,height:42,borderRadius:'var(--r1)',flexShrink:0,
+                                 background:tx.type==='credit'?'rgba(0,214,143,0.1)':'rgba(255,77,106,0.1)',
+                                 display:'flex',alignItems:'center',justifyContent:'center',fontSize:16}}>
+                    {CAT_ICONS[tx.cat]||(tx.type==='credit'?'↓':'↑')}
                   </div>
-                  <div style={{ flex:1,minWidth:0 }}>
-                    <p style={{ color:'#f0f0f8',fontWeight:600,fontSize:14,
-                                 whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis' }}>
-                      {tx.note || CAT_LABELS[tx.cat] || 'Transaction'}
+                  <div style={{flex:1,minWidth:0}}>
+                    <p style={{color:'var(--t1)',fontWeight:600,fontSize:14,
+                                 whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>
+                      {tx.note||'Transaction'}
                     </p>
-                    <div style={{ display:'flex',alignItems:'center',gap:8,marginTop:3 }}>
-                      <p style={{ color:'#555570',fontSize:11 }}>{fmtDate(tx.createdAt)}</p>
-                      {tx.status === 'success'
-                        ? <span style={S.statusGreen}>✓ Success</span>
-                        : <span style={S.statusRed}>✗ Failed</span>}
-                    </div>
+                    <p style={{color:'var(--t3)',fontSize:11,marginTop:2}}>{fmtDate(tx.createdAt)}</p>
                   </div>
-                  <div style={{ textAlign:'right',flexShrink:0 }}>
-                    <p style={{ color:tx.type==='credit'?'#10b981':'#ef4444',
-                                 fontWeight:800,fontSize:15 }}>
-                      {tx.type==='credit'?'+':'-'}₹{(tx.amount||0).toLocaleString('en-IN')}
-                    </p>
-                    {tx.ref && (
-                      <p style={{ color:'#333350',fontSize:9,marginTop:2 }}>
-                        {tx.ref.slice(-8)}
-                      </p>
-                    )}
-                  </div>
+                  <span style={{color:tx.type==='credit'?'var(--green)':'var(--red)',fontWeight:800,fontSize:15,flexShrink:0}}>
+                    {tx.type==='credit'?'+':'-'}₹{(tx.amount||0).toLocaleString('en-IN')}
+                  </span>
                 </div>
               ))}
             </div>
           ))
         )}
-
-        {/* Load more */}
-        {hasMore && !loading && filtered.length > 0 && (
-          <button onClick={() => fetchTxns(true)} disabled={loadMore}
-            style={{ width:'100%',padding:'14px',background:'#1e1e2a',
-                      border:'1px solid rgba(255,255,255,0.07)',borderRadius:14,
-                      color:'#f0b429',fontWeight:600,fontSize:14,cursor:'pointer',marginTop:8 }}>
-            {loadMore ? 'Loading...' : 'Load more'}
+        {hasMore && !loading && filtered.length>0 && (
+          <button onClick={()=>fetch(true)}
+            style={{width:'100%',padding:'13px',background:'var(--bg-card)',border:'1px solid var(--b1)',
+                     borderRadius:'var(--r2)',color:'var(--teal)',fontWeight:600,fontSize:14,cursor:'pointer',marginBottom:8}}>
+            Load more
           </button>
         )}
       </div>
+      <BottomNav />
     </div>
   );
 }
-
-const S: Record<string, React.CSSProperties> = {
-  page:        { maxWidth:480,margin:'0 auto',minHeight:'100vh',background:'#0a0a0f',fontFamily:"'DM Sans',sans-serif" },
-  header:      { display:'flex',alignItems:'center',gap:14,padding:'52px 16px 16px',background:'linear-gradient(160deg,#0f0f1a,#0a0a0f)' },
-  back:        { background:'rgba(255,255,255,0.06)',border:'1px solid rgba(255,255,255,0.07)',borderRadius:12,width:40,height:40,fontSize:18,cursor:'pointer',color:'#f0f0f8',flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center' },
-  title:       { fontFamily:"'Syne',sans-serif",fontWeight:800,fontSize:20,color:'#f0f0f8',flex:1 },
-  summaryCard: { flex:1,background:'#16161f',border:'1px solid rgba(255,255,255,0.06)',borderRadius:12,padding:'10px 12px' },
-  searchInput: { width:'100%',background:'#1e1e2a',border:'1px solid rgba(255,255,255,0.07)',borderRadius:12,padding:'12px 14px',fontSize:14,color:'#f0f0f8',outline:'none',fontFamily:'inherit',boxSizing:'border-box' as const },
-  txRow:       { background:'#16161f',border:'1px solid rgba(255,255,255,0.06)',borderRadius:14,padding:'13px 14px',display:'flex',alignItems:'center',gap:12,marginBottom:8 },
-  txIcon:      { width:42,height:42,borderRadius:12,display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,fontWeight:700,flexShrink:0 },
-  statusGreen: { background:'rgba(16,185,129,0.1)',color:'#10b981',fontSize:9,fontWeight:700,padding:'2px 6px',borderRadius:6 },
-  statusRed:   { background:'rgba(239,68,68,0.1)',color:'#ef4444',fontSize:9,fontWeight:700,padding:'2px 6px',borderRadius:6 },
-};

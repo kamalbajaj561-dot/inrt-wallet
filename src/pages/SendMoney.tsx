@@ -1,170 +1,220 @@
-import React, { useEffect, useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { sendMoney, subscribeToUser } from '../lib/db';
+import { getUserByPhone, updateBalance, addTransaction } from '../lib/db';
+import { doc, getDoc } from 'firebase/firestore';
+import { db } from '../lib/firebase';
+import '../styles/theme.css';
 
-export default function SendMoneyPage() {
-  const { user, userProfile } = useAuth();
+type Step = 1 | 2 | 3;
+
+export default function SendMoney() {
+  const { user, userProfile, refreshProfile } = useAuth();
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
-  const [step, setStep] = useState<'form' | 'pin' | 'success'>('form');
-  const [upi, setUpi] = useState('');
-  const [amount, setAmount] = useState('');
-  const [note, setNote] = useState('');
-  const [pin, setPin] = useState('');
+
+  const [step,    setStep]    = useState<Step>(1);
+  const [phone,   setPhone]   = useState('');
+  const [amount,  setAmount]  = useState('');
+  const [note,    setNote]    = useState('');
+  const [contact, setContact] = useState<any>(null);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
-  const [txRef, setTxRef] = useState('');
-  const [liveProfile, setLiveProfile] = useState<any>(userProfile);
+  const [err,     setErr]     = useState('');
+  const [txData,  setTxData]  = useState<any>(null);
 
-  useEffect(() => {
-    if (!user) return;
-    const unsub = subscribeToUser(user.uid, (data: any) => setLiveProfile(data));
-    return () => unsub();
-  }, [user]);
+  const bal   = userProfile?.balance || 0;
+  const QUICK = [50, 100, 200, 500, 1000];
 
-  useEffect(() => {
-    const phone = searchParams.get('phone');
-    if (phone) {
-      setUpi(phone);
-      setError('');
-    }
-  }, [searchParams]);
-
-  const handleProceed = () => {
-    if (!upi.trim()) return setError('Enter UPI ID');
-    if (!amount || parseFloat(amount) <= 0) return setError('Enter valid amount');
-    if (parseFloat(amount) > (liveProfile?.balance ?? 0)) return setError('Insufficient balance');
-    if (upi === liveProfile?.upiId) return setError("Can't send to yourself");
-    setError('');
-    setStep('pin');
-  };
-
-  const handleSend = async () => {
-    if (pin.length !== 4) return setError('Enter 4-digit UPI PIN');
-    // In production verify pin server-side; here we check stored pin
-    // For demo, any 4-digit pin works — replace with real PIN check
-    setLoading(true); setError('');
+  const lookupPhone = async () => {
+    const p = phone.replace(/\D/g, '');
+    if (p.length !== 10) return setErr('Enter valid 10-digit number');
+    if (p === userProfile?.phone) return setErr('Cannot send to yourself');
+    setLoading(true); setErr('');
     try {
-      const ref = await sendMoney({
-        fromUid: user!.uid,
-        toUpiId: upi.trim(),
-        amount: parseFloat(amount),
-        note,
-      });
-      setTxRef(ref);
-      setStep('success');
-    } catch (e: any) {
-      setError(e.message || 'Payment failed');
-    }
+      const found = await getUserByPhone(p);
+      if (found) {
+        setContact(found); setStep(2);
+      } else {
+        setErr('No INRT Wallet account found for this number');
+      }
+    } catch { setErr('Lookup failed. Try again.'); }
     setLoading(false);
   };
 
-  if (step === 'success') return (
-    <div style={s.center}>
-      <div style={{ textAlign: 'center', padding: 32 }}>
-        <div style={{ fontSize: 72, marginBottom: 16 }}>✅</div>
-        <h2 style={{ fontSize: 24, fontWeight: 800, color: '#111', marginBottom: 8 }}>Payment Sent!</h2>
-        <p style={{ color: '#666', fontSize: 16, marginBottom: 4 }}>₹{parseFloat(amount).toLocaleString('en-IN')}</p>
-        <p style={{ color: '#666', fontSize: 14, marginBottom: 4 }}>sent to {upi}</p>
-        <p style={{ color: '#9ca3af', fontSize: 12, marginBottom: 24 }}>Ref: {txRef}</p>
-        <p style={{ color: '#16a34a', fontSize: 13, background: '#dcfce7', padding: '8px 16px', borderRadius: 10, marginBottom: 24 }}>
-          🎁 You earned {Math.floor(parseFloat(amount) * 0.02)} reward points!
-        </p>
-        <button style={s.btn} onClick={() => navigate('/dashboard')}>Back to Home</button>
+  const handleSend = async () => {
+    const amt = parseFloat(amount);
+    if (!amt || amt < 1) return setErr('Enter valid amount');
+    if (amt > bal)       return setErr(`Insufficient balance. You have ₹${bal}`);
+    setLoading(true); setErr('');
+    try {
+      const ref = `TXN${Date.now()}${Math.random().toString(36).slice(2,5).toUpperCase()}`;
+      // Deduct from sender
+      await updateBalance(user!.uid, -amt);
+      await addTransaction(user!.uid, {
+        type:'debit', amount:amt,
+        note: note || `Sent to ${contact.name || phone}`,
+        cat:'transfer', ref,
+      });
+      // Credit receiver
+      await updateBalance(contact.uid, amt);
+      await addTransaction(contact.uid, {
+        type:'credit', amount:amt,
+        note: `Received from ${userProfile?.name || 'INRT User'}`,
+        cat:'transfer', ref,
+      });
+      await refreshProfile();
+      setTxData({ ref, amount:amt, to:contact.name||phone });
+      setStep(3);
+    } catch (e: any) { setErr(e.message || 'Transfer failed'); }
+    setLoading(false);
+  };
+
+  // ── Success ──
+  if (step === 3 && txData) return (
+    <div style={{ maxWidth:480,margin:'0 auto',minHeight:'100vh',background:'var(--bg)',
+                   fontFamily:'var(--f-body)',display:'flex',flexDirection:'column',
+                   alignItems:'center',padding:'80px 24px',textAlign:'center' }}>
+      <div style={{ width:80,height:80,borderRadius:'50%',background:'rgba(0,214,143,0.1)',
+                     border:'2px solid var(--green)',display:'flex',alignItems:'center',
+                     justifyContent:'center',fontSize:36,marginBottom:20 }}>✅</div>
+      <h2 style={{ fontFamily:'var(--f-display)',fontWeight:700,fontSize:24,color:'var(--t1)',marginBottom:8 }}>
+        Money Sent!
+      </h2>
+      <p style={{ color:'var(--t2)',fontSize:16,marginBottom:24 }}>
+        ₹{txData.amount.toLocaleString('en-IN')} sent to {txData.to}
+      </p>
+      <div style={{ background:'var(--bg-card)',border:'1px solid var(--b1)',borderRadius:'var(--r3)',
+                     padding:20,width:'100%',marginBottom:24,textAlign:'left' as const }}>
+        {[
+          ['Transaction ID', txData.ref],
+          ['Amount',`₹${txData.amount.toLocaleString('en-IN')}`],
+          ['To', txData.to],
+          ['Status','✅ Success'],
+          ['Points',`+${Math.floor(txData.amount/10)} pts`],
+        ].map(([k,v])=>(
+          <div key={k} style={{ display:'flex',justifyContent:'space-between',
+                                  padding:'9px 0',borderBottom:'1px solid var(--b1)' }}>
+            <span style={{ color:'var(--t2)',fontSize:13 }}>{k}</span>
+            <span style={{ color:'var(--t1)',fontWeight:700,fontSize:13 }}>{v}</span>
+          </div>
+        ))}
       </div>
+      <button className="btn-primary" onClick={() => navigate('/dashboard')}>Back to Home</button>
+      <button className="btn-outline" style={{ marginTop:10 }}
+        onClick={() => { setStep(1);setPhone('');setAmount('');setNote('');setContact(null);setTxData(null); }}>
+        Send Again
+      </button>
     </div>
   );
 
   return (
-    <div style={s.page}>
-      <div style={s.header}>
-        <button onClick={() => step === 'pin' ? setStep('form') : navigate('/dashboard')} style={s.back}>←</button>
-        <h1 style={s.title}>{step === 'pin' ? 'Enter UPI PIN' : 'Send Money'}</h1>
+    <div style={{ maxWidth:480,margin:'0 auto',minHeight:'100vh',background:'var(--bg)',fontFamily:'var(--f-body)' }}>
+      {/* Header */}
+      <div style={{ background:'linear-gradient(160deg,#050914,#0a1428)',padding:'52px 20px 20px' }}>
+        <div style={{ display:'flex',alignItems:'center',gap:14,marginBottom:16 }}>
+          <button onClick={() => step > 1 ? setStep((step-1) as Step) : navigate('/dashboard')}
+            className="back-btn">←</button>
+          <h1 className="page-title">Send Money</h1>
+        </div>
+        {/* Progress bar */}
+        <div style={{ display:'flex',gap:6 }}>
+          {[1,2].map(s => (
+            <div key={s} style={{ flex:1,height:3,borderRadius:3,transition:'background 0.3s',
+                                    background:step>s?'var(--teal)':step===s?'var(--teal)':'var(--b1)' }} />
+          ))}
+        </div>
       </div>
 
-      {step === 'form' && (
-        <div style={s.card}>
-          <Label text="UPI ID / Phone Number" />
-          <input style={s.input} placeholder="name@upi or 10-digit number"
-            value={upi} onChange={e => setUpi(e.target.value)} />
-
-          <Label text="Amount (₹)" />
-          <input style={{ ...s.input, fontSize: 28, fontWeight: 800, textAlign: 'center' }}
-            type="number" placeholder="0"
-            value={amount} onChange={e => setAmount(e.target.value)} />
-
-          <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
-            {[100, 200, 500, 1000].map(a => (
-              <button key={a} onClick={() => setAmount(String(a))}
-                style={{ flex: 1, background: amount === String(a) ? '#dbeafe' : '#f8fafc', border: `1px solid ${amount === String(a) ? '#3b82f6' : '#e5e7eb'}`, borderRadius: 10, padding: '8px 0', fontSize: 13, fontWeight: 700, cursor: 'pointer', color: amount === String(a) ? '#1d4ed8' : '#374151' }}>
-                ₹{a}
-              </button>
-            ))}
+      <div style={{ padding:'20px 16px 40px' }}>
+        {/* STEP 1 */}
+        {step === 1 && (
+          <div className="card">
+            <p className="s-title">Enter Recipient</p>
+            <p className="s-label">MOBILE NUMBER</p>
+            <div style={{ display:'flex',border:'1px solid var(--b1)',borderRadius:'var(--r2)',overflow:'hidden',marginBottom:16 }}>
+              <span style={{ padding:'14px 12px',background:'var(--bg-elevated)',color:'var(--t2)',
+                              fontSize:13,borderRight:'1px solid var(--b1)',whiteSpace:'nowrap' }}>
+                🇮🇳 +91
+              </span>
+              <input style={{ flex:1,background:'none',border:'none',outline:'none',
+                               padding:'14px',fontSize:15,color:'var(--t1)',fontFamily:'inherit' }}
+                type="tel" maxLength={10} placeholder="10-digit number"
+                value={phone}
+                onChange={e => { setPhone(e.target.value.replace(/\D/g,'')); setErr(''); }}
+                onKeyDown={e => e.key==='Enter' && lookupPhone()} />
+            </div>
+            {err && <p className="err-box" style={{ marginBottom:14 }}>⚠️ {err}</p>}
+            <button className="btn-primary" onClick={lookupPhone}
+              disabled={loading || phone.replace(/\D/g,'').length !== 10}
+              style={{ opacity:loading||phone.replace(/\D/g,'').length!==10?0.5:1 }}>
+              {loading ? 'Looking up…' : 'Continue →'}
+            </button>
           </div>
+        )}
 
-          <Label text="Note (optional)" />
-          <input style={s.input} placeholder="What's this for?"
-            value={note} onChange={e => setNote(e.target.value)} />
+        {/* STEP 2 */}
+        {step === 2 && contact && (
+          <>
+            {/* Recipient card */}
+            <div className="card" style={{ display:'flex',alignItems:'center',gap:14,marginBottom:16 }}>
+              <div style={{ width:52,height:52,borderRadius:'50%',background:'var(--g-teal)',
+                             display:'flex',alignItems:'center',justifyContent:'center',
+                             fontFamily:'var(--f-display)',fontWeight:700,fontSize:20,color:'#000' }}>
+                {(contact.name||'?').charAt(0).toUpperCase()}
+              </div>
+              <div style={{ flex:1 }}>
+                <p style={{ fontWeight:700,fontSize:16,color:'var(--t1)' }}>{contact.name}</p>
+                <p style={{ color:'var(--t3)',fontSize:12,marginTop:2 }}>
+                  +91 {contact.phone}
+                </p>
+              </div>
+              <span className="badge-green">✓ INRT User</span>
+            </div>
 
-          <div style={{ background: '#f0fdf4', borderRadius: 12, padding: 12, marginBottom: 16 }}>
-            <p style={{ color: '#15803d', fontSize: 13 }}>
-              💰 Available Balance: ₹{(liveProfile?.balance ?? 0).toLocaleString('en-IN')}
-            </p>
-          </div>
+            <div className="card" style={{ marginBottom:16 }}>
+              <p className="s-label">AMOUNT</p>
+              <div className="amount-box" style={{ marginBottom:12 }}>
+                <span style={{ color:'var(--teal)',fontSize:24,fontWeight:700 }}>₹</span>
+                <input className="amount-input" type="number"
+                  placeholder="0" value={amount}
+                  onChange={e => { setAmount(e.target.value); setErr(''); }} />
+              </div>
+              <div style={{ display:'flex',gap:8,flexWrap:'wrap' as const,marginBottom:14 }}>
+                {QUICK.map(a => (
+                  <button key={a} onClick={() => setAmount(String(a))}
+                    style={{ padding:'7px 12px',borderRadius:'var(--r1)',fontSize:12,fontWeight:700,
+                               cursor:'pointer',
+                               background:amount===String(a)?'var(--teal-dim)':'var(--bg-elevated)',
+                               border:`1px solid ${amount===String(a)?'var(--teal)':'var(--b1)'}`,
+                               color:amount===String(a)?'var(--teal)':'var(--t2)' }}>
+                    ₹{a}
+                  </button>
+                ))}
+              </div>
+              <p className="s-label">NOTE (OPTIONAL)</p>
+              <input className="inp" placeholder="What's this for?"
+                value={note} onChange={e => setNote(e.target.value)} />
+            </div>
 
-          {error && <p style={s.error}>{error}</p>}
-          <button style={s.btn} onClick={handleProceed}>Proceed to Pay →</button>
-        </div>
-      )}
+            <div style={{ display:'flex',justifyContent:'space-between',padding:'10px 14px',
+                           background:'var(--bg-card)',borderRadius:'var(--r1)',marginBottom:16,
+                           border:'1px solid var(--b1)' }}>
+              <span style={{ color:'var(--t2)',fontSize:13 }}>Available balance</span>
+              <span style={{ color:parseFloat(amount)>bal?'var(--red)':'var(--green)',
+                              fontWeight:700,fontSize:13 }}>
+                ₹{bal.toLocaleString('en-IN')}
+              </span>
+            </div>
 
-      {step === 'pin' && (
-        <div style={s.card}>
-          <div style={{ textAlign: 'center', marginBottom: 24 }}>
-            <p style={{ color: '#666', fontSize: 14, marginBottom: 4 }}>Paying</p>
-            <p style={{ fontWeight: 900, fontSize: 32, color: '#111' }}>₹{parseFloat(amount).toLocaleString('en-IN')}</p>
-            <p style={{ color: '#666', fontSize: 14 }}>to {upi}</p>
-          </div>
+            {err && <p className="err-box" style={{ marginBottom:14 }}>⚠️ {err}</p>}
 
-          <Label text="Enter 4-digit UPI PIN" />
-          <div style={{ display: 'flex', justifyContent: 'center', gap: 16, marginBottom: 24 }}>
-            {[0, 1, 2, 3].map(i => (
-              <div key={i} style={{ width: 20, height: 20, borderRadius: '50%', background: i < pin.length ? '#00b9f1' : '#e5e7eb', transition: 'all 0.15s' }} />
-            ))}
-          </div>
-
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, maxWidth: 260, margin: '0 auto 20px' }}>
-            {[1, 2, 3, 4, 5, 6, 7, 8, 9, '', 0, '⌫'].map((k, i) => (
-              <button key={i} onClick={() => {
-                if (k === '⌫') setPin(p => p.slice(0, -1));
-                else if (k !== '' && pin.length < 4) setPin(p => p + String(k));
-              }} style={{ height: 60, borderRadius: 16, background: k === '' ? 'transparent' : '#f8fafc', border: k === '' ? 'none' : '2px solid #e5e7eb', fontSize: 22, fontWeight: 700, cursor: k === '' ? 'default' : 'pointer', color: '#111' }}>{k}</button>
-            ))}
-          </div>
-
-          {error && <p style={{ ...s.error, textAlign: 'center' }}>{error}</p>}
-          <button style={{ ...s.btn, opacity: pin.length === 4 ? 1 : 0.5 }} onClick={handleSend} disabled={loading || pin.length !== 4}>
-            {loading ? 'Processing...' : 'Pay Now →'}
-          </button>
-          <p style={{ textAlign: 'center', color: '#9ca3af', fontSize: 12, marginTop: 12 }}>🔒 Secured by INRT · UPI encrypted</p>
-        </div>
-      )}
+            <button className="btn-primary" onClick={handleSend}
+              disabled={loading||!amount||parseFloat(amount)<1||parseFloat(amount)>bal}
+              style={{ opacity:loading||!amount||parseFloat(amount)<1||parseFloat(amount)>bal?0.5:1 }}>
+              {loading ? '⏳ Sending…' : amount ? `Send ₹${parseFloat(amount).toLocaleString('en-IN')} →` : 'Enter amount'}
+            </button>
+          </>
+        )}
+      </div>
     </div>
   );
 }
-
-function Label({ text }: { text: string }) {
-  return <p style={{ color: '#374151', fontSize: 12, fontWeight: 700, marginBottom: 8, letterSpacing: 0.5 }}>{text.toUpperCase()}</p>;
-}
-
-const s: Record<string, React.CSSProperties> = {
-  page: { maxWidth: 480, margin: '0 auto', minHeight: '100vh', background: '#f8fafc', padding: '20px 16px', fontFamily: "'DM Sans', sans-serif" },
-  header: { display: 'flex', alignItems: 'center', gap: 14, marginBottom: 24 },
-  back: { background: '#fff', border: '2px solid #e5e7eb', borderRadius: 12, width: 40, height: 40, fontSize: 18, cursor: 'pointer' },
-  title: { fontWeight: 800, fontSize: 22, color: '#111' },
-  card: { background: '#fff', borderRadius: 20, padding: 24, boxShadow: '0 4px 24px rgba(0,0,0,0.06)' },
-  input: { width: '100%', border: '2px solid #e5e7eb', borderRadius: 12, padding: '13px 14px', fontSize: 15, outline: 'none', color: '#111', fontFamily: 'inherit', boxSizing: 'border-box', marginBottom: 16 },
-  btn: { width: '100%', padding: '16px 0', background: '#00b9f1', border: 'none', borderRadius: 14, color: '#fff', fontWeight: 700, fontSize: 16, cursor: 'pointer', fontFamily: 'inherit' },
-  error: { color: '#ef4444', fontSize: 13, marginBottom: 12 },
-  center: { minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f8fafc', fontFamily: "'DM Sans', sans-serif" },
-};
