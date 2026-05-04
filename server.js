@@ -135,6 +135,744 @@ app.post('/reset-password', async (req, res) => {
   }
 });
 
+/**
+ * INRT WALLET — KYC Backend Routes (add to your server.js)
+ *
+ * These routes call Surepass API from your backend.
+ * Never call Surepass from the frontend — your token would be exposed.
+ *
+ * HOW TO ADD TO YOUR server.js:
+ *   Copy everything below the line "// ── KYC ROUTES ──"
+ *   Paste it into your server.js before app.listen(...)
+ */
+
+// ── Dependencies already in your server.js ──
+// const express = require('express');
+// const cors    = require('cors');
+// require('dotenv').config();
+// const admin   = require('firebase-admin');
+
+// ══════════════════════════════════════════════════════════════
+// ── KYC ROUTES — paste into server.js ──────────────────────
+// ══════════════════════════════════════════════════════════════
+
+/**
+ * POST /kyc/aadhaar-send-otp
+ * Sends OTP to Aadhaar-linked mobile via Surepass
+ * Body: { aadhaarNumber: "123456789012", userId: "firebaseUid" }
+ */
+app.post('/kyc/aadhaar-send-otp', async (req, res) => {
+  try {
+    const { aadhaarNumber, userId } = req.body;
+
+    if (!aadhaarNumber || aadhaarNumber.replace(/\s/g,'').length !== 12)
+      return res.status(400).json({ error: 'Invalid Aadhaar number' });
+
+    const SUREPASS_TOKEN = process.env.SUREPASS_TOKEN;
+    if (!SUREPASS_TOKEN)
+      return res.status(500).json({ error: 'SUREPASS_TOKEN not configured in Railway env vars' });
+
+    // Call Surepass Aadhaar OTP generation endpoint
+    const response = await fetch('https://kyc-api.surepass.io/api/v1/aadhaar-v2/generate-otp', {
+      method: 'POST',
+      headers: {
+        'Content-Type':  'application/json',
+        'Authorization': `Bearer ${SUREPASS_TOKEN}`,
+      },
+      body: JSON.stringify({
+        id_number: aadhaarNumber.replace(/\s/g,''),
+      }),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok || data.status_code !== 200) {
+      console.error('Surepass Aadhaar OTP error:', data);
+      return res.status(400).json({
+        error: data.message || 'Failed to send OTP. Check Aadhaar number.'
+      });
+    }
+
+    // Log attempt to Firestore (optional, for audit trail)
+    if (db && userId) {
+      await db.collection('kycAttempts').add({
+        userId,
+        type:      'aadhaar_otp_sent',
+        timestamp: admin.firestore.FieldValue.serverTimestamp(),
+        aadhaarLast4: aadhaarNumber.slice(-4),
+      });
+    }
+
+    // Return ref_id to frontend (needed for OTP verification)
+    res.json({
+      success:  true,
+      ref_id:   data.data?.ref_id || data.ref_id,
+      message:  'OTP sent to Aadhaar-linked mobile',
+    });
+
+  } catch (e) {
+    console.error('/kyc/aadhaar-send-otp error:', e);
+    res.status(500).json({ error: e.message || 'Internal server error' });
+  }
+});
+
+/**
+ * POST /kyc/aadhaar-verify-otp
+ * Verifies OTP and retrieves Aadhaar data from Surepass
+ * Body: { otp: "123456", ref_id: "xxxxx", userId: "firebaseUid" }
+ */
+app.post('/kyc/aadhaar-verify-otp', async (req, res) => {
+  try {
+    const { otp, ref_id, userId } = req.body;
+
+    if (!otp || otp.length !== 6) return res.status(400).json({ error: 'Invalid OTP' });
+    if (!ref_id) return res.status(400).json({ error: 'ref_id required' });
+
+    const SUREPASS_TOKEN = process.env.SUREPASS_TOKEN;
+    if (!SUREPASS_TOKEN)
+      return res.status(500).json({ error: 'SUREPASS_TOKEN not configured' });
+
+    // Verify OTP with Surepass
+    const response = await fetch('https://kyc-api.surepass.io/api/v1/aadhaar-v2/submit-otp', {
+      method: 'POST',
+      headers: {
+        'Content-Type':  'application/json',
+        'Authorization': `Bearer ${SUREPASS_TOKEN}`,
+      },
+      body: JSON.stringify({ otp, ref_id }),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok || data.status_code !== 200) {
+      console.error('Surepass OTP verify error:', data);
+      return res.status(400).json({
+        error: data.message || 'Invalid OTP or OTP expired'
+      });
+    }
+
+    // Surepass returns: name, dob, gender, address, zip_code, state, photo
+    const aadhaarData = data.data || {};
+
+    // Save partial KYC data to Firestore
+    if (db && userId) {
+      await db.collection('kyc').doc(userId).set({
+        aadhaarVerified:   true,
+        aadhaarVerifiedAt: admin.firestore.FieldValue.serverTimestamp(),
+        aadhaarName:       aadhaarData.full_name || '',
+        aadhaarDob:        aadhaarData.dob        || '',
+        aadhaarGender:     aadhaarData.gender      || '',
+        aadhaarState:      aadhaarData.state       || '',
+        aadhaarPincode:    aadhaarData.zip_code    || '',
+        updatedAt:         admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
+    }
+
+    res.json({
+      success:     true,
+      aadhaarData: {
+        name:      aadhaarData.full_name  || '',
+        dob:       aadhaarData.dob        || '',
+        gender:    aadhaarData.gender     || '',
+        address:   aadhaarData.address    || '',
+        state:     aadhaarData.state      || '',
+        zip_code:  aadhaarData.zip_code   || '',
+        // Note: We do NOT return the Aadhaar photo to frontend for privacy
+      },
+      message: 'Aadhaar verified successfully',
+    });
+
+  } catch (e) {
+    console.error('/kyc/aadhaar-verify-otp error:', e);
+    res.status(500).json({ error: e.message || 'Internal server error' });
+  }
+});
+
+/**
+ * POST /kyc/verify-pan
+ * Verifies PAN against Income Tax database via Surepass
+ * Body: { panNumber: "ABCDE1234F", userId: "firebaseUid" }
+ */
+app.post('/kyc/verify-pan', async (req, res) => {
+  try {
+    const { panNumber, userId } = req.body;
+
+    if (!panNumber || !/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(panNumber))
+      return res.status(400).json({ error: 'Invalid PAN format' });
+
+    const SUREPASS_TOKEN = process.env.SUREPASS_TOKEN;
+    if (!SUREPASS_TOKEN)
+      return res.status(500).json({ error: 'SUREPASS_TOKEN not configured' });
+
+    // Verify PAN with Surepass
+    const response = await fetch('https://kyc-api.surepass.io/api/v1/pan/pan', {
+      method: 'POST',
+      headers: {
+        'Content-Type':  'application/json',
+        'Authorization': `Bearer ${SUREPASS_TOKEN}`,
+      },
+      body: JSON.stringify({ id_number: panNumber }),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok || data.status_code !== 200) {
+      console.error('Surepass PAN verify error:', data);
+      return res.status(400).json({
+        error: data.message || 'PAN verification failed. Check PAN number.'
+      });
+    }
+
+    const panData = data.data || {};
+
+    // Save to Firestore
+    if (db && userId) {
+      await db.collection('kyc').doc(userId).set({
+        panVerified:   true,
+        panVerifiedAt: admin.firestore.FieldValue.serverTimestamp(),
+        panName:       panData.full_name  || '',
+        panDob:        panData.dob        || '',
+        panStatus:     panData.pan_status || 'VALID',
+        updatedAt:     admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
+    }
+
+    res.json({
+      success: true,
+      panData: {
+        name:   panData.full_name  || '',
+        dob:    panData.dob        || '',
+        status: panData.pan_status || 'VALID',
+        panType: panData.pan_type  || '',
+      },
+      message: 'PAN verified successfully',
+    });
+
+  } catch (e) {
+    console.error('/kyc/verify-pan error:', e);
+    res.status(500).json({ error: e.message || 'Internal server error' });
+  }
+});
+
+/**
+ * POST /kyc/admin/approve
+ * Admin-only: approve or reject a KYC submission
+ * Body: { userId, action: "approve"|"reject", reason?, adminKey }
+ */
+app.post('/kyc/admin/approve', async (req, res) => {
+  try {
+    const { userId, action, reason, adminKey } = req.body;
+
+    if (adminKey !== process.env.ADMIN_KEY)
+      return res.status(403).json({ error: 'Unauthorized' });
+
+    if (!['approve','reject'].includes(action))
+      return res.status(400).json({ error: 'action must be approve or reject' });
+
+    if (!db)
+      return res.status(500).json({ error: 'Firebase not connected' });
+
+    const newStatus  = action === 'approve' ? 'verified' : 'rejected';
+    const rewardPts  = action === 'approve' ? 500 : 0; // bonus for completing KYC
+
+    await db.collection('kyc').doc(userId).update({
+      status:           newStatus,
+      reviewedAt:       admin.firestore.FieldValue.serverTimestamp(),
+      rejectionReason:  reason || null,
+      updatedAt:        admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    await db.collection('users').doc(userId).update({
+      kycStatus:      newStatus,
+      kycReviewedAt:  admin.firestore.FieldValue.serverTimestamp(),
+      ...(action === 'approve' && {
+        rewardPoints:  admin.firestore.FieldValue.increment(rewardPts),
+        kycVerifiedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }),
+      ...(action === 'reject' && {
+        kycRejectionReason: reason || 'Documents could not be verified',
+      }),
+    });
+
+    // TODO: Send push notification / email to user here
+
+    res.json({
+      success: true,
+      userId,
+      status:  newStatus,
+      message: action === 'approve'
+        ? `KYC approved. 500 reward points added to ${userId}`
+        : `KYC rejected. Reason: ${reason}`,
+    });
+
+  } catch (e) {
+    console.error('/kyc/admin/approve error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/**
+ * GET /kyc/status/:userId
+ * Returns KYC status for a user
+ */
+app.get('/kyc/status/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    if (!db) return res.json({ status: 'unknown' });
+
+    const snap = await db.collection('kyc').doc(userId).get();
+    if (!snap.exists) return res.json({ status: 'not_started' });
+
+    const d = snap.data();
+    res.json({
+      status:           d.status,
+      kycRef:           d.kycRef,
+      submittedAt:      d.submittedAt,
+      reviewedAt:       d.reviewedAt,
+      rejectionReason:  d.rejectionReason,
+      aadhaarVerified:  d.aadhaarVerified || false,
+      panVerified:      d.panVerified     || false,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/**
+ * INRT WALLET — CUSTOM PAYMENT ENGINE
+ * Paste this into server.js BEFORE app.listen(...)
+ *
+ * Includes:
+ *  - Wallet-to-wallet transfers (zero fees, instant)
+ *  - UPI QR code generation (any UPI app can scan)
+ *  - UPI webhook to credit wallet when payment received
+ *  - Bill payments with 2% cashback
+ *  - Mobile recharge
+ *  - Refunds
+ *  - Balance check
+ *  - Business commission earnings tracker
+ */
+
+const crypto = require('crypto');
+
+// ── Commission rates — you earn this on every transaction ─────
+const COMMISSION = {
+  transfer: 0.005,  // 0.5% on transfers above ₹1000
+  recharge: 0.02,   // 2% on recharges
+  bills:    0.015,  // 1.5% on bill payments
+  gold:     0.01,   // 1% on gold
+  crypto:   0.01,   // 1% on crypto
+};
+
+// ── Generate unique transaction ID ────────────────────────────
+function genTxId(prefix = 'TXN') {
+  return `${prefix}${Date.now()}${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+}
+
+// ── Credit business wallet with commission ────────────────────
+async function earnCommission(amount, type) {
+  const rate = COMMISSION[type] || 0;
+  if (rate <= 0 || amount < 100) return 0;
+  const commission = Math.floor(amount * rate);
+  if (commission < 1) return 0;
+  if (db) {
+    await db.collection('businessWallet').doc('earnings').set({
+      balance: admin.firestore.FieldValue.increment(commission),
+      [`${type}Earnings`]: admin.firestore.FieldValue.increment(commission),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+  }
+  return commission;
+}
+
+// ══════════════════════════════════════════════════════════════
+//  1. WALLET-TO-WALLET TRANSFER
+// ══════════════════════════════════════════════════════════════
+app.post('/payment/transfer', async (req, res) => {
+  try {
+    const { fromUid, toPhone, toUid: directToUid, amount, note } = req.body;
+    if (!fromUid)              return res.status(400).json({ error: 'fromUid required' });
+    if (!amount || amount < 1) return res.status(400).json({ error: 'Invalid amount' });
+    if (amount > 100000)       return res.status(400).json({ error: 'Max ₹1,00,000 per transfer' });
+    if (!db)                   return res.status(500).json({ error: 'Database not connected' });
+
+    // Get sender
+    const senderSnap = await db.collection('users').doc(fromUid).get();
+    if (!senderSnap.exists) return res.status(404).json({ error: 'Sender not found' });
+    const sender = senderSnap.data();
+
+    // Balance check
+    if ((sender.balance || 0) < amount)
+      return res.status(402).json({ error: `Insufficient balance. Available: ₹${sender.balance || 0}` });
+
+    // Daily limit check
+    const today     = new Date().toISOString().split('T')[0];
+    const limitKey  = `dailySent_${today}`;
+    const dailySent = sender[limitKey] || 0;
+    const dailyLimit= sender.kycStatus === 'verified' ? 100000 : 10000;
+    if (dailySent + amount > dailyLimit)
+      return res.status(402).json({ error: `Daily limit ₹${dailyLimit.toLocaleString('en-IN')} reached. Sent: ₹${dailySent.toLocaleString('en-IN')}` });
+
+    // Resolve receiver
+    let toUid = directToUid;
+    if (!toUid && toPhone) {
+      const phoneSnap = await db.collection('phoneIndex').doc(toPhone.replace(/\D/g,'')).get();
+      if (!phoneSnap.exists) return res.status(404).json({ error: 'No INRT Wallet account found for this number' });
+      toUid = phoneSnap.data().uid;
+    }
+    if (!toUid)         return res.status(400).json({ error: 'Receiver not found' });
+    if (toUid===fromUid)return res.status(400).json({ error: 'Cannot transfer to yourself' });
+
+    const ref = genTxId('TXN');
+    const pts = Math.floor(amount / 10);
+    const commission = await earnCommission(amount, 'transfer');
+
+    // Atomic batch write
+    const batch = db.batch();
+
+    // Debit sender
+    batch.update(db.collection('users').doc(fromUid), {
+      balance:       admin.firestore.FieldValue.increment(-amount),
+      totalSent:     admin.firestore.FieldValue.increment(amount),
+      [limitKey]:    admin.firestore.FieldValue.increment(amount),
+      updatedAt:     admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    // Credit receiver
+    batch.update(db.collection('users').doc(toUid), {
+      balance:       admin.firestore.FieldValue.increment(amount),
+      totalReceived: admin.firestore.FieldValue.increment(amount),
+      rewardPoints:  admin.firestore.FieldValue.increment(pts),
+      updatedAt:     admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    // Debit transaction record
+    batch.set(db.collection('transactions').doc(ref), {
+      uid: fromUid, toUid, type: 'debit', amount,
+      note: note || `Transfer to ${toUid}`,
+      cat: 'transfer', ref, status: 'success',
+      commission, rewardPoints: pts,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    // Credit transaction record
+    batch.set(db.collection('transactions').doc(ref + '_CR'), {
+      uid: toUid, fromUid, type: 'credit', amount,
+      note: `Received from ${sender.name || 'INRT User'}`,
+      cat: 'transfer', ref: ref + '_CR', status: 'success',
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    await batch.commit();
+
+    res.json({
+      success: true, ref, amount, commission, rewardPoints: pts,
+      message: `₹${amount.toLocaleString('en-IN')} transferred successfully`,
+    });
+  } catch (e) {
+    console.error('/payment/transfer:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════
+//  2. GENERATE UPI QR CODE
+//  User shows QR → payer scans with GPay / PhonePe / Paytm
+// ══════════════════════════════════════════════════════════════
+app.post('/payment/generate-upi-qr', async (req, res) => {
+  try {
+    const { userId, amount, note } = req.body;
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+    if (!db)     return res.status(500).json({ error: 'DB not connected' });
+
+    const userSnap = await db.collection('users').doc(userId).get();
+    if (!userSnap.exists) return res.status(404).json({ error: 'User not found' });
+
+    const user      = userSnap.data();
+    const upiId     = user.upiId || `${user.phone}@inrt`;
+    const txnId     = genTxId('UPI');
+    const payeeName = encodeURIComponent(user.name || 'INRT Wallet');
+    const amtParam  = amount ? `&am=${amount}` : '';
+    const noteParam = note   ? `&tn=${encodeURIComponent(note)}` : '';
+
+    // Standard UPI deep link — works with ALL UPI apps (GPay, PhonePe, Paytm etc.)
+    const upiString  = `upi://pay?pa=${upiId}&pn=${payeeName}&tr=${txnId}${amtParam}${noteParam}&cu=INR`;
+    // Free QR image API — no key needed
+    const qrImageUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(upiString)}`;
+
+    // Save pending payment to track it
+    await db.collection('pendingPayments').doc(txnId).set({
+      userId, upiId, amount: amount || null,
+      note: note || '', txnId, status: 'pending',
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      expiresAt: Date.now() + 10 * 60 * 1000, // 10 min
+    });
+
+    res.json({
+      success: true, txnId, upiId, upiString, qrImageUrl,
+      amount: amount || null,
+      message: 'QR generated. User can scan with any UPI app.',
+    });
+  } catch (e) {
+    console.error('/payment/generate-upi-qr:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════
+//  3. CHECK UPI PAYMENT STATUS (poll every 3 seconds)
+// ══════════════════════════════════════════════════════════════
+app.get('/payment/check-upi/:txnId', async (req, res) => {
+  try {
+    if (!db) return res.json({ status: 'unknown' });
+    const snap = await db.collection('pendingPayments').doc(req.params.txnId).get();
+    if (!snap.exists) return res.json({ status: 'not_found' });
+    const data = snap.data();
+    if (Date.now() > data.expiresAt) {
+      await snap.ref.update({ status: 'expired' });
+      return res.json({ status: 'expired' });
+    }
+    res.json({ status: data.status, amount: data.amount, txnId: req.params.txnId });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════
+//  4. UPI WEBHOOK — credits wallet when UPI payment received
+//  Connect your UPI VPA to this URL in your bank's dashboard
+// ══════════════════════════════════════════════════════════════
+app.post('/payment/upi-webhook', async (req, res) => {
+  try {
+    // Verify signature if processor sends one
+    const webhookSecret = process.env.UPI_WEBHOOK_SECRET;
+    if (webhookSecret) {
+      const sig      = req.headers['x-webhook-signature'] || '';
+      const expected = crypto.createHmac('sha256', webhookSecret)
+        .update(JSON.stringify(req.body)).digest('hex');
+      if (sig !== expected) return res.status(401).json({ error: 'Invalid signature' });
+    }
+
+    const { txnId, amount, payerVpa, status } = req.body;
+    if (!txnId || !amount || status !== 'SUCCESS') return res.json({ received: true });
+    if (!db) return res.json({ received: true });
+
+    const pendingSnap = await db.collection('pendingPayments').doc(txnId).get();
+    if (!pendingSnap.exists) return res.json({ received: true });
+    const pending = pendingSnap.data();
+    if (pending.status === 'success') return res.json({ received: true }); // already processed
+
+    const ref = genTxId('UPI');
+    const pts = Math.floor(amount / 10);
+
+    const batch = db.batch();
+    batch.update(db.collection('users').doc(pending.userId), {
+      balance:       admin.firestore.FieldValue.increment(parseFloat(amount)),
+      totalReceived: admin.firestore.FieldValue.increment(parseFloat(amount)),
+      rewardPoints:  admin.firestore.FieldValue.increment(pts),
+      updatedAt:     admin.firestore.FieldValue.serverTimestamp(),
+    });
+    batch.set(db.collection('transactions').doc(ref), {
+      uid: pending.userId, type: 'credit', amount: parseFloat(amount),
+      note: `UPI payment from ${payerVpa || 'UPI'}`,
+      cat: 'add_money', ref, status: 'success',
+      payerVpa, upiTxnId: txnId, rewardPoints: pts,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    batch.update(pendingSnap.ref, {
+      status: 'success',
+      paidAt: admin.firestore.FieldValue.serverTimestamp(), ref,
+    });
+    await batch.commit();
+
+    console.log(`✅ UPI credited: ₹${amount} → ${pending.userId}`);
+    res.json({ received: true, credited: true });
+  } catch (e) {
+    console.error('/payment/upi-webhook:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════
+//  5. ADMIN CREDIT (manually add money to any wallet)
+// ══════════════════════════════════════════════════════════════
+app.post('/payment/admin-credit', async (req, res) => {
+  try {
+    const { userId, amount, note, adminKey } = req.body;
+    if (adminKey !== process.env.ADMIN_KEY) return res.status(403).json({ error: 'Unauthorized' });
+    if (!userId || !amount) return res.status(400).json({ error: 'userId and amount required' });
+    if (!db) return res.status(500).json({ error: 'DB not connected' });
+
+    const ref = genTxId('ADM');
+    const batch = db.batch();
+    batch.update(db.collection('users').doc(userId), {
+      balance:   admin.firestore.FieldValue.increment(parseFloat(amount)),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    batch.set(db.collection('transactions').doc(ref), {
+      uid: userId, type: 'credit', amount: parseFloat(amount),
+      note: note || 'Admin credit', cat: 'add_money', ref, status: 'success',
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    await batch.commit();
+    res.json({ success: true, ref, amount, message: `₹${amount} credited to ${userId}` });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════
+//  6. BILL PAYMENT
+// ══════════════════════════════════════════════════════════════
+app.post('/payment/bill', async (req, res) => {
+  try {
+    const { userId, amount, category, provider, accountNo } = req.body;
+    if (!userId || !amount || !category) return res.status(400).json({ error: 'userId, amount, category required' });
+    if (!db) return res.status(500).json({ error: 'DB not connected' });
+
+    const userSnap = await db.collection('users').doc(userId).get();
+    if (!userSnap.exists) return res.status(404).json({ error: 'User not found' });
+    if ((userSnap.data().balance || 0) < amount)
+      return res.status(402).json({ error: `Insufficient balance. Available: ₹${userSnap.data().balance || 0}` });
+
+    const ref        = genTxId('BILL');
+    const cashback   = Math.floor(amount * 0.02);
+    const pts        = Math.floor(amount / 10);
+    const commission = await earnCommission(amount, 'bills');
+
+    const batch = db.batch();
+    batch.update(db.collection('users').doc(userId), {
+      balance:      admin.firestore.FieldValue.increment(-amount + cashback),
+      cashback:     admin.firestore.FieldValue.increment(cashback),
+      rewardPoints: admin.firestore.FieldValue.increment(pts),
+      updatedAt:    admin.firestore.FieldValue.serverTimestamp(),
+    });
+    batch.set(db.collection('transactions').doc(ref), {
+      uid: userId, type: 'debit', amount,
+      note: `${category} — ${provider || ''}`, cat: 'bills',
+      ref, status: 'success', accountNo, cashback, commission, rewardPoints: pts,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    await batch.commit();
+
+    res.json({
+      success: true, ref, amount, cashback, rewardPoints: pts, commission,
+      message: `Bill paid! ₹${cashback} cashback added.`,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════
+//  7. MOBILE RECHARGE
+// ══════════════════════════════════════════════════════════════
+app.post('/payment/recharge', async (req, res) => {
+  try {
+    const { userId, amount, mobile, operator, rechargeType } = req.body;
+    if (!userId || !amount || !mobile) return res.status(400).json({ error: 'userId, amount, mobile required' });
+    if (!db) return res.status(500).json({ error: 'DB not connected' });
+
+    const userSnap = await db.collection('users').doc(userId).get();
+    if (!userSnap.exists) return res.status(404).json({ error: 'User not found' });
+    if ((userSnap.data().balance || 0) < amount)
+      return res.status(402).json({ error: 'Insufficient balance' });
+
+    const ref        = genTxId('RCH');
+    const pts        = Math.floor(amount / 10);
+    const commission = await earnCommission(amount, 'recharge');
+
+    const batch = db.batch();
+    batch.update(db.collection('users').doc(userId), {
+      balance:      admin.firestore.FieldValue.increment(-amount),
+      rewardPoints: admin.firestore.FieldValue.increment(pts),
+      updatedAt:    admin.firestore.FieldValue.serverTimestamp(),
+    });
+    batch.set(db.collection('transactions').doc(ref), {
+      uid: userId, type: 'debit', amount,
+      note: `${operator || 'Mobile'} ${rechargeType || 'Prepaid'} — ${mobile}`,
+      cat: 'recharge', ref, status: 'success',
+      mobile, operator, commission, rewardPoints: pts,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    await batch.commit();
+
+    res.json({
+      success: true, ref, amount, rewardPoints: pts, commission,
+      message: `₹${amount} recharge done for ${mobile}`,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════
+//  8. REFUND
+// ══════════════════════════════════════════════════════════════
+app.post('/payment/refund', async (req, res) => {
+  try {
+    const { txId, reason, adminKey } = req.body;
+    if (adminKey !== process.env.ADMIN_KEY) return res.status(403).json({ error: 'Unauthorized' });
+    if (!db) return res.status(500).json({ error: 'DB not connected' });
+
+    const txSnap = await db.collection('transactions').doc(txId).get();
+    if (!txSnap.exists)         return res.status(404).json({ error: 'Transaction not found' });
+    if (txSnap.data().status === 'refunded') return res.status(400).json({ error: 'Already refunded' });
+
+    const tx = txSnap.data();
+    const refundRef = genTxId('REF');
+
+    const batch = db.batch();
+    batch.update(db.collection('users').doc(tx.uid), {
+      balance:   admin.firestore.FieldValue.increment(tx.amount),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    batch.update(db.collection('transactions').doc(txId), { status: 'refunded', refundRef });
+    batch.set(db.collection('transactions').doc(refundRef), {
+      uid: tx.uid, type: 'credit', amount: tx.amount,
+      note: `Refund: ${reason || 'Customer request'}`,
+      cat: 'refund', ref: refundRef, status: 'success', originalTxId: txId,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    await batch.commit();
+
+    res.json({ success: true, refundRef, amount: tx.amount, message: 'Refund processed' });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════
+//  9. GET BALANCE
+// ══════════════════════════════════════════════════════════════
+app.get('/payment/balance/:userId', async (req, res) => {
+  try {
+    if (!db) return res.json({ balance: 0 });
+    const snap = await db.collection('users').doc(req.params.userId).get();
+    if (!snap.exists) return res.json({ balance: 0 });
+    res.json({ balance: snap.data().balance || 0 });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════
+//  10. BUSINESS EARNINGS
+// ══════════════════════════════════════════════════════════════
+app.get('/payment/earnings', async (req, res) => {
+  try {
+    if (req.query.adminKey !== process.env.ADMIN_KEY)
+      return res.status(403).json({ error: 'Unauthorized' });
+    if (!db) return res.json({ earnings: {} });
+    const snap = await db.collection('businessWallet').doc('earnings').get();
+    res.json({ earnings: snap.exists ? snap.data() : { balance: 0 } });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+
+
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`\n🚀 INRT API on port ${PORT}`);
   console.log(`   Razorpay : ${process.env.RAZORPAY_KEY_ID  ? '✅' : '❌ Missing'}`);
