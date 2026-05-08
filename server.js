@@ -521,10 +521,30 @@ app.post('/payout/validate-upi', async (req, res) => {
   try {
     const { upiId } = req.body;
     if (!upiId) return res.status(400).json({ error: 'UPI ID required' });
+
+    // In sandbox/test mode, skip real validation
+    if (process.env.NODE_ENV !== 'production') {
+      return res.json({
+        valid:    true,
+        name:     'Test Account',
+        upiId,
+        bankName: 'Test Bank',
+      });
+    }
+
     const d = await cfPost('/payout/v1/validation/upiDetails', { vpa: upiId });
-    if (d.status !== 'SUCCESS') return res.status(400).json({ error: 'Invalid UPI ID' });
-    res.json({ valid: true, name: d.data?.name || 'UPI Account', upiId: d.data?.vpa || upiId, bankName: d.data?.bankName || '' });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+    if (d.status !== 'SUCCESS')
+      return res.status(400).json({ error: 'Invalid UPI ID' });
+
+    res.json({
+      valid:    true,
+      name:     d.data?.name     || 'UPI Account',
+      upiId:    d.data?.vpa      || upiId,
+      bankName: d.data?.bankName || '',
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 app.post('/payout/send-upi', async (req, res) => {
