@@ -639,6 +639,297 @@ app.post('/payout/withdraw', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+/**
+ * INRT WALLET — EZYTM RECHARGE ROUTES
+ * Paste into server.js BEFORE app.listen(...)
+ *
+ * Railway env vars needed:
+ *   EZYTM_API_TOKEN = your API token from ezytm.com profile
+ *   EZYTM_MEMBER_ID = your member ID from ezytm.com dashboard
+ */
+
+const EZYTM_BASE   = 'https://newapi.ezytm.in';
+const EZYTM_TOKEN  = process.env.EZYTM_API_TOKEN || '';
+const EZYTM_MEMBER = process.env.EZYTM_MEMBER_ID || '';
+
+// ══════════════════════════════════════════════════════════════
+//  ROUTE 1 — DETECT OPERATOR FROM MOBILE NUMBER
+// ══════════════════════════════════════════════════════════════
+app.get('/recharge/operator/:mobile', async (req, res) => {
+  try {
+    const mobile = req.params.mobile.replace(/\D/g, '');
+    if (!EZYTM_TOKEN || !EZYTM_MEMBER)
+      return res.status(500).json({ error: 'EZYTM_API_TOKEN and EZYTM_MEMBER_ID not set in Railway' });
+
+    const url = new URL(`${EZYTM_BASE}/api/getOperator`);
+    url.searchParams.append('token',    EZYTM_TOKEN);
+    url.searchParams.append('memberid', EZYTM_MEMBER);
+    url.searchParams.append('mobile',   mobile);
+
+    const r    = await fetch(url.toString(), { signal: AbortSignal.timeout(8000) });
+    const data = await r.json();
+
+    res.json({
+      mobile,
+      operator: data.operator || data.OPERATOR || data.Operator || 'UNKNOWN',
+      circle:   data.circle   || data.CIRCLE   || data.Circle   || 'UNKNOWN',
+    });
+  } catch (e) {
+    console.error('/recharge/operator:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════
+//  ROUTE 2 — GET LIVE PLANS
+// ══════════════════════════════════════════════════════════════
+app.get('/recharge/plans', async (req, res) => {
+  try {
+    const { operator, circle } = req.query;
+    if (!EZYTM_TOKEN || !EZYTM_MEMBER)
+      return res.status(500).json({ error: 'EZYTM_API_TOKEN and EZYTM_MEMBER_ID not set in Railway' });
+
+    const url = new URL(`${EZYTM_BASE}/api/getPlans`);
+    url.searchParams.append('token',    EZYTM_TOKEN);
+    url.searchParams.append('memberid', EZYTM_MEMBER);
+    url.searchParams.append('op',       operator || 'JIO');
+    url.searchParams.append('circle',   circle   || 'MAHARASHTRA');
+
+    const r    = await fetch(url.toString(), { signal: AbortSignal.timeout(10000) });
+    const data = await r.json();
+
+    if (data.STATUS === 'FAILURE' || data.status === 'FAILURE')
+      return res.status(400).json({ error: data.MESS || data.message || 'Failed to fetch plans' });
+
+    const plans = data.DATA || data.data || data.plans || data || [];
+    res.json({ success: true, plans });
+  } catch (e) {
+    console.error('/recharge/plans:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════
+//  ROUTE 3 — DO RECHARGE
+// ══════════════════════════════════════════════════════════════
+app.post('/recharge/do', async (req, res) => {
+  try {
+    const { userId, mobile, operator, amount, rechargeType } = req.body;
+
+    if (!userId || !mobile || !operator || !amount)
+      return res.status(400).json({ error: 'userId, mobile, operator, amount required' });
+
+    if (!EZYTM_TOKEN || !EZYTM_MEMBER)
+      return res.status(500).json({ error: 'EZYTM_API_TOKEN and EZYTM_MEMBER_ID not set in Railway' });
+
+    if (!db) return res.status(500).json({ error: 'Database not connected' });
+
+    // ── Check balance ─────────────────────────────────────────
+    const userSnap = await db.collection('users').doc(userId).get();
+    if (!userSnap.exists) return res.status(404).json({ error: 'User not found' });
+
+    const user    = userSnap.data();
+    const balance = user.balance || 0;
+
+    if (balance < amount)
+      return res.status(402).json({
+        error: `Insufficient balance. Available: ₹${balance.toLocaleString('en-IN')}`
+      });
+
+    // ── Generate order ID ─────────────────────────────────────
+    const orderId = `INRT${Date.now()}${Math.random().toString(36).slice(2,5).toUpperCase()}`;
+    const pts     = Math.floor(amount / 10);
+
+    // ── Deduct balance first ──────────────────────────────────
+    await db.collection('users').doc(userId).update({
+      balance:   admin.firestore.FieldValue.increment(-amount),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    // ── Call Ezytm API ────────────────────────────────────────
+    let ezytmResponse;
+    try {
+      const url = new URL(`${EZYTM_BASE}/api/recharge`);
+      url.searchParams.append('token',         EZYTM_TOKEN);
+      url.searchParams.append('memberid',      EZYTM_MEMBER);
+      url.searchParams.append('mobile',        mobile.replace(/\D/g, ''));
+      url.searchParams.append('amount',        amount.toString());
+      url.searchParams.append('recharge_type', rechargeType || 'P');
+      url.searchParams.append('operator',      operator.toUpperCase());
+      url.searchParams.append('orderid',       orderId);
+
+      const r = await fetch(url.toString(), { signal: AbortSignal.timeout(20000) });
+      ezytmResponse = await r.json();
+      console.log('Ezytm recharge response:', ezytmResponse);
+    } catch (fetchErr) {
+      // Network error — refund immediately
+      await db.collection('users').doc(userId).update({
+        balance:   admin.firestore.FieldValue.increment(amount),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      return res.status(500).json({ error: 'Recharge service unreachable. Balance refunded.' });
+    }
+
+    // ── Parse response ────────────────────────────────────────
+    const status      = (ezytmResponse.STATUS  || ezytmResponse.status  || '').toUpperCase();
+    const txnId       = ezytmResponse.TXNID    || ezytmResponse.txnid   || orderId;
+    const operatorRef = ezytmResponse.OPID     || ezytmResponse.opid    || '';
+    const message     = ezytmResponse.MESS     || ezytmResponse.message || '';
+
+    // ── FAILURE — refund ──────────────────────────────────────
+    if (status === 'FAILURE' || status === 'FAILED') {
+      await db.collection('users').doc(userId).update({
+        balance:   admin.firestore.FieldValue.increment(amount),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      await db.collection('transactions').add({
+        uid: userId, type: 'debit', amount,
+        note: `Failed recharge: ${operator} ${mobile}`,
+        cat: 'recharge', ref: orderId, status: 'failed',
+        mobile, operator, ezytmTxnId: txnId,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      return res.status(400).json({
+        success: false,
+        error:   message || 'Recharge failed. Balance has been refunded.',
+      });
+    }
+
+    // ── SUCCESS or PENDING — log transaction ──────────────────
+    const txStatus = status === 'SUCCESS' ? 'success' : 'pending';
+
+    await db.collection('transactions').add({
+      uid:          userId,
+      type:         'debit',
+      amount,
+      note:         `${operator} ${rechargeType === 'D' ? 'DTH' : rechargeType === 'T' ? 'Postpaid' : 'Prepaid'} — ${mobile}`,
+      cat:          'recharge',
+      ref:          orderId,
+      status:       txStatus,
+      mobile,
+      operator,
+      ezytmTxnId:   txnId,
+      operatorRef,
+      rewardPoints: status === 'SUCCESS' ? pts : 0,
+      createdAt:    admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    // Add reward points only on success
+    if (status === 'SUCCESS') {
+      await db.collection('users').doc(userId).update({
+        rewardPoints: admin.firestore.FieldValue.increment(pts),
+        updatedAt:    admin.firestore.FieldValue.serverTimestamp(),
+      });
+    }
+
+    res.json({
+      success:      status === 'SUCCESS',
+      pending:      status === 'PENDING',
+      orderId,
+      txnId,
+      operatorRef,
+      amount,
+      mobile,
+      operator,
+      status:       txStatus,
+      rewardPoints: status === 'SUCCESS' ? pts : 0,
+      message:      status === 'SUCCESS'
+        ? `₹${amount} recharge successful for ${mobile}`
+        : 'Recharge is processing. Will complete in a few minutes.',
+    });
+
+  } catch (e) {
+    console.error('/recharge/do:', e);
+    res.status(500).json({ error: e.message || 'Recharge failed' });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════
+//  ROUTE 4 — CHECK RECHARGE STATUS (for pending recharges)
+// ══════════════════════════════════════════════════════════════
+app.get('/recharge/status/:orderId', async (req, res) => {
+  try {
+    const { orderId } = req.params;
+
+    const url = new URL(`${EZYTM_BASE}/api/status`);
+    url.searchParams.append('token',    EZYTM_TOKEN);
+    url.searchParams.append('memberid', EZYTM_MEMBER);
+    url.searchParams.append('orderid',  orderId);
+
+    const r    = await fetch(url.toString(), { signal: AbortSignal.timeout(10000) });
+    const data = await r.json();
+
+    const status = (data.STATUS || data.status || 'UNKNOWN').toUpperCase();
+    const txnId  = data.TXNID   || data.txnid  || '';
+    const opId   = data.OPID    || data.opid   || '';
+
+    // If now SUCCESS — add reward points
+    if (status === 'SUCCESS' && db) {
+      const snap = await db.collection('transactions')
+        .where('ref', '==', orderId).limit(1).get();
+
+      if (!snap.empty) {
+        const tx = snap.docs[0].data();
+        if (tx.status !== 'success') {
+          await snap.docs[0].ref.update({
+            status:      'success',
+            ezytmTxnId:  txnId,
+            operatorRef: opId,
+            updatedAt:   admin.firestore.FieldValue.serverTimestamp(),
+          });
+          await db.collection('users').doc(tx.uid).update({
+            rewardPoints: admin.firestore.FieldValue.increment(Math.floor(tx.amount / 10)),
+            updatedAt:    admin.firestore.FieldValue.serverTimestamp(),
+          });
+        }
+      }
+    }
+
+    // If FAILED — refund
+    if ((status === 'FAILURE' || status === 'FAILED') && db) {
+      const snap = await db.collection('transactions')
+        .where('ref', '==', orderId).limit(1).get();
+
+      if (!snap.empty) {
+        const tx = snap.docs[0].data();
+        if (tx.status === 'pending') {
+          await db.collection('users').doc(tx.uid).update({
+            balance:   admin.firestore.FieldValue.increment(tx.amount),
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+          await snap.docs[0].ref.update({
+            status:    'failed',
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+          await db.collection('transactions').add({
+            uid:    tx.uid,
+            type:   'credit',
+            amount: tx.amount,
+            note:   `Refund: Recharge failed for ${tx.mobile}`,
+            cat:    'refund',
+            ref:    `REF_${orderId}`,
+            status: 'success',
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+        }
+      }
+    }
+
+    res.json({
+      orderId,
+      status:      status.toLowerCase(),
+      txnId,
+      operatorRef: opId,
+      message:     data.MESS || data.message || '',
+    });
+
+  } catch (e) {
+    console.error('/recharge/status:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+
 // ══════════════════════════════════════════════════════════════
 //  START SERVER
 // ══════════════════════════════════════════════════════════════
