@@ -772,7 +772,7 @@ url.searchParams.append('MemberId', process.env.EZYTM_MEMBER_ID);
 url.searchParams.append('MobileNo', mobile.replace(/\D/g, ''));
 url.searchParams.append('Amount', amount.toString());
 url.searchParams.append('OpId', operator);
-url.searchParams.append('ReqTxnId', orderId);
+url.searchParams.append('RefTxnId', orderId);
 
       const r = await fetch(url.toString(), {
         signal: AbortSignal.timeout(20000)
@@ -783,8 +783,15 @@ url.searchParams.append('ReqTxnId', orderId);
       console.log('EZYTM RAW RESPONSE:', text);
 
       try {
-        ezytmResponse = JSON.parse(text);
-      } catch {
+  ezytmResponse = JSON.parse(text);
+} catch (err) {
+  console.log('EZYTM NON-JSON RESPONSE:', text);
+
+  return res.status(500).json({
+    error: 'EZYTM returned non JSON response',
+    raw: text
+  });
+} 
 
         // Refund instantly if invalid response
         await db.collection('users').doc(userId).update({
