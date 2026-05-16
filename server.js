@@ -763,35 +763,45 @@ app.post('/recharge/do', async (req, res) => {
     // ── Call EZYTM Recharge API ──────────────────
     let ezytmResponse;
 
-    try {
+try {
 
-      const url = new URL('https://newapi.ezytm.in/Service/Recharge2');
+  const url = new URL('https://newapi.ezytm.in/Service/Recharge2');
 
-url.searchParams.append('ApiToken', process.env.EZYTM_API_TOKEN);
-url.searchParams.append('MemberId', process.env.EZYTM_MEMBER_ID);
-url.searchParams.append('MobileNo', mobile.replace(/\D/g, ''));
-url.searchParams.append('Amount', amount.toString());
-url.searchParams.append('OpId', operator);
-url.searchParams.append('RefTxnId', orderId);
+  url.searchParams.append('ApiToken', process.env.EZYTM_API_TOKEN);
+  url.searchParams.append('MemberId', process.env.EZYTM_MEMBER_ID);
+  url.searchParams.append('MobileNo', mobile.replace(/\D/g, ''));
+  url.searchParams.append('Amount', amount.toString());
+  url.searchParams.append('OpId', operator);
+  url.searchParams.append('RefTxnId', orderId);
 
-      const r = await fetch(url.toString(), {
-        signal: AbortSignal.timeout(20000)
-      });
+  const r = await fetch(url.toString(), {
+    signal: AbortSignal.timeout(20000)
+  });
 
-      const text = await r.text();
+  const text = await r.text();
 
-      console.log('EZYTM RAW RESPONSE:', text);
+  console.log('EZYTM RAW RESPONSE:', text);
 
-      try {
-  ezytmResponse = JSON.parse(text);
+  try {
+    ezytmResponse = JSON.parse(text);
+  } catch (err) {
+
+    console.log('EZYTM NON-JSON RESPONSE:', text);
+
+    return res.status(500).json({
+      error: 'EZYTM returned non JSON response',
+      raw: text
+    });
+  }
+
 } catch (err) {
-  console.log('EZYTM NON-JSON RESPONSE:', text);
+
+  console.error('EZYTM FETCH ERROR:', err);
 
   return res.status(500).json({
-    error: 'EZYTM returned non JSON response',
-    raw: text
+    error: err.message
   });
-} 
+}
 
         // Refund instantly if invalid response
         await db.collection('users').doc(userId).update({
