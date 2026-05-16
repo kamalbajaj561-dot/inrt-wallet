@@ -648,9 +648,8 @@ app.post('/payout/withdraw', async (req, res) => {
  *   EZYTM_MEMBER_ID = your member ID from ezytm.com dashboard
  */
 
-const EZYTM_BASE   = 'https://newapi.ezytm.in';
-const EZYTM_TOKEN  = process.env.EZYTM_API_TOKEN || '';
-const EZYTM_MEMBER = process.env.EZYTM_MEMBER_ID || '';
+const EZYTM_BASE  = 'https://newapi.ezytm.in';
+const EZYTM_TOKEN = process.env.EZYTM_API_TOKEN || '';
 
 // ══════════════════════════════════════════════════════════════
 //  ROUTE 1 — DETECT OPERATOR FROM MOBILE NUMBER
@@ -717,130 +716,214 @@ app.post('/recharge/do', async (req, res) => {
     const { userId, mobile, operator, amount, rechargeType } = req.body;
 
     if (!userId || !mobile || !operator || !amount)
-      return res.status(400).json({ error: 'userId, mobile, operator, amount required' });
+      return res.status(400).json({
+        error: 'userId, mobile, operator, amount required'
+      });
 
-    if (!EZYTM_TOKEN || !EZYTM_MEMBER)
-      return res.status(500).json({ error: 'EZYTM_API_TOKEN and EZYTM_MEMBER_ID not set in Railway' });
+    if (!EZYTM_TOKEN)
+      return res.status(500).json({
+        error: 'EZYTM_API_TOKEN not set in Railway'
+      });
 
-    if (!db) return res.status(500).json({ error: 'Database not connected' });
+    if (!db)
+      return res.status(500).json({
+        error: 'Database not connected'
+      });
 
-    // ── Check balance ─────────────────────────────────────────
+    // ── Check balance ─────────────────────────────
     const userSnap = await db.collection('users').doc(userId).get();
-    if (!userSnap.exists) return res.status(404).json({ error: 'User not found' });
 
-    const user    = userSnap.data();
+    if (!userSnap.exists)
+      return res.status(404).json({
+        error: 'User not found'
+      });
+
+    const user = userSnap.data();
     const balance = user.balance || 0;
 
-    if (balance < amount)
+    if (balance < amount) {
       return res.status(402).json({
         error: `Insufficient balance. Available: ₹${balance.toLocaleString('en-IN')}`
       });
+    }
 
-    // ── Generate order ID ─────────────────────────────────────
-    const orderId = `INRT${Date.now()}${Math.random().toString(36).slice(2,5).toUpperCase()}`;
-    const pts     = Math.floor(amount / 10);
+    // ── Generate Order ID ────────────────────────
+    const orderId =
+      `INRT${Date.now()}${Math.random().toString(36).slice(2,5).toUpperCase()}`;
 
-    // ── Deduct balance first ──────────────────────────────────
+    const pts = Math.floor(amount / 10);
+
+    // ── Deduct Balance First ─────────────────────
     await db.collection('users').doc(userId).update({
-      balance:   admin.firestore.FieldValue.increment(-amount),
+      balance: admin.firestore.FieldValue.increment(-amount),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
 
-    // ── Call Ezytm API ────────────────────────────────────────
+    // ── Call EZYTM Recharge API ──────────────────
     let ezytmResponse;
-    try {
-      const url = new URL(`${EZYTM_BASE}/api/recharge`);
-      url.searchParams.append('token',         EZYTM_TOKEN);
-      url.searchParams.append('memberid',      EZYTM_MEMBER);
-      url.searchParams.append('mobile',        mobile.replace(/\D/g, ''));
-      url.searchParams.append('amount',        amount.toString());
-      url.searchParams.append('recharge_type', rechargeType || 'P');
-      url.searchParams.append('operator',      operator.toUpperCase());
-      url.searchParams.append('orderid',       orderId);
 
-      const r = await fetch(url.toString(), { signal: AbortSignal.timeout(20000) });
-      ezytmResponse = await r.json();
+    try {
+
+      const url = new URL(`${EZYTM_BASE}/Service/Recharge2`);
+
+      url.searchParams.append('ApiToken', EZYTM_TOKEN);
+      url.searchParams.append('MobileNo', mobile.replace(/\D/g, ''));
+      url.searchParams.append('Amount', amount.toString());
+      url.searchParams.append('OpId', operator);
+      url.searchParams.append('ReqTxnid', orderId);
+
+      const r = await fetch(url.toString(), {
+        signal: AbortSignal.timeout(20000)
+      });
+
+      const text = await r.text();
+
+      console.log('EZYTM RAW RESPONSE:', text);
+
+      try {
+        ezytmResponse = JSON.parse(text);
+      } catch {
+
+        // Refund instantly if invalid response
+        await db.collection('users').doc(userId).update({
+          balance: admin.firestore.FieldValue.increment(amount),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+
+        return res.status(500).json({
+          error: 'Invalid JSON from EZYTM',
+          raw: text
+        });
+      }
+
       console.log('Ezytm recharge response:', ezytmResponse);
+
     } catch (fetchErr) {
-      // Network error — refund immediately
+
+      // Refund if API unreachable
       await db.collection('users').doc(userId).update({
-        balance:   admin.firestore.FieldValue.increment(amount),
+        balance: admin.firestore.FieldValue.increment(amount),
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
-      return res.status(500).json({ error: 'Recharge service unreachable. Balance refunded.' });
+
+      return res.status(500).json({
+        error: 'Recharge service unreachable. Balance refunded.'
+      });
     }
 
-    // ── Parse response ────────────────────────────────────────
-    const status      = (ezytmResponse.STATUS  || ezytmResponse.status  || '').toUpperCase();
-    const txnId       = ezytmResponse.TXNID    || ezytmResponse.txnid   || orderId;
-    const operatorRef = ezytmResponse.OPID     || ezytmResponse.opid    || '';
-    const message     = ezytmResponse.MESS     || ezytmResponse.message || '';
+    // ── Parse Response ───────────────────────────
+    const status =
+      (ezytmResponse.STATUS ||
+       ezytmResponse.status ||
+       '').toUpperCase();
 
-    // ── FAILURE — refund ──────────────────────────────────────
-    if (status === 'FAILURE' || status === 'FAILED') {
+    const txnId =
+      ezytmResponse.OPTXNID ||
+      ezytmResponse.txnid ||
+      orderId;
+
+    const operatorRef =
+      ezytmResponse.TXNNO ||
+      '';
+
+    const message =
+      ezytmResponse.MESSAGE ||
+      ezytmResponse.message ||
+      '';
+
+    // ── FAILED ───────────────────────────────────
+    if (
+      status === '3' ||
+      status === 'FAILED' ||
+      status === 'FAILURE'
+    ) {
+
       await db.collection('users').doc(userId).update({
-        balance:   admin.firestore.FieldValue.increment(amount),
+        balance: admin.firestore.FieldValue.increment(amount),
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
+
       await db.collection('transactions').add({
-        uid: userId, type: 'debit', amount,
+        uid: userId,
+        type: 'debit',
+        amount,
         note: `Failed recharge: ${operator} ${mobile}`,
-        cat: 'recharge', ref: orderId, status: 'failed',
-        mobile, operator, ezytmTxnId: txnId,
+        cat: 'recharge',
+        ref: orderId,
+        status: 'failed',
+        mobile,
+        operator,
+        ezytmTxnId: txnId,
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
       });
+
       return res.status(400).json({
         success: false,
-        error:   message || 'Recharge failed. Balance has been refunded.',
+        error: message || 'Recharge failed. Balance refunded.',
       });
     }
 
-    // ── SUCCESS or PENDING — log transaction ──────────────────
-    const txStatus = status === 'SUCCESS' ? 'success' : 'pending';
+    // ── SUCCESS / PENDING ────────────────────────
+    const txStatus =
+      status === '1'
+        ? 'success'
+        : 'pending';
 
     await db.collection('transactions').add({
-      uid:          userId,
-      type:         'debit',
+      uid: userId,
+      type: 'debit',
       amount,
-      note:         `${operator} ${rechargeType === 'D' ? 'DTH' : rechargeType === 'T' ? 'Postpaid' : 'Prepaid'} — ${mobile}`,
-      cat:          'recharge',
-      ref:          orderId,
-      status:       txStatus,
+      note:
+        `${operator} ${
+          rechargeType === 'D'
+            ? 'DTH'
+            : rechargeType === 'T'
+            ? 'Postpaid'
+            : 'Prepaid'
+        } — ${mobile}`,
+      cat: 'recharge',
+      ref: orderId,
+      status: txStatus,
       mobile,
       operator,
-      ezytmTxnId:   txnId,
+      ezytmTxnId: txnId,
       operatorRef,
-      rewardPoints: status === 'SUCCESS' ? pts : 0,
-      createdAt:    admin.firestore.FieldValue.serverTimestamp(),
+      rewardPoints: status === '1' ? pts : 0,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
     });
 
-    // Add reward points only on success
-    if (status === 'SUCCESS') {
+    // ── Reward Points ────────────────────────────
+    if (status === '1') {
       await db.collection('users').doc(userId).update({
         rewardPoints: admin.firestore.FieldValue.increment(pts),
-        updatedAt:    admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
     }
 
     res.json({
-      success:      status === 'SUCCESS',
-      pending:      status === 'PENDING',
+      success: status === '1',
+      pending: status !== '1',
       orderId,
       txnId,
       operatorRef,
       amount,
       mobile,
       operator,
-      status:       txStatus,
-      rewardPoints: status === 'SUCCESS' ? pts : 0,
-      message:      status === 'SUCCESS'
-        ? `₹${amount} recharge successful for ${mobile}`
-        : 'Recharge is processing. Will complete in a few minutes.',
+      status: txStatus,
+      rewardPoints: status === '1' ? pts : 0,
+      message:
+        status === '1'
+          ? `₹${amount} recharge successful for ${mobile}`
+          : 'Recharge is processing.',
     });
 
   } catch (e) {
+
     console.error('/recharge/do:', e);
-    res.status(500).json({ error: e.message || 'Recharge failed' });
+
+    res.status(500).json({
+      error: e.message || 'Recharge failed'
+    });
   }
 });
 
