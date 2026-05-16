@@ -765,7 +765,7 @@ app.post('/recharge/do', async (req, res) => {
 
     try {
 
-      const url = new URL(`${EZYTM_BASE}/Service/Recharge2`);
+      const url = new URL(`${EZYTM_BASE}/Service/Recharge2.aspx`);
 
       url.searchParams.append('ApiToken', EZYTM_TOKEN);
       url.searchParams.append('MobileNo', mobile.replace(/\D/g, ''));
