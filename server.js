@@ -767,11 +767,12 @@ app.post('/recharge/do', async (req, res) => {
 
       const url = new URL(`${EZYTM_BASE}/Service/Recharge2.aspx`);
 
-      url.searchParams.append('ApiToken', EZYTM_TOKEN);
-      url.searchParams.append('MobileNo', mobile.replace(/\D/g, ''));
-      url.searchParams.append('Amount', amount.toString());
-      url.searchParams.append('OpId', operator);
-      url.searchParams.append('ReqTxnid', orderId);
+url.searchParams.append('ApiToken', process.env.EZYTM_API_TOKEN);
+url.searchParams.append('MemberId', process.env.EZYTM_MEMBER_ID);
+url.searchParams.append('MobileNo', mobile.replace(/\D/g, ''));
+url.searchParams.append('Amount', amount.toString());
+url.searchParams.append('OpId', operator);
+url.searchParams.append('ReqTxnId', orderId);
 
       const r = await fetch(url.toString(), {
         signal: AbortSignal.timeout(20000)
