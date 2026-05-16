@@ -765,7 +765,7 @@ app.post('/recharge/do', async (req, res) => {
 
     try {
 
-      const url = new URL(`${EZYTM_BASE}/Service/Recharge2.aspx`);
+      const url = new URL('https://newapi.ezytm.in/Service/Recharge2');
 
 url.searchParams.append('ApiToken', process.env.EZYTM_API_TOKEN);
 url.searchParams.append('MemberId', process.env.EZYTM_MEMBER_ID);
