@@ -650,6 +650,7 @@ app.post('/payout/withdraw', async (req, res) => {
 
 const EZYTM_BASE  = 'https://newapi.ezytm.in';
 const EZYTM_TOKEN = process.env.EZYTM_API_TOKEN || '';
+const EZYTM_MEMBER = process.env.EZYTM_MEMBER_ID || '';
 
 // ══════════════════════════════════════════════════════════════
 //  ROUTE 1 — DETECT OPERATOR FROM MOBILE NUMBER
