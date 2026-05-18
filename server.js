@@ -616,7 +616,7 @@ app.get('/recharge/operator/:mobile', async (req, res) => {
     const token  = EZYTM_TOKEN();
     const member = EZYTM_MEMBER();
     if (!token || !member) return res.status(500).json({ error: 'EZYTM_API_TOKEN and EZYTM_MEMBER_ID not set in Railway' });
-    const url = new URL(`${EZYTM_BASE}/api/getOperator`);
+    const url = new URL(`${EZYTM_BASE}/Service/GetOperator`);
     url.searchParams.append('token',    token);
     url.searchParams.append('memberid', member);
     url.searchParams.append('mobile',   mobile);
@@ -632,7 +632,7 @@ app.get('/recharge/plans', async (req, res) => {
     const token  = EZYTM_TOKEN();
     const member = EZYTM_MEMBER();
     if (!token || !member) return res.status(500).json({ error: 'EZYTM_API_TOKEN and EZYTM_MEMBER_ID not set in Railway' });
-    const url = new URL(`${EZYTM_BASE}/api/getPlans`);
+    const url = new URL(`${EZYTM_BASE}/Service/BrowsePlan`);
     url.searchParams.append('token',    token);
     url.searchParams.append('memberid', member);
     url.searchParams.append('op',       operator || 'JIO');
@@ -727,7 +727,7 @@ app.get('/recharge/status/:orderId', async (req, res) => {
     const { orderId } = req.params;
     const token  = EZYTM_TOKEN();
     const member = EZYTM_MEMBER();
-    const url = new URL(`${EZYTM_BASE}/api/status`);
+    const url = new URL(`${EZYTM_BASE}/Service/GetStatus`);
     url.searchParams.append('token',    token);
     url.searchParams.append('memberid', member);
     url.searchParams.append('orderid',  orderId);
