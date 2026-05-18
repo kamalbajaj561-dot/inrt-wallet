@@ -1,5 +1,5 @@
 /**
- * INRT WALLET — server.js (FINAL CLEAN)
+ * INRT WALLET — server.js FINAL CLEAN
  * All routes in one file, no duplicates, no crashes
  */
 
@@ -49,7 +49,7 @@ async function getCFToken() {
   if (cfToken && Date.now() < cfTokenExpiry) return cfToken;
   const appId  = process.env.CASHFREE_APP_ID;
   const secret = process.env.CASHFREE_SECRET_KEY;
-  if (!appId || !secret) throw new Error('CASHFREE_APP_ID and CASHFREE_SECRET_KEY not set in Railway');
+  if (!appId || !secret) throw new Error('CASHFREE_APP_ID and CASHFREE_SECRET_KEY not set');
   const r = await fetch(`${CF_BASE}/payout/v1/authorize`, {
     method: 'POST',
     headers: { 'X-Client-Id': appId, 'X-Client-Secret': secret, 'Content-Type': 'application/json' },
@@ -79,16 +79,22 @@ async function cfGet(endpoint) {
   return r.json();
 }
 
+// ── Ezytm config ─────────────────────────────────────────────
+const EZYTM_BASE   = 'https://newapi.ezytm.in';
+const EZYTM_TOKEN  = () => process.env.EZYTM_API_TOKEN || '';
+const EZYTM_MEMBER = () => process.env.EZYTM_MEMBER_ID || '';
+
 // ── Helpers ───────────────────────────────────────────────────
-const genTxId       = (p = 'TXN')  => `${p}${Date.now()}${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
-const genTransferId = ()            => `INRT${Date.now()}${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+const genTxId       = (p = 'TXN') => `${p}${Date.now()}${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+const genTransferId = ()           => `INRT${Date.now()}${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
 
 const COMMISSION = { transfer:0.005, recharge:0.02, bills:0.015, gold:0.01, crypto:0.01 };
+
 async function earnCommission(amount, type) {
   const rate = COMMISSION[type] || 0;
-  if (rate <= 0 || amount < 100) return 0;
+  if (rate <= 0 || amount < 100 || !db) return 0;
   const commission = Math.floor(amount * rate);
-  if (commission < 1 || !db) return 0;
+  if (commission < 1) return 0;
   await db.collection('businessWallet').doc('earnings').set({
     balance: admin.firestore.FieldValue.increment(commission),
     [`${type}Earnings`]: admin.firestore.FieldValue.increment(commission),
@@ -126,7 +132,7 @@ app.post('/verify-payment', async (req, res) => {
     if (expected !== razorpay_signature) return res.status(400).json({ error: 'Invalid signature' });
     if (db && userId) {
       await db.collection('users').doc(userId).update({
-        balance: admin.firestore.FieldValue.increment(amount),
+        balance:   admin.firestore.FieldValue.increment(amount),
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
       await db.collection('transactions').add({
@@ -135,26 +141,25 @@ app.post('/verify-payment', async (req, res) => {
         status: 'success', createdAt: admin.firestore.FieldValue.serverTimestamp(),
       });
     }
-    res.json({ success: true, message: `₹${amount} added!` });
+    res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ══════════════════════════════════════════════════════════════
-//  OTP EMAIL via Resend
+//  OTP EMAIL
 // ══════════════════════════════════════════════════════════════
 app.post('/send-otp', async (req, res) => {
   try {
     const { phone, otp } = req.body;
     if (!phone || !otp) return res.status(400).json({ error: 'phone and otp required' });
-    const RESEND_KEY = process.env.RESEND_API_KEY;
-    if (!RESEND_KEY) return res.status(500).json({ error: 'RESEND_API_KEY not set' });
-    const FROM_EMAIL = process.env.RESEND_FROM_EMAIL || 'onboarding@resend.dev';
+    const RESEND_KEY  = process.env.RESEND_API_KEY;
+    if (!RESEND_KEY)   return res.status(500).json({ error: 'RESEND_API_KEY not set' });
+    const FROM_EMAIL  = process.env.RESEND_FROM_EMAIL || 'onboarding@resend.dev';
     const r = await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${RESEND_KEY}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        from: FROM_EMAIL,
-        to: [`${phone}@inrtwallet.app`],
+        from: FROM_EMAIL, to: [`${phone}@inrtwallet.app`],
         subject: `${otp} — Your INRT Wallet OTP`,
         html: `<div style="font-family:Arial;padding:32px;max-width:480px;margin:0 auto"><h2>INRT Wallet OTP</h2><div style="background:#f0f9ff;border:2px solid #00b9f1;border-radius:12px;padding:24px;text-align:center;margin:20px 0"><p style="color:#6b7280;margin:0 0 8px">Your OTP is</p><p style="color:#001a2e;font-size:40px;font-weight:900;letter-spacing:12px;margin:0">${otp}</p><p style="color:#9ca3af;font-size:12px;margin:8px 0 0">Valid for 5 minutes</p></div></div>`,
       }),
@@ -171,13 +176,13 @@ app.post('/send-otp', async (req, res) => {
 app.post('/reset-password', async (req, res) => {
   try {
     const { phone, newPassword } = req.body;
-    if (!phone || !newPassword) return res.status(400).json({ error: 'phone and newPassword required' });
+    if (!phone || !newPassword)  return res.status(400).json({ error: 'phone and newPassword required' });
     if (newPassword.length < 6)  return res.status(400).json({ error: 'Min 6 characters' });
     if (!adminAuth)              return res.status(500).json({ error: 'Firebase Admin not connected' });
     const email = `${phone.replace(/\D/g,'')}@inrtwallet.app`;
     const user  = await adminAuth.getUserByEmail(email);
     await adminAuth.updateUser(user.uid, { password: newPassword });
-    res.json({ success: true, message: 'Password updated' });
+    res.json({ success: true });
   } catch (e) {
     if (e.code === 'auth/user-not-found') return res.status(404).json({ error: 'No account found' });
     res.status(500).json({ error: e.message });
@@ -185,7 +190,7 @@ app.post('/reset-password', async (req, res) => {
 });
 
 // ══════════════════════════════════════════════════════════════
-//  KYC — Aadhaar OTP send
+//  KYC
 // ══════════════════════════════════════════════════════════════
 app.post('/kyc/aadhaar-send-otp', async (req, res) => {
   try {
@@ -193,7 +198,7 @@ app.post('/kyc/aadhaar-send-otp', async (req, res) => {
     const clean = (aadhaarNumber || '').replace(/\s/g, '');
     if (clean.length !== 12) return res.status(400).json({ error: 'Invalid Aadhaar number' });
     const SUREPASS_TOKEN = process.env.SUREPASS_TOKEN;
-    if (!SUREPASS_TOKEN) return res.status(500).json({ error: 'SUREPASS_TOKEN not set in Railway' });
+    if (!SUREPASS_TOKEN)  return res.status(500).json({ error: 'SUREPASS_TOKEN not set' });
     const response = await fetch('https://kyc-api.surepass.io/api/v1/aadhaar-v2/generate-otp', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUREPASS_TOKEN}` },
@@ -208,18 +213,17 @@ app.post('/kyc/aadhaar-send-otp', async (req, res) => {
         timestamp: admin.firestore.FieldValue.serverTimestamp(),
       });
     }
-    res.json({ success: true, ref_id: data.data?.ref_id || data.ref_id, message: 'OTP sent' });
+    res.json({ success: true, ref_id: data.data?.ref_id || data.ref_id });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── KYC — Aadhaar OTP verify ──────────────────────────────────
 app.post('/kyc/aadhaar-verify-otp', async (req, res) => {
   try {
     const { otp, ref_id, userId } = req.body;
     if (!otp || otp.length !== 6) return res.status(400).json({ error: 'Invalid OTP' });
     if (!ref_id)                   return res.status(400).json({ error: 'ref_id required' });
     const SUREPASS_TOKEN = process.env.SUREPASS_TOKEN;
-    if (!SUREPASS_TOKEN) return res.status(500).json({ error: 'SUREPASS_TOKEN not set' });
+    if (!SUREPASS_TOKEN)  return res.status(500).json({ error: 'SUREPASS_TOKEN not set' });
     const response = await fetch('https://kyc-api.surepass.io/api/v1/aadhaar-v2/submit-otp', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUREPASS_TOKEN}` },
@@ -241,14 +245,13 @@ app.post('/kyc/aadhaar-verify-otp', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── KYC — PAN verify ─────────────────────────────────────────
 app.post('/kyc/verify-pan', async (req, res) => {
   try {
     const { panNumber, userId } = req.body;
     const pan = (panNumber || '').toUpperCase().trim();
     if (!/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(pan)) return res.status(400).json({ error: 'Invalid PAN format' });
     const SUREPASS_TOKEN = process.env.SUREPASS_TOKEN;
-    if (!SUREPASS_TOKEN) return res.status(500).json({ error: 'SUREPASS_TOKEN not set' });
+    if (!SUREPASS_TOKEN)  return res.status(500).json({ error: 'SUREPASS_TOKEN not set' });
     const response = await fetch('https://kyc-api.surepass.io/api/v1/pan/pan', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUREPASS_TOKEN}` },
@@ -269,23 +272,19 @@ app.post('/kyc/verify-pan', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── KYC — Auto approve ────────────────────────────────────────
 app.post('/kyc/auto-approve', async (req, res) => {
   try {
     const { userId, fullName, dob, gender, aadhaarLast4, aadhaarData, panData, pan, selfieBase64 } = req.body;
-    if (!userId || !aadhaarData || !panData) return res.status(400).json({ approved: false, reason: 'Missing required data' });
-    if (!db) return res.status(500).json({ approved: false, reason: 'Database not connected' });
+    if (!userId || !aadhaarData || !panData) return res.json({ approved: false, reason: 'Missing required data' });
+    if (!db) return res.json({ approved: false, reason: 'Database not connected' });
 
-    // Check duplicate Aadhaar
     const aSnap = await db.collection('kyc').where('aadhaarLast4','==',aadhaarLast4).where('aadhaarVerified','==',true).where('status','==','verified').limit(2).get();
-    if (aSnap.docs.some(d => d.id !== userId)) return res.json({ approved: false, reason: 'This Aadhaar is already registered with another account.' });
+    if (aSnap.docs.some(d => d.id !== userId)) return res.json({ approved: false, reason: 'Aadhaar already registered with another account.' });
 
-    // Check duplicate PAN
     const panMasked = pan.slice(0,2) + 'XXX' + pan.slice(5);
     const pSnap = await db.collection('kyc').where('panMasked','==',panMasked).where('panVerified','==',true).where('status','==','verified').limit(2).get();
-    if (pSnap.docs.some(d => d.id !== userId)) return res.json({ approved: false, reason: 'This PAN is already registered with another account.' });
+    if (pSnap.docs.some(d => d.id !== userId)) return res.json({ approved: false, reason: 'PAN already registered with another account.' });
 
-    // Name match
     const n1 = (aadhaarData.name || '').toLowerCase().trim();
     const n2 = (panData.name     || '').toLowerCase().trim();
     if (n1 && n2) {
@@ -293,30 +292,25 @@ app.post('/kyc/auto-approve', async (req, res) => {
       const w2 = n2.split(' ').filter(w => w.length > 1);
       const common = w1.filter(w => w2.includes(w));
       if (common.length < 1 && !n1.includes(n2) && !n2.includes(n1))
-        return res.json({ approved: false, reason: `Name mismatch: Aadhaar shows "${aadhaarData.name}" but PAN shows "${panData.name}".` });
+        return res.json({ approved: false, reason: `Name mismatch: Aadhaar "${aadhaarData.name}" vs PAN "${panData.name}"` });
     }
 
-    // Age check
     if (dob) {
-      const birth = new Date(dob);
-      const today = new Date();
+      const birth = new Date(dob), today = new Date();
       let age = today.getFullYear() - birth.getFullYear();
       const m = today.getMonth() - birth.getMonth();
       if (m < 0 || (m === 0 && today.getDate() < birth.getDate())) age--;
-      if (age < 18) return res.json({ approved: false, reason: `Must be 18+. Your age: ${age}` });
+      if (age < 18) return res.json({ approved: false, reason: `Must be 18+. Age: ${age}` });
     }
 
-    // Upload selfie if provided
     let selfieUrl = '';
     if (selfieBase64) {
       try {
         const bucket = admin.storage().bucket();
         const file   = bucket.file(`kyc/${userId}/selfie.jpg`);
-        const buffer = Buffer.from(selfieBase64, 'base64');
-        await file.save(buffer, { metadata: { contentType: 'image/jpeg' } });
-        const urls = await file.getSignedUrl({ action: 'read', expires: '03-01-2500' });
-        selfieUrl = urls[0];
-      } catch (e) { console.warn('Selfie upload failed (non-critical):', e.message); }
+        await file.save(Buffer.from(selfieBase64, 'base64'), { metadata: { contentType: 'image/jpeg' } });
+        selfieUrl = (await file.getSignedUrl({ action: 'read', expires: '03-01-2500' }))[0];
+      } catch (e) { console.warn('Selfie upload failed:', e.message); }
     }
 
     const kycRef = genTxId('KYC');
@@ -339,7 +333,7 @@ app.post('/kyc/auto-approve', async (req, res) => {
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
 
-    console.log(`✅ KYC auto-approved: ${userId} | ${kycRef}`);
+    console.log(`✅ KYC auto-approved: ${userId}`);
     res.json({ approved: true, kycRef });
   } catch (e) { res.status(500).json({ approved: false, reason: e.message }); }
 });
@@ -355,7 +349,7 @@ app.get('/kyc/status/:userId', async (req, res) => {
 });
 
 // ══════════════════════════════════════════════════════════════
-//  WALLET — Transfer
+//  WALLET TRANSFER
 // ══════════════════════════════════════════════════════════════
 app.post('/payment/transfer', async (req, res) => {
   try {
@@ -365,11 +359,11 @@ app.post('/payment/transfer', async (req, res) => {
     const sSnap = await db.collection('users').doc(fromUid).get();
     if (!sSnap.exists) return res.status(404).json({ error: 'Sender not found' });
     const sender = sSnap.data();
-    if ((sender.balance || 0) < amount) return res.status(402).json({ error: `Insufficient balance` });
+    if ((sender.balance || 0) < amount) return res.status(402).json({ error: 'Insufficient balance' });
     const today = new Date().toISOString().split('T')[0];
-    const lk = `dailySent_${today}`;
-    const dl = sender.kycStatus === 'verified' ? 100000 : 10000;
-    if ((sender[lk] || 0) + amount > dl) return res.status(402).json({ error: `Daily limit reached` });
+    const lk    = `dailySent_${today}`;
+    const dl    = sender.kycStatus === 'verified' ? 100000 : 10000;
+    if ((sender[lk] || 0) + amount > dl) return res.status(402).json({ error: 'Daily limit reached' });
     let toUid = directToUid;
     if (!toUid && toPhone) {
       const pSnap = await db.collection('phoneIndex').doc(toPhone.replace(/\D/g,'')).get();
@@ -377,29 +371,32 @@ app.post('/payment/transfer', async (req, res) => {
       toUid = pSnap.data().uid;
     }
     if (!toUid || toUid === fromUid) return res.status(400).json({ error: 'Invalid receiver' });
-    const ref = genTxId('TXN'), pts = Math.floor(amount / 10);
+    const ref        = genTxId('TXN');
+    const pts        = Math.floor(amount / 10);
     const commission = await earnCommission(amount, 'transfer');
-    const batch = db.batch();
+    const batch      = db.batch();
     batch.update(db.collection('users').doc(fromUid), { balance: admin.firestore.FieldValue.increment(-amount), totalSent: admin.firestore.FieldValue.increment(amount), [lk]: admin.firestore.FieldValue.increment(amount), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
     batch.update(db.collection('users').doc(toUid),   { balance: admin.firestore.FieldValue.increment(amount),  totalReceived: admin.firestore.FieldValue.increment(amount), rewardPoints: admin.firestore.FieldValue.increment(pts), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
-    batch.set(db.collection('transactions').doc(ref),        { uid: fromUid, toUid, type: 'debit',  amount, note: note || `Transfer`, cat: 'transfer', ref, status: 'success', commission, rewardPoints: pts, createdAt: admin.firestore.FieldValue.serverTimestamp() });
-    batch.set(db.collection('transactions').doc(ref + '_CR'),{ uid: toUid, fromUid, type: 'credit', amount, note: `Received from ${sender.name || 'INRT User'}`, cat: 'transfer', ref: ref + '_CR', status: 'success', createdAt: admin.firestore.FieldValue.serverTimestamp() });
+    batch.set(db.collection('transactions').doc(ref),         { uid: fromUid, toUid, type: 'debit',  amount, note: note || 'Transfer', cat: 'transfer', ref, status: 'success', commission, rewardPoints: pts, createdAt: admin.firestore.FieldValue.serverTimestamp() });
+    batch.set(db.collection('transactions').doc(ref + '_CR'), { uid: toUid, fromUid, type: 'credit', amount, note: `Received from ${sender.name || 'INRT User'}`, cat: 'transfer', ref: ref + '_CR', status: 'success', createdAt: admin.firestore.FieldValue.serverTimestamp() });
     await batch.commit();
     res.json({ success: true, ref, amount, commission, rewardPoints: pts });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── UPI QR ────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════
+//  UPI QR
+// ══════════════════════════════════════════════════════════════
 app.post('/payment/generate-upi-qr', async (req, res) => {
   try {
     const { userId, amount, note } = req.body;
     if (!userId || !db) return res.status(400).json({ error: 'userId required' });
     const uSnap = await db.collection('users').doc(userId).get();
     if (!uSnap.exists) return res.status(404).json({ error: 'User not found' });
-    const user = uSnap.data();
-    const upiId = user.upiId || `${user.phone}@inrt`;
-    const txnId = genTxId('UPI');
-    const upiString  = `upi://pay?pa=${upiId}&pn=${encodeURIComponent(user.name || 'INRT Wallet')}&tr=${txnId}${amount?`&am=${amount}`:''}${note?`&tn=${encodeURIComponent(note)}`:''}}&cu=INR`;
+    const user       = uSnap.data();
+    const upiId      = user.upiId || `${user.phone}@inrt`;
+    const txnId      = genTxId('UPI');
+    const upiString  = `upi://pay?pa=${upiId}&pn=${encodeURIComponent(user.name || 'INRT Wallet')}&tr=${txnId}${amount ? `&am=${amount}` : ''}${note ? `&tn=${encodeURIComponent(note)}` : ''}&cu=INR`;
     const qrImageUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(upiString)}`;
     await db.collection('pendingPayments').doc(txnId).set({ userId, upiId, amount: amount || null, note: note || '', txnId, status: 'pending', createdAt: admin.firestore.FieldValue.serverTimestamp(), expiresAt: Date.now() + 10 * 60 * 1000 });
     res.json({ success: true, txnId, upiId, upiString, qrImageUrl, amount: amount || null });
@@ -424,8 +421,9 @@ app.post('/payment/upi-webhook', async (req, res) => {
     const pSnap = await db.collection('pendingPayments').doc(txnId).get();
     if (!pSnap.exists || pSnap.data().status === 'success') return res.json({ received: true });
     const pending = pSnap.data();
-    const ref = genTxId('UPI'), pts = Math.floor(amount / 10);
-    const batch = db.batch();
+    const ref     = genTxId('UPI');
+    const pts     = Math.floor(amount / 10);
+    const batch   = db.batch();
     batch.update(db.collection('users').doc(pending.userId), { balance: admin.firestore.FieldValue.increment(parseFloat(amount)), totalReceived: admin.firestore.FieldValue.increment(parseFloat(amount)), rewardPoints: admin.firestore.FieldValue.increment(pts), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
     batch.set(db.collection('transactions').doc(ref), { uid: pending.userId, type: 'credit', amount: parseFloat(amount), note: `UPI from ${payerVpa || 'UPI'}`, cat: 'add_money', ref, status: 'success', payerVpa, upiTxnId: txnId, createdAt: admin.firestore.FieldValue.serverTimestamp() });
     batch.update(pSnap.ref, { status: 'success', paidAt: admin.firestore.FieldValue.serverTimestamp(), ref });
@@ -438,8 +436,8 @@ app.post('/payment/admin-credit', async (req, res) => {
   try {
     const { userId, amount, note, adminKey } = req.body;
     if (adminKey !== process.env.ADMIN_KEY) return res.status(403).json({ error: 'Unauthorized' });
-    if (!userId || !amount || !db) return res.status(400).json({ error: 'userId and amount required' });
-    const ref = genTxId('ADM');
+    if (!userId || !amount || !db)          return res.status(400).json({ error: 'userId and amount required' });
+    const ref   = genTxId('ADM');
     const batch = db.batch();
     batch.update(db.collection('users').doc(userId), { balance: admin.firestore.FieldValue.increment(parseFloat(amount)), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
     batch.set(db.collection('transactions').doc(ref), { uid: userId, type: 'credit', amount: parseFloat(amount), note: note || 'Admin credit', cat: 'add_money', ref, status: 'success', createdAt: admin.firestore.FieldValue.serverTimestamp() });
@@ -454,29 +452,15 @@ app.post('/payment/bill', async (req, res) => {
     if (!userId || !amount || !db) return res.status(400).json({ error: 'Missing fields' });
     const uSnap = await db.collection('users').doc(userId).get();
     if (!uSnap.exists || (uSnap.data().balance || 0) < amount) return res.status(402).json({ error: 'Insufficient balance' });
-    const ref = genTxId('BILL'), cashback = Math.floor(amount * 0.02), pts = Math.floor(amount / 10);
+    const ref        = genTxId('BILL');
+    const cashback   = Math.floor(amount * 0.02);
+    const pts        = Math.floor(amount / 10);
     const commission = await earnCommission(amount, 'bills');
-    const batch = db.batch();
+    const batch      = db.batch();
     batch.update(db.collection('users').doc(userId), { balance: admin.firestore.FieldValue.increment(-amount + cashback), cashback: admin.firestore.FieldValue.increment(cashback), rewardPoints: admin.firestore.FieldValue.increment(pts), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
     batch.set(db.collection('transactions').doc(ref), { uid: userId, type: 'debit', amount, note: `${category} — ${provider || ''}`, cat: 'bills', ref, status: 'success', accountNo, cashback, commission, rewardPoints: pts, createdAt: admin.firestore.FieldValue.serverTimestamp() });
     await batch.commit();
     res.json({ success: true, ref, amount, cashback, rewardPoints: pts, commission });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.post('/payment/recharge', async (req, res) => {
-  try {
-    const { userId, amount, mobile, operator, rechargeType } = req.body;
-    if (!userId || !amount || !db) return res.status(400).json({ error: 'Missing fields' });
-    const uSnap = await db.collection('users').doc(userId).get();
-    if (!uSnap.exists || (uSnap.data().balance || 0) < amount) return res.status(402).json({ error: 'Insufficient balance' });
-    const ref = genTxId('RCH'), pts = Math.floor(amount / 10);
-    const commission = await earnCommission(amount, 'recharge');
-    const batch = db.batch();
-    batch.update(db.collection('users').doc(userId), { balance: admin.firestore.FieldValue.increment(-amount), rewardPoints: admin.firestore.FieldValue.increment(pts), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
-    batch.set(db.collection('transactions').doc(ref), { uid: userId, type: 'debit', amount, note: `${operator || 'Mobile'} ${rechargeType || 'Prepaid'} — ${mobile}`, cat: 'recharge', ref, status: 'success', mobile, operator, commission, rewardPoints: pts, createdAt: admin.firestore.FieldValue.serverTimestamp() });
-    await batch.commit();
-    res.json({ success: true, ref, amount, rewardPoints: pts, commission });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -487,8 +471,9 @@ app.post('/payment/refund', async (req, res) => {
     const tSnap = await db.collection('transactions').doc(txId).get();
     if (!tSnap.exists) return res.status(404).json({ error: 'Transaction not found' });
     if (tSnap.data().status === 'refunded') return res.status(400).json({ error: 'Already refunded' });
-    const tx = tSnap.data(), refundRef = genTxId('REF');
-    const batch = db.batch();
+    const tx        = tSnap.data();
+    const refundRef = genTxId('REF');
+    const batch     = db.batch();
     batch.update(db.collection('users').doc(tx.uid), { balance: admin.firestore.FieldValue.increment(tx.amount), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
     batch.update(db.collection('transactions').doc(txId), { status: 'refunded', refundRef });
     batch.set(db.collection('transactions').doc(refundRef), { uid: tx.uid, type: 'credit', amount: tx.amount, note: `Refund: ${reason || 'Customer request'}`, cat: 'refund', ref: refundRef, status: 'success', originalTxId: txId, createdAt: admin.firestore.FieldValue.serverTimestamp() });
@@ -521,30 +506,13 @@ app.post('/payout/validate-upi', async (req, res) => {
   try {
     const { upiId } = req.body;
     if (!upiId) return res.status(400).json({ error: 'UPI ID required' });
-
-    // In sandbox/test mode, skip real validation
     if (process.env.NODE_ENV !== 'production') {
-      return res.json({
-        valid:    true,
-        name:     'Test Account',
-        upiId,
-        bankName: 'Test Bank',
-      });
+      return res.json({ valid: true, name: 'Test Account', upiId, bankName: 'Test Bank' });
     }
-
     const d = await cfPost('/payout/v1/validation/upiDetails', { vpa: upiId });
-    if (d.status !== 'SUCCESS')
-      return res.status(400).json({ error: 'Invalid UPI ID' });
-
-    res.json({
-      valid:    true,
-      name:     d.data?.name     || 'UPI Account',
-      upiId:    d.data?.vpa      || upiId,
-      bankName: d.data?.bankName || '',
-    });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+    if (d.status !== 'SUCCESS') return res.status(400).json({ error: 'Invalid UPI ID' });
+    res.json({ valid: true, name: d.data?.name || 'UPI Account', upiId: d.data?.vpa || upiId, bankName: d.data?.bankName || '' });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/payout/send-upi', async (req, res) => {
@@ -554,10 +522,10 @@ app.post('/payout/send-upi', async (req, res) => {
     const sSnap = await db.collection('users').doc(fromUid).get();
     if (!sSnap.exists) return res.status(404).json({ error: 'Sender not found' });
     const sender = sSnap.data();
-    if ((sender.balance || 0) < amount) return res.status(402).json({ error: `Insufficient balance` });
-    const today = new Date().toISOString().split('T')[0];
-    const lk = `dailySent_${today}`;
-    const dl = sender.kycStatus === 'verified' ? 100000 : 10000;
+    if ((sender.balance || 0) < amount) return res.status(402).json({ error: 'Insufficient balance' });
+    const today      = new Date().toISOString().split('T')[0];
+    const lk         = `dailySent_${today}`;
+    const dl         = sender.kycStatus === 'verified' ? 100000 : 10000;
     if ((sender[lk] || 0) + amount > dl) return res.status(402).json({ error: 'Daily limit reached' });
     const transferId = genTransferId();
     await db.collection('users').doc(fromUid).update({ balance: admin.firestore.FieldValue.increment(-amount), [lk]: admin.firestore.FieldValue.increment(amount), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
@@ -569,7 +537,7 @@ app.post('/payout/send-upi', async (req, res) => {
     const pts = Math.floor(amount / 10);
     await db.collection('transactions').add({ uid: fromUid, type: 'debit', amount, note: note || `Sent to ${toUpiId}`, cat: 'transfer', ref: transferId, toUpiId, status: 'success', method: 'cashfree_upi', rewardPoints: pts, createdAt: admin.firestore.FieldValue.serverTimestamp() });
     await db.collection('users').doc(fromUid).update({ rewardPoints: admin.firestore.FieldValue.increment(pts), totalSent: admin.firestore.FieldValue.increment(amount) });
-    res.json({ success: true, transferId, amount, toUpiId, rewardPoints: pts, message: `₹${amount.toLocaleString('en-IN')} sent to ${toUpiId}` });
+    res.json({ success: true, transferId, amount, toUpiId, rewardPoints: pts });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -588,7 +556,7 @@ app.post('/payout/send-bank', async (req, res) => {
     }
     await db.collection('transactions').add({ uid: fromUid, type: 'debit', amount, note: note || `Bank transfer to ${accountName}`, cat: 'transfer', ref: transferId, accountNo: accountNo.slice(-4).padStart(accountNo.length,'X'), ifsc, accountName, status: 'success', method: 'cashfree_imps', createdAt: admin.firestore.FieldValue.serverTimestamp() });
     await db.collection('users').doc(fromUid).update({ rewardPoints: admin.firestore.FieldValue.increment(Math.floor(amount/10)), totalSent: admin.firestore.FieldValue.increment(amount) });
-    res.json({ success: true, transferId, amount, accountName, message: `₹${amount.toLocaleString('en-IN')} sent to ${accountName}` });
+    res.json({ success: true, transferId, amount, accountName });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -611,7 +579,7 @@ app.post('/payout/webhook', async (req, res) => {
     } else if (status === 'FAILED' || status === 'REVERSED') {
       await db.collection('users').doc(tx.uid).update({ balance: admin.firestore.FieldValue.increment(tx.amount), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
       await txDoc.ref.update({ status: 'failed', failReason: reason || 'Transfer failed', updatedAt: admin.firestore.FieldValue.serverTimestamp() });
-      await db.collection('transactions').add({ uid: tx.uid, type: 'credit', amount: tx.amount, note: `Refund: Transfer failed`, cat: 'refund', ref: `REF_${transferId}`, status: 'success', createdAt: admin.firestore.FieldValue.serverTimestamp() });
+      await db.collection('transactions').add({ uid: tx.uid, type: 'credit', amount: tx.amount, note: 'Refund: Transfer failed', cat: 'refund', ref: `REF_${transferId}`, status: 'success', createdAt: admin.firestore.FieldValue.serverTimestamp() });
     }
     res.json({ received: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -626,7 +594,7 @@ app.post('/payout/withdraw', async (req, res) => {
     if (!snap.exists) return res.status(404).json({ error: 'User not found' });
     const user = snap.data();
     if (user.kycStatus !== 'verified') return res.status(403).json({ error: 'Complete KYC to withdraw' });
-    if ((user.balance || 0) < amount) return res.status(402).json({ error: 'Insufficient balance' });
+    if ((user.balance || 0) < amount)  return res.status(402).json({ error: 'Insufficient balance' });
     const transferId = genTransferId();
     await db.collection('users').doc(userId).update({ balance: admin.firestore.FieldValue.increment(-amount), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
     const cfResponse = await cfPost('/payout/v1/directTransfer', { amount, transferId, transferMode: 'upi', remarks: 'INRT Wallet Withdrawal', beneDetails: { beneId: `USER_${userId}`, name: user.name || 'INRT User', vpa: upiId } });
@@ -635,412 +603,171 @@ app.post('/payout/withdraw', async (req, res) => {
       throw new Error(cfResponse.message || 'Withdrawal failed');
     }
     await db.collection('transactions').add({ uid: userId, type: 'debit', amount, note: `Withdrawal to ${upiId}`, cat: 'withdrawal', ref: transferId, toUpiId: upiId, status: 'success', method: 'cashfree_upi', createdAt: admin.firestore.FieldValue.serverTimestamp() });
-    res.json({ success: true, transferId, amount, message: `₹${amount.toLocaleString('en-IN')} withdrawn to ${upiId}` });
+    res.json({ success: true, transferId, amount });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-/**
- * INRT WALLET — EZYTM RECHARGE ROUTES
- * Paste into server.js BEFORE app.listen(...)
- *
- * Railway env vars needed:
- *   EZYTM_API_TOKEN = your API token from ezytm.com profile
- *   EZYTM_MEMBER_ID = your member ID from ezytm.com dashboard
- */
-
-const EZYTM_BASE  = 'https://newapi.ezytm.in';
-const EZYTM_TOKEN = process.env.EZYTM_API_TOKEN || '';
-const EZYTM_MEMBER = process.env.EZYTM_MEMBER_ID || '';
-
 // ══════════════════════════════════════════════════════════════
-//  ROUTE 1 — DETECT OPERATOR FROM MOBILE NUMBER
+//  EZYTM RECHARGE
 // ══════════════════════════════════════════════════════════════
 app.get('/recharge/operator/:mobile', async (req, res) => {
   try {
     const mobile = req.params.mobile.replace(/\D/g, '');
-    if (!EZYTM_TOKEN || !EZYTM_MEMBER)
-      return res.status(500).json({ error: 'EZYTM_API_TOKEN and EZYTM_MEMBER_ID not set in Railway' });
-
+    const token  = EZYTM_TOKEN();
+    const member = EZYTM_MEMBER();
+    if (!token || !member) return res.status(500).json({ error: 'EZYTM_API_TOKEN and EZYTM_MEMBER_ID not set in Railway' });
     const url = new URL(`${EZYTM_BASE}/api/getOperator`);
-    url.searchParams.append('token',    EZYTM_TOKEN);
-    url.searchParams.append('memberid', EZYTM_MEMBER);
+    url.searchParams.append('token',    token);
+    url.searchParams.append('memberid', member);
     url.searchParams.append('mobile',   mobile);
-
     const r    = await fetch(url.toString(), { signal: AbortSignal.timeout(8000) });
     const data = await r.json();
-
-    res.json({
-      mobile,
-      operator: data.operator || data.OPERATOR || data.Operator || 'UNKNOWN',
-      circle:   data.circle   || data.CIRCLE   || data.Circle   || 'UNKNOWN',
-    });
-  } catch (e) {
-    console.error('/recharge/operator:', e);
-    res.status(500).json({ error: e.message });
-  }
+    res.json({ mobile, operator: data.operator || data.OPERATOR || 'UNKNOWN', circle: data.circle || data.CIRCLE || 'UNKNOWN' });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ══════════════════════════════════════════════════════════════
-//  ROUTE 2 — GET LIVE PLANS
-// ══════════════════════════════════════════════════════════════
 app.get('/recharge/plans', async (req, res) => {
   try {
     const { operator, circle } = req.query;
-    if (!EZYTM_TOKEN || !EZYTM_MEMBER)
-      return res.status(500).json({ error: 'EZYTM_API_TOKEN and EZYTM_MEMBER_ID not set in Railway' });
-
+    const token  = EZYTM_TOKEN();
+    const member = EZYTM_MEMBER();
+    if (!token || !member) return res.status(500).json({ error: 'EZYTM_API_TOKEN and EZYTM_MEMBER_ID not set in Railway' });
     const url = new URL(`${EZYTM_BASE}/api/getPlans`);
-    url.searchParams.append('token',    EZYTM_TOKEN);
-    url.searchParams.append('memberid', EZYTM_MEMBER);
+    url.searchParams.append('token',    token);
+    url.searchParams.append('memberid', member);
     url.searchParams.append('op',       operator || 'JIO');
     url.searchParams.append('circle',   circle   || 'MAHARASHTRA');
-
     const r    = await fetch(url.toString(), { signal: AbortSignal.timeout(10000) });
     const data = await r.json();
-
     if (data.STATUS === 'FAILURE' || data.status === 'FAILURE')
       return res.status(400).json({ error: data.MESS || data.message || 'Failed to fetch plans' });
-
-    const plans = data.DATA || data.data || data.plans || data || [];
-    res.json({ success: true, plans });
-  } catch (e) {
-    console.error('/recharge/plans:', e);
-    res.status(500).json({ error: e.message });
-  }
+    res.json({ success: true, plans: data.DATA || data.data || data.plans || [] });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ══════════════════════════════════════════════════════════════
-//  ROUTE 3 — DO RECHARGE
-// ══════════════════════════════════════════════════════════════
 app.post('/recharge/do', async (req, res) => {
   try {
     const { userId, mobile, operator, amount, rechargeType } = req.body;
+    if (!userId || !mobile || !operator || !amount) return res.status(400).json({ error: 'userId, mobile, operator, amount required' });
+    const token  = EZYTM_TOKEN();
+    const member = EZYTM_MEMBER();
+    if (!token || !member) return res.status(500).json({ error: 'EZYTM_API_TOKEN and EZYTM_MEMBER_ID not set in Railway' });
+    if (!db) return res.status(500).json({ error: 'Database not connected' });
 
-    if (!userId || !mobile || !operator || !amount)
-      return res.status(400).json({
-        error: 'userId, mobile, operator, amount required'
-      });
-
-    if (!EZYTM_TOKEN)
-      return res.status(500).json({
-        error: 'EZYTM_API_TOKEN not set in Railway'
-      });
-
-    if (!db)
-      return res.status(500).json({
-        error: 'Database not connected'
-      });
-
-    // ── Check balance ─────────────────────────────
     const userSnap = await db.collection('users').doc(userId).get();
-
-    if (!userSnap.exists)
-      return res.status(404).json({
-        error: 'User not found'
-      });
-
-    const user = userSnap.data();
+    if (!userSnap.exists) return res.status(404).json({ error: 'User not found' });
+    const user    = userSnap.data();
     const balance = user.balance || 0;
+    if (balance < amount) return res.status(402).json({ error: `Insufficient balance. Available: ₹${balance.toLocaleString('en-IN')}` });
 
-    if (balance < amount) {
-      return res.status(402).json({
-        error: `Insufficient balance. Available: ₹${balance.toLocaleString('en-IN')}`
-      });
-    }
+    const orderId = genTxId('RCH');
+    const pts     = Math.floor(amount / 10);
 
-    // ── Generate Order ID ────────────────────────
-    const orderId =
-      `INRT${Date.now()}${Math.random().toString(36).slice(2,5).toUpperCase()}`;
-
-    const pts = Math.floor(amount / 10);
-
-    // ── Deduct Balance First ─────────────────────
+    // Deduct balance first
     await db.collection('users').doc(userId).update({
-      balance: admin.firestore.FieldValue.increment(-amount),
+      balance:   admin.firestore.FieldValue.increment(-amount),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
 
-    // ── Call EZYTM Recharge API ──────────────────
+    // Call Ezytm
     let ezytmResponse;
-
-try {
-
-  const url = new URL('https://newapi.ezytm.in/Service/Recharge2');
-
-  url.searchParams.append('ApiToken', process.env.EZYTM_API_TOKEN);
-  url.searchParams.append('MemberId', process.env.EZYTM_MEMBER_ID);
-  url.searchParams.append('MobileNo', mobile.replace(/\D/g, ''));
-  url.searchParams.append('Amount', amount.toString());
-  url.searchParams.append('OpId', operator);
-  url.searchParams.append('RefTxnId', orderId);
-
-  const r = await fetch(url.toString(), {
-    signal: AbortSignal.timeout(20000)
-  });
-
-  const text = await r.text();
-
-  console.log('EZYTM RAW RESPONSE:', text);
-
-  try {
-    ezytmResponse = JSON.parse(text);
-  } catch (err) {
-
-    console.log('EZYTM NON-JSON RESPONSE:', text);
-
-    return res.status(500).json({
-      error: 'EZYTM returned non JSON response',
-      raw: text
-    });
-  }
-
-} catch (err) {
-
-  console.error('EZYTM FETCH ERROR:', err);
-
-  return res.status(500).json({
-    error: err.message
-  });
-}
-
-        // Refund instantly if invalid response
-        await db.collection('users').doc(userId).update({
-          balance: admin.firestore.FieldValue.increment(amount),
-          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        });
-
-        return res.status(500).json({
-          error: 'Invalid JSON from EZYTM',
-          raw: text
-        });
+    try {
+      const url = new URL(`${EZYTM_BASE}/Service/Recharge2`);
+      url.searchParams.append('ApiToken',  token);
+      url.searchParams.append('MemberId',  member);
+      url.searchParams.append('MobileNo',  mobile.replace(/\D/g, ''));
+      url.searchParams.append('Amount',    amount.toString());
+      url.searchParams.append('OpId',      operator);
+      url.searchParams.append('RefTxnId',  orderId);
+      const r    = await fetch(url.toString(), { signal: AbortSignal.timeout(20000) });
+      const text = await r.text();
+      console.log('Ezytm raw:', text);
+      try { ezytmResponse = JSON.parse(text); }
+      catch {
+        // Refund on bad response
+        await db.collection('users').doc(userId).update({ balance: admin.firestore.FieldValue.increment(amount), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+        return res.status(500).json({ error: 'Invalid response from Ezytm', raw: text.slice(0,200) });
       }
-
-      console.log('Ezytm recharge response:', ezytmResponse);
-
     } catch (fetchErr) {
-
-      // Refund if API unreachable
-      await db.collection('users').doc(userId).update({
-        balance: admin.firestore.FieldValue.increment(amount),
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
-
-      return res.status(500).json({
-        error: 'Recharge service unreachable. Balance refunded.'
-      });
+      await db.collection('users').doc(userId).update({ balance: admin.firestore.FieldValue.increment(amount), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+      return res.status(500).json({ error: 'Recharge service unreachable. Balance refunded.' });
     }
 
-    // ── Parse Response ───────────────────────────
-    const status =
-      (ezytmResponse.STATUS ||
-       ezytmResponse.status ||
-       '').toUpperCase();
+    console.log('Ezytm parsed:', ezytmResponse);
 
-    const txnId =
-      ezytmResponse.OPTXNID ||
-      ezytmResponse.txnid ||
-      orderId;
+    const status      = String(ezytmResponse.STATUS || ezytmResponse.status || '').toUpperCase();
+    const txnId       = ezytmResponse.OPTXNID || ezytmResponse.txnid || orderId;
+    const operatorRef = ezytmResponse.TXNNO   || '';
+    const message     = ezytmResponse.MESSAGE || ezytmResponse.message || '';
 
-    const operatorRef =
-      ezytmResponse.TXNNO ||
-      '';
-
-    const message =
-      ezytmResponse.MESSAGE ||
-      ezytmResponse.message ||
-      '';
-
-    // ── FAILED ───────────────────────────────────
-    if (
-      status === '3' ||
-      status === 'FAILED' ||
-      status === 'FAILURE'
-    ) {
-
-      await db.collection('users').doc(userId).update({
-        balance: admin.firestore.FieldValue.increment(amount),
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
-
-      await db.collection('transactions').add({
-        uid: userId,
-        type: 'debit',
-        amount,
-        note: `Failed recharge: ${operator} ${mobile}`,
-        cat: 'recharge',
-        ref: orderId,
-        status: 'failed',
-        mobile,
-        operator,
-        ezytmTxnId: txnId,
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
-
-      return res.status(400).json({
-        success: false,
-        error: message || 'Recharge failed. Balance refunded.',
-      });
+    // STATUS 3 or FAILED = failure
+    if (status === '3' || status === 'FAILED' || status === 'FAILURE') {
+      await db.collection('users').doc(userId).update({ balance: admin.firestore.FieldValue.increment(amount), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+      await db.collection('transactions').add({ uid: userId, type: 'debit', amount, note: `Failed recharge: ${operator} ${mobile}`, cat: 'recharge', ref: orderId, status: 'failed', mobile, operator, ezytmTxnId: txnId, createdAt: admin.firestore.FieldValue.serverTimestamp() });
+      return res.status(400).json({ success: false, error: message || 'Recharge failed. Balance refunded.' });
     }
 
-    // ── SUCCESS / PENDING ────────────────────────
-    const txStatus =
-      status === '1'
-        ? 'success'
-        : 'pending';
+    // STATUS 1 = success, anything else = pending
+    const txStatus = status === '1' ? 'success' : 'pending';
+    await db.collection('transactions').add({ uid: userId, type: 'debit', amount, note: `${operator} ${rechargeType === 'D' ? 'DTH' : rechargeType === 'T' ? 'Postpaid' : 'Prepaid'} — ${mobile}`, cat: 'recharge', ref: orderId, status: txStatus, mobile, operator, ezytmTxnId: txnId, operatorRef, rewardPoints: status === '1' ? pts : 0, createdAt: admin.firestore.FieldValue.serverTimestamp() });
 
-    await db.collection('transactions').add({
-      uid: userId,
-      type: 'debit',
-      amount,
-      note:
-        `${operator} ${
-          rechargeType === 'D'
-            ? 'DTH'
-            : rechargeType === 'T'
-            ? 'Postpaid'
-            : 'Prepaid'
-        } — ${mobile}`,
-      cat: 'recharge',
-      ref: orderId,
-      status: txStatus,
-      mobile,
-      operator,
-      ezytmTxnId: txnId,
-      operatorRef,
-      rewardPoints: status === '1' ? pts : 0,
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-
-    // ── Reward Points ────────────────────────────
     if (status === '1') {
-      await db.collection('users').doc(userId).update({
-        rewardPoints: admin.firestore.FieldValue.increment(pts),
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
+      await db.collection('users').doc(userId).update({ rewardPoints: admin.firestore.FieldValue.increment(pts), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
     }
 
-    res.json({
-      success: status === '1',
-      pending: status !== '1',
-      orderId,
-      txnId,
-      operatorRef,
-      amount,
-      mobile,
-      operator,
-      status: txStatus,
-      rewardPoints: status === '1' ? pts : 0,
-      message:
-        status === '1'
-          ? `₹${amount} recharge successful for ${mobile}`
-          : 'Recharge is processing.',
-    });
-
+    res.json({ success: status === '1', pending: status !== '1' && status !== '3', orderId, txnId, operatorRef, amount, mobile, operator, status: txStatus, rewardPoints: status === '1' ? pts : 0, message: status === '1' ? `₹${amount} recharge done for ${mobile}` : 'Recharge processing…' });
   } catch (e) {
-
     console.error('/recharge/do:', e);
-
-    res.status(500).json({
-      error: e.message || 'Recharge failed'
-    });
+    res.status(500).json({ error: e.message || 'Recharge failed' });
   }
 });
 
-// ══════════════════════════════════════════════════════════════
-//  ROUTE 4 — CHECK RECHARGE STATUS (for pending recharges)
-// ══════════════════════════════════════════════════════════════
 app.get('/recharge/status/:orderId', async (req, res) => {
   try {
     const { orderId } = req.params;
-
+    const token  = EZYTM_TOKEN();
+    const member = EZYTM_MEMBER();
     const url = new URL(`${EZYTM_BASE}/api/status`);
-    url.searchParams.append('token',    EZYTM_TOKEN);
-    url.searchParams.append('memberid', EZYTM_MEMBER);
+    url.searchParams.append('token',    token);
+    url.searchParams.append('memberid', member);
     url.searchParams.append('orderid',  orderId);
-
     const r    = await fetch(url.toString(), { signal: AbortSignal.timeout(10000) });
     const data = await r.json();
+    const status = String(data.STATUS || data.status || 'UNKNOWN').toUpperCase();
+    const txnId  = data.TXNID || data.txnid || '';
+    const opId   = data.OPID  || data.opid  || '';
 
-    const status = (data.STATUS || data.status || 'UNKNOWN').toUpperCase();
-    const txnId  = data.TXNID   || data.txnid  || '';
-    const opId   = data.OPID    || data.opid   || '';
-
-    // If now SUCCESS — add reward points
-    if (status === 'SUCCESS' && db) {
-      const snap = await db.collection('transactions')
-        .where('ref', '==', orderId).limit(1).get();
-
-      if (!snap.empty) {
+    if (status === 'SUCCESS' || status === '1') {
+      const snap = await db.collection('transactions').where('ref','==',orderId).limit(1).get();
+      if (!snap.empty && snap.docs[0].data().status !== 'success') {
         const tx = snap.docs[0].data();
-        if (tx.status !== 'success') {
-          await snap.docs[0].ref.update({
-            status:      'success',
-            ezytmTxnId:  txnId,
-            operatorRef: opId,
-            updatedAt:   admin.firestore.FieldValue.serverTimestamp(),
-          });
-          await db.collection('users').doc(tx.uid).update({
-            rewardPoints: admin.firestore.FieldValue.increment(Math.floor(tx.amount / 10)),
-            updatedAt:    admin.firestore.FieldValue.serverTimestamp(),
-          });
-        }
+        await snap.docs[0].ref.update({ status: 'success', ezytmTxnId: txnId, operatorRef: opId, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+        await db.collection('users').doc(tx.uid).update({ rewardPoints: admin.firestore.FieldValue.increment(Math.floor(tx.amount/10)), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
       }
     }
-
-    // If FAILED — refund
-    if ((status === 'FAILURE' || status === 'FAILED') && db) {
-      const snap = await db.collection('transactions')
-        .where('ref', '==', orderId).limit(1).get();
-
-      if (!snap.empty) {
+    if (status === 'FAILURE' || status === 'FAILED' || status === '3') {
+      const snap = await db.collection('transactions').where('ref','==',orderId).limit(1).get();
+      if (!snap.empty && snap.docs[0].data().status === 'pending') {
         const tx = snap.docs[0].data();
-        if (tx.status === 'pending') {
-          await db.collection('users').doc(tx.uid).update({
-            balance:   admin.firestore.FieldValue.increment(tx.amount),
-            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-          });
-          await snap.docs[0].ref.update({
-            status:    'failed',
-            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-          });
-          await db.collection('transactions').add({
-            uid:    tx.uid,
-            type:   'credit',
-            amount: tx.amount,
-            note:   `Refund: Recharge failed for ${tx.mobile}`,
-            cat:    'refund',
-            ref:    `REF_${orderId}`,
-            status: 'success',
-            createdAt: admin.firestore.FieldValue.serverTimestamp(),
-          });
-        }
+        await db.collection('users').doc(tx.uid).update({ balance: admin.firestore.FieldValue.increment(tx.amount), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+        await snap.docs[0].ref.update({ status: 'failed', updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+        await db.collection('transactions').add({ uid: tx.uid, type: 'credit', amount: tx.amount, note: `Refund: Recharge failed for ${tx.mobile}`, cat: 'refund', ref: `REF_${orderId}`, status: 'success', createdAt: admin.firestore.FieldValue.serverTimestamp() });
       }
     }
-
-    res.json({
-      orderId,
-      status:      status.toLowerCase(),
-      txnId,
-      operatorRef: opId,
-      message:     data.MESS || data.message || '',
-    });
-
-  } catch (e) {
-    console.error('/recharge/status:', e);
-    res.status(500).json({ error: e.message });
-  }
+    res.json({ orderId, status: status.toLowerCase(), txnId, operatorRef: opId, message: data.MESS || data.message || '' });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
-
 
 // ══════════════════════════════════════════════════════════════
 //  START SERVER
 // ══════════════════════════════════════════════════════════════
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`\n🚀 INRT API running on port ${PORT}`);
-  console.log(`   Razorpay  : ${process.env.RAZORPAY_KEY_ID    ? '✅' : '❌ Missing'}`);
-  console.log(`   Resend    : ${process.env.RESEND_API_KEY      ? '✅' : '❌ Missing'}`);
-  console.log(`   Firebase  : ${adminAuth                        ? '✅' : '❌ Missing'}`);
-  console.log(`   Surepass  : ${process.env.SUREPASS_TOKEN      ? '✅' : '❌ Missing'}`);
-  console.log(`   Cashfree  : ${process.env.CASHFREE_APP_ID     ? '✅' : '❌ Missing'}`);
-  console.log(`   Admin Key : ${process.env.ADMIN_KEY           ? '✅' : '❌ Missing'}\n`);
+  console.log(`\n🚀 INRT API on port ${PORT}`);
+  console.log(`   Firebase  : ${adminAuth                    ? '✅' : '❌'}`);
+  console.log(`   Razorpay  : ${process.env.RAZORPAY_KEY_ID  ? '✅' : '❌'}`);
+  console.log(`   Resend    : ${process.env.RESEND_API_KEY   ? '✅' : '❌'}`);
+  console.log(`   Surepass  : ${process.env.SUREPASS_TOKEN   ? '✅' : '❌'}`);
+  console.log(`   Cashfree  : ${process.env.CASHFREE_APP_ID  ? '✅' : '❌'}`);
+  console.log(`   Ezytm     : ${process.env.EZYTM_API_TOKEN  ? '✅' : '❌'}`);
+  console.log(`   Admin Key : ${process.env.ADMIN_KEY        ? '✅' : '❌'}\n`);
 });
