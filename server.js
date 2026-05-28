@@ -877,6 +877,309 @@ app.get('/recharge/status/:orderId', async (req, res) => {
   }
 });
 
+/**
+ * INRT WALLET — INSTAMOJO PAYMENT ROUTES
+ * Paste into server.js BEFORE app.listen(...)
+ *
+ * Instamojo collects money from users — NO POPUP on your app.
+ * It opens Instamojo's hosted payment page in a new tab/webview.
+ * User pays → Instamojo calls your webhook → wallet credited.
+ *
+ * Railway env vars needed:
+ *   INSTAMOJO_API_KEY    = your API key from instamojo.com
+ *   INSTAMOJO_AUTH_TOKEN = your auth token from instamojo.com
+ *   INSTAMOJO_SALT       = your salt from instamojo.com (for webhook verification)
+ *   APP_URL              = https://your-vercel-url.vercel.app (your frontend URL)
+ *
+ * Instamojo modes:
+ *   Test:       https://test.instamojo.com/api/1.1  (use test credentials)
+ *   Production: https://www.instamojo.com/api/1.1   (use live credentials)
+ */
+
+const INSTAMOJO_BASE = process.env.NODE_ENV === 'production'
+  ? 'https://www.instamojo.com/api/1.1'
+  : 'https://test.instamojo.com/api/1.1';
+
+// ── Instamojo API helper ──────────────────────────────────────
+async function instamojoPost(endpoint, data) {
+  const API_KEY    = process.env.INSTAMOJO_API_KEY;
+  const AUTH_TOKEN = process.env.INSTAMOJO_AUTH_TOKEN;
+
+  if (!API_KEY || !AUTH_TOKEN)
+    throw new Error('INSTAMOJO_API_KEY and INSTAMOJO_AUTH_TOKEN not set in Railway');
+
+  const formData = new URLSearchParams(data);
+
+  const r = await fetch(`${INSTAMOJO_BASE}${endpoint}/`, {
+    method: 'POST',
+    headers: {
+      'X-Api-Key':    API_KEY,
+      'X-Auth-Token': AUTH_TOKEN,
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: formData.toString(),
+    signal: AbortSignal.timeout(15000),
+  });
+
+  const text = await r.text();
+  try { return JSON.parse(text); }
+  catch { throw new Error(`Instamojo returned non-JSON: ${text.slice(0, 200)}`); }
+}
+
+async function instamojoGet(endpoint) {
+  const API_KEY    = process.env.INSTAMOJO_API_KEY;
+  const AUTH_TOKEN = process.env.INSTAMOJO_AUTH_TOKEN;
+
+  const r = await fetch(`${INSTAMOJO_BASE}${endpoint}/`, {
+    headers: {
+      'X-Api-Key':    API_KEY,
+      'X-Auth-Token': AUTH_TOKEN,
+    },
+    signal: AbortSignal.timeout(10000),
+  });
+
+  return r.json();
+}
+
+// ══════════════════════════════════════════════════════════════
+//  ROUTE 1 — CREATE PAYMENT REQUEST
+//  Frontend calls this → gets Instamojo payment URL
+//  User is redirected to that URL to pay
+// ══════════════════════════════════════════════════════════════
+app.post('/instamojo/create-payment', async (req, res) => {
+  try {
+    const { userId, amount, name, email, phone } = req.body;
+
+    if (!userId || !amount)
+      return res.status(400).json({ error: 'userId and amount required' });
+
+    if (amount < 10)
+      return res.status(400).json({ error: 'Minimum amount is ₹10' });
+
+    if (!db)
+      return res.status(500).json({ error: 'Database not connected' });
+
+    // Get user info from Firestore
+    const userSnap = await db.collection('users').doc(userId).get();
+    if (!userSnap.exists)
+      return res.status(404).json({ error: 'User not found' });
+
+    const user       = userSnap.data();
+    const APP_URL    = process.env.APP_URL || 'https://your-app.vercel.app';
+    const paymentRef = `INRT${Date.now()}${Math.random().toString(36).slice(2,5).toUpperCase()}`;
+
+    // Store pending payment in Firestore
+    await db.collection('instamojoPayments').doc(paymentRef).set({
+      userId,
+      amount:     parseFloat(amount),
+      status:     'pending',
+      paymentRef,
+      createdAt:  admin.firestore.FieldValue.serverTimestamp(),
+      expiresAt:  Date.now() + 30 * 60 * 1000, // 30 minutes
+    });
+
+    // Create Instamojo payment request
+    const data = await instamojoPost('/payment-requests', {
+      purpose:          `Add Money to INRT Wallet`,
+      amount:           parseFloat(amount).toFixed(2),
+      buyer_name:       name  || user.name  || 'INRT User',
+      email:            email || user.email || `${user.phone}@inrtwallet.app`,
+      phone:            phone || user.phone || '',
+      send_email:       false,
+      send_sms:         false,
+      allow_repeated_payments: false,
+      redirect_url:     `${APP_URL}/payment-success?ref=${paymentRef}&userId=${userId}`,
+      webhook:          `${process.env.RAILWAY_URL || 'https://inrt-wallet-production.up.railway.app'}/instamojo/webhook`,
+    });
+
+    if (!data.success)
+      throw new Error(data.message || JSON.stringify(data.message_slug) || 'Instamojo payment creation failed');
+
+    const paymentUrl = data.payment_request?.longurl || data.payment_request?.shorturl;
+    const requestId  = data.payment_request?.id;
+
+    // Update Firestore with Instamojo request ID
+    await db.collection('instamojoPayments').doc(paymentRef).update({
+      instamojoRequestId: requestId,
+      paymentUrl,
+    });
+
+    console.log(`✅ Instamojo payment created: ${paymentRef} | ₹${amount} | ${requestId}`);
+
+    res.json({
+      success:    true,
+      paymentUrl, // redirect user to this URL
+      paymentRef,
+      requestId,
+      amount,
+      message:    'Payment page created. Redirect user to paymentUrl.',
+    });
+
+  } catch (e) {
+    console.error('/instamojo/create-payment:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════
+//  ROUTE 2 — WEBHOOK (Instamojo calls this after payment)
+//  Add this URL in Instamojo dashboard → Settings → Webhooks
+//  URL: https://your-railway-url.up.railway.app/instamojo/webhook
+// ══════════════════════════════════════════════════════════════
+app.post('/instamojo/webhook', async (req, res) => {
+  try {
+    const {
+      payment_id,
+      payment_request_id,
+      amount,
+      status,
+      buyer,
+      buyer_name,
+      mac,  // webhook signature from Instamojo
+    } = req.body;
+
+    console.log('Instamojo webhook received:', { payment_id, status, amount });
+
+    // ── Verify webhook signature ──────────────────────────────
+    const SALT = process.env.INSTAMOJO_SALT;
+    if (SALT && mac) {
+      const message = `|${payment_request_id}|${payment_id}|${status}|${buyer}|${buyer_name}|${amount}|`;
+      const expected = crypto
+        .createHmac('sha1', SALT)
+        .update(message)
+        .digest('hex');
+
+      if (mac !== expected) {
+        console.error('Instamojo webhook: invalid MAC signature');
+        return res.status(400).json({ error: 'Invalid signature' });
+      }
+    }
+
+    // Only process successful payments
+    if (status !== 'Credit') {
+      console.log(`Instamojo webhook: status=${status}, skipping`);
+      return res.json({ received: true });
+    }
+
+    if (!db) return res.json({ received: true });
+
+    // Find the pending payment by Instamojo request ID
+    const snap = await db.collection('instamojoPayments')
+      .where('instamojoRequestId', '==', payment_request_id)
+      .limit(1)
+      .get();
+
+    if (snap.empty) {
+      console.warn('Instamojo webhook: payment request not found:', payment_request_id);
+      return res.json({ received: true });
+    }
+
+    const payDoc  = snap.docs[0];
+    const payment = payDoc.data();
+
+    // Prevent double-processing
+    if (payment.status === 'success') {
+      console.log('Instamojo webhook: already processed:', payment_request_id);
+      return res.json({ received: true });
+    }
+
+    const paidAmount = parseFloat(amount);
+    const pts        = Math.floor(paidAmount / 10);
+    const ref        = `IM${payment_id}`;
+
+    // Credit user wallet atomically
+    const batch = db.batch();
+
+    batch.update(db.collection('users').doc(payment.userId), {
+      balance:       admin.firestore.FieldValue.increment(paidAmount),
+      totalReceived: admin.firestore.FieldValue.increment(paidAmount),
+      rewardPoints:  admin.firestore.FieldValue.increment(pts),
+      updatedAt:     admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    batch.set(db.collection('transactions').doc(ref), {
+      uid:         payment.userId,
+      type:        'credit',
+      amount:      paidAmount,
+      note:        `Added via Instamojo`,
+      cat:         'add_money',
+      ref,
+      status:      'success',
+      paymentId:   payment_id,
+      rewardPoints: pts,
+      createdAt:   admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    batch.update(payDoc.ref, {
+      status:    'success',
+      paymentId: payment_id,
+      paidAt:    admin.firestore.FieldValue.serverTimestamp(),
+      paidAmount,
+    });
+
+    await batch.commit();
+
+    console.log(`✅ Instamojo: ₹${paidAmount} credited to ${payment.userId} | ${ref}`);
+    res.json({ received: true, credited: true });
+
+  } catch (e) {
+    console.error('/instamojo/webhook:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════
+//  ROUTE 3 — VERIFY PAYMENT (frontend polls after redirect)
+//  After user is redirected back to your app, call this to
+//  confirm the payment was successful
+// ══════════════════════════════════════════════════════════════
+app.get('/instamojo/verify/:paymentRef', async (req, res) => {
+  try {
+    const { paymentRef } = req.params;
+
+    if (!db) return res.json({ status: 'unknown' });
+
+    const snap = await db.collection('instamojoPayments').doc(paymentRef).get();
+    if (!snap.exists) return res.json({ status: 'not_found' });
+
+    const data = snap.data();
+
+    // Check if expired
+    if (data.status === 'pending' && Date.now() > data.expiresAt) {
+      await snap.ref.update({ status: 'expired' });
+      return res.json({ status: 'expired' });
+    }
+
+    res.json({
+      status:     data.status,   // pending | success | expired
+      amount:     data.amount,
+      paymentRef,
+      paymentId:  data.paymentId || null,
+    });
+
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════
+//  ROUTE 4 — GET PAYMENT STATUS FROM INSTAMOJO (admin check)
+// ══════════════════════════════════════════════════════════════
+app.get('/instamojo/status/:requestId', async (req, res) => {
+  try {
+    const data = await instamojoGet(`/payment-requests/${req.params.requestId}`);
+    res.json({
+      requestId:  req.params.requestId,
+      status:     data.payment_request?.status,
+      amount:     data.payment_request?.amount,
+      payments:   data.payment_request?.payments || [],
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+
 // ══════════════════════════════════════════════════════════════
 //  START SERVER
 // ══════════════════════════════════════════════════════════════
