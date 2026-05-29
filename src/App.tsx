@@ -7,6 +7,9 @@ import LoginPage   from './pages/LoginPage';
 import Dashboard   from './pages/dashboard';
 import AddMoney    from './pages/AddMoney';
 import SendMoney   from './pages/SendMoney';
+import PrivacyPolicy      from './pages/PrivacyPolicy';
+import TermsAndConditions from './pages/TermsAndConditions';
+import RefundPolicy       from './pages/RefundPolicy';
 
 // ── Lazy ───────────────────────────────────────────────────────
 const TransactionHistory = lazy(() => import('./pages/TransactionHistory'));
@@ -107,6 +110,11 @@ export default function App() {
             <Route path="/loans"         element={<Guard><Suspense fallback={<Loader/>}><LoansPage /></Suspense></Guard>} />
             <Route path="/movies"        element={<Guard><Suspense fallback={<Loader/>}><MoviesPage /></Suspense></Guard>} />
             <Route path="/travel"        element={<Guard><Suspense fallback={<Loader/>}><TravelPage /></Suspense></Guard>} />
+
+            // Inside your Routes:
+<Route path="/privacy"       element={<PrivacyPolicy />} />
+<Route path="/terms"         element={<TermsAndConditions />} />
+<Route path="/refund-policy" element={<RefundPolicy />} />
 
             {/* Catch-all */}
             <Route path="/"  element={<Navigate to="/dashboard" replace />} />
