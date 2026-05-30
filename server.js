@@ -184,156 +184,6 @@ app.post('/reset-password', async (req, res) => {
   }
 });
 
-// ══════════════════════════════════════════════════════════════
-//  KYC
-// ══════════════════════════════════════════════════════════════
-app.post('/kyc/aadhaar-send-otp', async (req, res) => {
-  try {
-    const { aadhaarNumber, userId } = req.body;
-    const clean = (aadhaarNumber || '').replace(/\s/g, '');
-    if (clean.length !== 12) return res.status(400).json({ error: 'Invalid Aadhaar number' });
-    const SUREPASS_TOKEN = process.env.SUREPASS_TOKEN;
-    if (!SUREPASS_TOKEN)  return res.status(500).json({ error: 'SUREPASS_TOKEN not set' });
-    const response = await fetch('https://kyc-api.surepass.io/api/v1/aadhaar-v2/generate-otp', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUREPASS_TOKEN}` },
-      body: JSON.stringify({ id_number: clean }),
-    });
-    const data = await response.json();
-    if (!response.ok || data.status_code !== 200)
-      return res.status(400).json({ error: data.message || 'Failed to send OTP' });
-    if (db && userId) {
-      await db.collection('kycAttempts').add({
-        userId, type: 'aadhaar_otp_sent', aadhaarLast4: clean.slice(-4),
-        timestamp: admin.firestore.FieldValue.serverTimestamp(),
-      });
-    }
-    res.json({ success: true, ref_id: data.data?.ref_id || data.ref_id });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.post('/kyc/aadhaar-verify-otp', async (req, res) => {
-  try {
-    const { otp, ref_id, userId } = req.body;
-    if (!otp || otp.length !== 6) return res.status(400).json({ error: 'Invalid OTP' });
-    if (!ref_id)                   return res.status(400).json({ error: 'ref_id required' });
-    const SUREPASS_TOKEN = process.env.SUREPASS_TOKEN;
-    if (!SUREPASS_TOKEN)  return res.status(500).json({ error: 'SUREPASS_TOKEN not set' });
-    const response = await fetch('https://kyc-api.surepass.io/api/v1/aadhaar-v2/submit-otp', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUREPASS_TOKEN}` },
-      body: JSON.stringify({ otp, ref_id }),
-    });
-    const data = await response.json();
-    if (!response.ok || data.status_code !== 200)
-      return res.status(400).json({ error: data.message || 'OTP verification failed' });
-    const ad = data.data || {};
-    if (db && userId) {
-      await db.collection('kyc').doc(userId).set({
-        aadhaarVerified: true, aadhaarVerifiedAt: admin.firestore.FieldValue.serverTimestamp(),
-        aadhaarName: ad.full_name || '', aadhaarDob: ad.dob || '',
-        aadhaarState: ad.state || '', aadhaarPincode: ad.zip_code || '',
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      }, { merge: true });
-    }
-    res.json({ success: true, aadhaarData: { name: ad.full_name || '', dob: ad.dob || '', gender: ad.gender || '', state: ad.state || '', zip_code: ad.zip_code || '' } });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.post('/kyc/verify-pan', async (req, res) => {
-  try {
-    const { panNumber, userId } = req.body;
-    const pan = (panNumber || '').toUpperCase().trim();
-    if (!/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(pan)) return res.status(400).json({ error: 'Invalid PAN format' });
-    const SUREPASS_TOKEN = process.env.SUREPASS_TOKEN;
-    if (!SUREPASS_TOKEN)  return res.status(500).json({ error: 'SUREPASS_TOKEN not set' });
-    const response = await fetch('https://kyc-api.surepass.io/api/v1/pan/pan', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SUREPASS_TOKEN}` },
-      body: JSON.stringify({ id_number: pan }),
-    });
-    const data = await response.json();
-    if (!response.ok || data.status_code !== 200)
-      return res.status(400).json({ error: data.message || 'PAN verification failed' });
-    const pd = data.data || {};
-    if (db && userId) {
-      await db.collection('kyc').doc(userId).set({
-        panVerified: true, panVerifiedAt: admin.firestore.FieldValue.serverTimestamp(),
-        panName: pd.full_name || '', panDob: pd.dob || '', panStatus: pd.pan_status || 'E',
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      }, { merge: true });
-    }
-    res.json({ success: true, panData: { name: pd.full_name || '', dob: pd.dob || '', status: pd.pan_status || 'E' } });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.post('/kyc/auto-approve', async (req, res) => {
-  try {
-    const { userId, fullName, dob, gender, aadhaarLast4, aadhaarData, panData, pan, selfieBase64 } = req.body;
-    if (!userId || !aadhaarData || !panData) return res.json({ approved: false, reason: 'Missing required data' });
-    if (!db) return res.json({ approved: false, reason: 'Database not connected' });
-    const aSnap = await db.collection('kyc').where('aadhaarLast4','==',aadhaarLast4).where('aadhaarVerified','==',true).where('status','==','verified').limit(2).get();
-    if (aSnap.docs.some(d => d.id !== userId)) return res.json({ approved: false, reason: 'Aadhaar already registered with another account.' });
-    const panMasked = pan.slice(0,2) + 'XXX' + pan.slice(5);
-    const pSnap = await db.collection('kyc').where('panMasked','==',panMasked).where('panVerified','==',true).where('status','==','verified').limit(2).get();
-    if (pSnap.docs.some(d => d.id !== userId)) return res.json({ approved: false, reason: 'PAN already registered with another account.' });
-    const n1 = (aadhaarData.name || '').toLowerCase().trim();
-    const n2 = (panData.name     || '').toLowerCase().trim();
-    if (n1 && n2) {
-      const w1 = n1.split(' ').filter(w => w.length > 1);
-      const w2 = n2.split(' ').filter(w => w.length > 1);
-      const common = w1.filter(w => w2.includes(w));
-      if (common.length < 1 && !n1.includes(n2) && !n2.includes(n1))
-        return res.json({ approved: false, reason: `Name mismatch: Aadhaar "${aadhaarData.name}" vs PAN "${panData.name}"` });
-    }
-    if (dob) {
-      const birth = new Date(dob), today = new Date();
-      let age = today.getFullYear() - birth.getFullYear();
-      const m = today.getMonth() - birth.getMonth();
-      if (m < 0 || (m === 0 && today.getDate() < birth.getDate())) age--;
-      if (age < 18) return res.json({ approved: false, reason: `Must be 18+. Age: ${age}` });
-    }
-    let selfieUrl = '';
-    if (selfieBase64) {
-      try {
-        const bucket = admin.storage().bucket();
-        const file   = bucket.file(`kyc/${userId}/selfie.jpg`);
-        await file.save(Buffer.from(selfieBase64, 'base64'), { metadata: { contentType: 'image/jpeg' } });
-        selfieUrl = (await file.getSignedUrl({ action: 'read', expires: '03-01-2500' }))[0];
-      } catch (e) { console.warn('Selfie upload failed:', e.message); }
-    }
-    const kycRef = genTxId('KYC');
-    await db.collection('kyc').doc(userId).set({
-      userId, kycRef, status: 'verified', autoApproved: true,
-      aadhaarVerified: true, aadhaarLast4, aadhaarMasked: `XXXX-XXXX-${aadhaarLast4}`,
-      aadhaarName: aadhaarData.name || '', aadhaarDob: aadhaarData.dob || '', aadhaarState: aadhaarData.state || '',
-      panVerified: true, panMasked, panName: panData.name || '', panDob: panData.dob || '', panStatus: panData.status || 'E',
-      selfie: selfieUrl, fullName: fullName?.trim() || '', dob, gender,
-      submittedAt: admin.firestore.FieldValue.serverTimestamp(),
-      reviewedAt:  admin.firestore.FieldValue.serverTimestamp(),
-      updatedAt:   admin.firestore.FieldValue.serverTimestamp(),
-    }, { merge: true });
-    await db.collection('users').doc(userId).update({
-      kycStatus: 'verified', kycRef,
-      kycVerifiedAt:  admin.firestore.FieldValue.serverTimestamp(),
-      rewardPoints:   admin.firestore.FieldValue.increment(500),
-      dailyLimit:     100000,
-      updatedAt:      admin.firestore.FieldValue.serverTimestamp(),
-    });
-    console.log(`✅ KYC auto-approved: ${userId}`);
-    res.json({ approved: true, kycRef });
-  } catch (e) { res.status(500).json({ approved: false, reason: e.message }); }
-});
-
-app.get('/kyc/status/:userId', async (req, res) => {
-  try {
-    if (!db) return res.json({ status: 'unknown' });
-    const snap = await db.collection('kyc').doc(req.params.userId).get();
-    if (!snap.exists) return res.json({ status: 'not_started' });
-    const d = snap.data();
-    res.json({ status: d.status, kycRef: d.kycRef, aadhaarVerified: d.aadhaarVerified || false, panVerified: d.panVerified || false });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
 
 // ══════════════════════════════════════════════════════════════
 //  WALLET TRANSFER
@@ -1178,6 +1028,348 @@ app.get('/instamojo/status/:requestId', async (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
+
+/**
+ * INRT WALLET — DIDIT KYC ROUTES
+ * Paste into server.js BEFORE app.listen(...)
+ *
+ * Flow:
+ *   1. Frontend calls /kyc/didit-session → gets session URL
+ *   2. User is redirected to Didit verification page
+ *   3. User completes face + document scan on Didit
+ *   4. Didit calls /kyc/didit-webhook with result
+ *   5. Wallet auto-approves if verified
+ *
+ * Railway env vars needed:
+ *   DIDIT_CLIENT_ID     = App ID from app.didit.me
+ *   DIDIT_CLIENT_SECRET = API Key from app.didit.me
+ *   APP_URL             = https://inrtwallet.in
+ */
+
+const DIDIT_BASE = 'https://apx.didit.me';
+
+// ── Get Didit access token ────────────────────────────────────
+let diditToken       = null;
+let diditTokenExpiry = 0;
+
+async function getDiditToken() {
+  if (diditToken && Date.now() < diditTokenExpiry) return diditToken;
+
+  const clientId     = process.env.DIDIT_CLIENT_ID;
+  const clientSecret = process.env.DIDIT_CLIENT_SECRET;
+
+  if (!clientId || !clientSecret)
+    throw new Error('DIDIT_CLIENT_ID and DIDIT_CLIENT_SECRET not set in Railway');
+
+  const credentials = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
+
+  const r = await fetch('https://auth.didit.me/auth/realms/didit-app/protocol/openid-connect/token', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Basic ${credentials}`,
+      'Content-Type':  'application/x-www-form-urlencoded',
+    },
+    body: 'grant_type=client_credentials',
+    signal: AbortSignal.timeout(10000),
+  });
+
+  const d = await r.json();
+  if (!d.access_token) throw new Error(`Didit auth failed: ${d.error_description || JSON.stringify(d)}`);
+
+  diditToken       = d.access_token;
+  diditTokenExpiry = Date.now() + (d.expires_in - 60) * 1000;
+  return diditToken;
+}
+
+// ── Didit API helper ──────────────────────────────────────────
+async function diditPost(endpoint, body) {
+  const token = await getDiditToken();
+  const r = await fetch(`${DIDIT_BASE}${endpoint}`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type':  'application/json',
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(15000),
+  });
+  return r.json();
+}
+
+async function diditGet(endpoint) {
+  const token = await getDiditToken();
+  const r = await fetch(`${DIDIT_BASE}${endpoint}`, {
+    headers: { 'Authorization': `Bearer ${token}` },
+    signal: AbortSignal.timeout(10000),
+  });
+  return r.json();
+}
+
+// ══════════════════════════════════════════════════════════════
+//  ROUTE 1 — CREATE DIDIT VERIFICATION SESSION
+//  Frontend calls this → gets Didit verification URL
+//  User is redirected to complete KYC on Didit
+// ══════════════════════════════════════════════════════════════
+app.post('/kyc/didit-session', async (req, res) => {
+  try {
+    const { userId } = req.body;
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+    if (!db)     return res.status(500).json({ error: 'Database not connected' });
+
+    // Check if already verified
+    const userSnap = await db.collection('users').doc(userId).get();
+    if (!userSnap.exists) return res.status(404).json({ error: 'User not found' });
+    const user = userSnap.data();
+    if (user.kycStatus === 'verified')
+      return res.status(400).json({ error: 'KYC already verified' });
+
+    const APP_URL = process.env.APP_URL || 'https://inrtwallet.in';
+
+    // Create Didit verification session
+    const session = await diditPost('/v1/session/', {
+      vendor_data:  userId,           // we pass userId so webhook knows who to credit
+      callback:     `${APP_URL}/kyc-complete`,
+      features:     'OCR + FACE',     // document scan + face match
+    });
+
+    if (!session?.session_id || !session?.url)
+      throw new Error(session?.detail || session?.message || 'Failed to create Didit session');
+
+    // Save session to Firestore
+    await db.collection('diditSessions').doc(session.session_id).set({
+      userId,
+      sessionId:  session.session_id,
+      status:     'pending',
+      createdAt:  admin.firestore.FieldValue.serverTimestamp(),
+      expiresAt:  Date.now() + 30 * 60 * 1000, // 30 minutes
+    });
+
+    // Update user KYC status to in_progress
+    await db.collection('users').doc(userId).update({
+      kycStatus:  'in_progress',
+      updatedAt:  admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    console.log(`✅ Didit session created: ${session.session_id} for ${userId}`);
+
+    res.json({
+      success:    true,
+      sessionId:  session.session_id,
+      url:        session.url,           // redirect user to this URL
+      expiresIn:  1800,                  // 30 minutes
+    });
+
+  } catch (e) {
+    console.error('/kyc/didit-session:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════
+//  ROUTE 2 — DIDIT WEBHOOK
+//  Didit calls this after user completes verification
+//  Webhook URL: https://inrt-wallet-production.up.railway.app/kyc/didit-webhook
+// ══════════════════════════════════════════════════════════════
+app.post('/kyc/didit-webhook', async (req, res) => {
+  try {
+    // Always acknowledge webhook immediately
+    res.json({ received: true });
+
+    const body = req.body;
+    console.log('Didit webhook received:', JSON.stringify(body).slice(0, 300));
+
+    if (!db) return;
+
+    // Didit sends different event types
+    const eventType = body.event_type || body.type || '';
+    const sessionId = body.session_id || body.sessionId || '';
+    const status    = body.status     || '';
+    const vendorData= body.vendor_data || ''; // this is the userId we passed
+
+    // Only process completed verifications
+    if (!['verification.completed', 'verification.approved', 'APPROVED'].some(e =>
+      eventType.includes(e) || status.includes(e) || eventType === e || status === e
+    )) {
+      console.log(`Didit webhook: event=${eventType} status=${status} — skipping`);
+      return;
+    }
+
+    // Get userId — either from vendor_data or from our session record
+    let userId = vendorData;
+    if (!userId && sessionId) {
+      const sessionSnap = await db.collection('diditSessions').doc(sessionId).get();
+      if (sessionSnap.exists) userId = sessionSnap.data().userId;
+    }
+
+    if (!userId) {
+      console.warn('Didit webhook: could not determine userId from', { vendorData, sessionId });
+      return;
+    }
+
+    // Check if already processed
+    const userSnap = await db.collection('users').doc(userId).get();
+    if (!userSnap.exists) return;
+    if (userSnap.data().kycStatus === 'verified') {
+      console.log(`Didit webhook: ${userId} already verified`);
+      return;
+    }
+
+    // Extract identity data from webhook
+    const docData  = body.document || body.ocr_result    || {};
+    const faceData = body.face     || body.face_result    || {};
+    const fullName = docData.full_name || docData.name    || body.full_name || '';
+    const dob      = docData.date_of_birth || docData.dob || body.dob       || '';
+    const docType  = docData.document_type || 'ID'        || '';
+    const docNo    = docData.document_number               || '';
+    const country  = docData.country                       || 'IN';
+
+    const kycRef   = `KYC${Date.now()}${Math.random().toString(36).slice(2,5).toUpperCase()}`;
+
+    // Batch update — approve KYC + reward user
+    const batch = db.batch();
+
+    batch.set(db.collection('kyc').doc(userId), {
+      userId,
+      kycRef,
+      status:          'verified',
+      kycType:         'didit',
+      autoApproved:    true,
+      diditSessionId:  sessionId,
+      diditEventType:  eventType,
+      fullName,
+      dob,
+      docType,
+      docNo,
+      country,
+      faceMatch:       faceData.match_status || faceData.result || 'matched',
+      submittedAt:     admin.firestore.FieldValue.serverTimestamp(),
+      reviewedAt:      admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt:       admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+
+    batch.update(db.collection('users').doc(userId), {
+      kycStatus:     'verified',
+      kycRef,
+      kycVerifiedAt: admin.firestore.FieldValue.serverTimestamp(),
+      rewardPoints:  admin.firestore.FieldValue.increment(500),
+      dailyLimit:    100000,
+      updatedAt:     admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    // Update session status
+    if (sessionId) {
+      batch.update(db.collection('diditSessions').doc(sessionId), {
+        status:     'completed',
+        completedAt:admin.firestore.FieldValue.serverTimestamp(),
+      });
+    }
+
+    await batch.commit();
+
+    console.log(`✅ Didit KYC approved: ${userId} | ${kycRef}`);
+
+  } catch (e) {
+    console.error('/kyc/didit-webhook:', e);
+  }
+});
+
+// ══════════════════════════════════════════════════════════════
+//  ROUTE 3 — CHECK KYC SESSION STATUS (frontend polls)
+//  After user returns from Didit, frontend polls this
+// ══════════════════════════════════════════════════════════════
+app.get('/kyc/didit-status/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    if (!db) return res.json({ status: 'unknown' });
+
+    const userSnap = await db.collection('users').doc(userId).get();
+    if (!userSnap.exists) return res.json({ status: 'not_found' });
+
+    const kycStatus = userSnap.data().kycStatus || 'not_started';
+
+    // Also check Didit directly for latest session
+    if (kycStatus === 'in_progress') {
+      try {
+        const sessSnap = await db.collection('diditSessions')
+          .where('userId', '==', userId)
+          .orderBy('createdAt', 'desc')
+          .limit(1)
+          .get();
+
+        if (!sessSnap.empty) {
+          const sess = sessSnap.docs[0].data();
+          if (sess.sessionId) {
+            const diditResult = await diditGet(`/v1/session/${sess.sessionId}/decision/`);
+            console.log('Didit poll result:', diditResult);
+
+            // If Didit shows approved but webhook hasn't fired yet
+            if (diditResult?.kyc_decision === 'Approved' ||
+                diditResult?.status === 'APPROVED' ||
+                diditResult?.decision === 'approved') {
+
+              const kycRef = `KYC${Date.now()}${Math.random().toString(36).slice(2,5).toUpperCase()}`;
+
+              await db.collection('kyc').doc(userId).set({
+                userId, kycRef, status: 'verified', kycType: 'didit',
+                autoApproved: true, diditSessionId: sess.sessionId,
+                submittedAt:  admin.firestore.FieldValue.serverTimestamp(),
+                reviewedAt:   admin.firestore.FieldValue.serverTimestamp(),
+                updatedAt:    admin.firestore.FieldValue.serverTimestamp(),
+              }, { merge: true });
+
+              await db.collection('users').doc(userId).update({
+                kycStatus: 'verified', kycRef,
+                kycVerifiedAt: admin.firestore.FieldValue.serverTimestamp(),
+                rewardPoints:  admin.firestore.FieldValue.increment(500),
+                dailyLimit:    100000,
+                updatedAt:     admin.firestore.FieldValue.serverTimestamp(),
+              });
+
+              return res.json({ status: 'verified', kycRef });
+            }
+
+            if (diditResult?.kyc_decision === 'Declined' ||
+                diditResult?.status === 'DECLINED') {
+              await db.collection('users').doc(userId).update({
+                kycStatus: 'rejected',
+                kycRejectionReason: 'Identity verification failed',
+                updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+              });
+              return res.json({ status: 'rejected' });
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('Didit poll error (non-critical):', e.message);
+      }
+    }
+
+    res.json({ status: kycStatus });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════
+//  ROUTE 4 — GET KYC STATUS (existing route — keep working)
+// ══════════════════════════════════════════════════════════════
+app.get('/kyc/status/:userId', async (req, res) => {
+  try {
+    if (!db) return res.json({ status: 'unknown' });
+    const snap = await db.collection('kyc').doc(req.params.userId).get();
+    if (!snap.exists) return res.json({ status: 'not_started' });
+    const d = snap.data();
+    res.json({
+      status:          d.status,
+      kycRef:          d.kycRef,
+      aadhaarVerified: d.aadhaarVerified || false,
+      panVerified:     d.panVerified     || false,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 
 
 // ══════════════════════════════════════════════════════════════

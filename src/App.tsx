@@ -111,6 +111,9 @@ export default function App() {
             <Route path="/movies"        element={<Guard><Suspense fallback={<Loader/>}><MoviesPage /></Suspense></Guard>} />
             <Route path="/travel"        element={<Guard><Suspense fallback={<Loader/>}><TravelPage /></Suspense></Guard>} />
 
+            // Add this route so Didit can redirect back
+<Route path="/kyc-complete" element={<KYCPage />} />
+
             // Inside your Routes:
 <Route path="/privacy"       element={<PrivacyPolicy />} />
 <Route path="/terms"         element={<TermsAndConditions />} />
