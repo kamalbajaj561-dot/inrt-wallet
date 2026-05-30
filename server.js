@@ -1125,10 +1125,10 @@ app.post('/kyc/didit-session', async (req, res) => {
       return res.status(500).json({ error: 'DIDIT_WORKFLOW_ID not set in Railway Variables' });
 
     // Create session on Didit verification API
-    const { status, data } = await diditVerifyPost('/v3/session/', {
-      workflow_id:  WORKFLOW,
-      vendor_data:  userId,
-      callback:     `${APP_URL}/kyc-complete`,
+    const { status, data } = await diditVerifyPost('/v3/session/create/', {
+  workflow_id:  WORKFLOW,
+  vendor_data:  userId,
+  callback:     `${APP_URL}/kyc-complete`,
     });
 
     if (status !== 200 && status !== 201)
