@@ -1030,85 +1030,79 @@ app.get('/instamojo/status/:requestId', async (req, res) => {
 });
 
 /**
- * INRT WALLET — DIDIT KYC ROUTES
+ * INRT WALLET — DIDIT KYC ROUTES (FIXED)
  * Paste into server.js BEFORE app.listen(...)
  *
- * Flow:
- *   1. Frontend calls /kyc/didit-session → gets session URL
- *   2. User is redirected to Didit verification page
- *   3. User completes face + document scan on Didit
- *   4. Didit calls /kyc/didit-webhook with result
- *   5. Wallet auto-approves if verified
+ * Didit has TWO separate hosts:
+ *   verification.didit.me  → KYC sessions (uses x-api-key header)
+ *   apx.didit.me           → Account management (uses Bearer JWT)
  *
  * Railway env vars needed:
- *   DIDIT_CLIENT_ID     = App ID from app.didit.me
- *   DIDIT_CLIENT_SECRET = API Key from app.didit.me
- *   APP_URL             = https://inrtwallet.in
+ *   DIDIT_API_KEY   = api_key from Didit (see setup below)
+ *   DIDIT_WORKFLOW_ID = workflow ID from app.didit.me dashboard
+ *   APP_URL         = https://inrtwallet.in
+ *
+ * HOW TO GET YOUR API KEY:
+ *   Run this in CMD (replace email/password with yours):
+ *
+ *   Step 1 — Register programmatic account:
+ *   curl -X POST https://apx.didit.me/auth/v2/programmatic/register/ \
+ *     -H "Content-Type: application/json" \
+ *     -d '{"email":"admin@inrtwallet.in","password":"YourStr0ng@Pass"}'
+ *
+ *   Step 2 — Verify email (check inbox for 6-char code):
+ *   curl -X POST https://apx.didit.me/auth/v2/programmatic/verify-email/ \
+ *     -H "Content-Type: application/json" \
+ *     -d '{"email":"admin@inrtwallet.in","code":"ABC123"}'
+ *
+ *   Response gives you: application.api_key
+ *   Save that as DIDIT_API_KEY in Railway
+ *
+ * HOW TO GET WORKFLOW ID:
+ *   app.didit.me → Workflows → Create workflow (KYC)
+ *   Copy the workflow ID (looks like: wf_xxxxxxxx)
  */
 
-const DIDIT_BASE = 'https://apx.didit.me';
+const DIDIT_VERIFY_BASE = 'https://verification.didit.me';
 
-// ── Get Didit access token ────────────────────────────────────
-let diditToken       = null;
-let diditTokenExpiry = 0;
+// ── Didit Verification API helper (uses x-api-key) ───────────
+async function diditVerifyPost(endpoint, body) {
+  const apiKey = process.env.DIDIT_API_KEY;
+  if (!apiKey) throw new Error('DIDIT_API_KEY not set in Railway Variables');
 
-async function getDiditToken() {
-  if (diditToken && Date.now() < diditTokenExpiry) return diditToken;
-
-  const clientId     = process.env.DIDIT_CLIENT_ID;
-  const clientSecret = process.env.DIDIT_CLIENT_SECRET;
-
-  if (!clientId || !clientSecret)
-    throw new Error('DIDIT_CLIENT_ID and DIDIT_CLIENT_SECRET not set in Railway');
-
-  const credentials = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
-
-  const r = await fetch('https://auth.didit.me/auth/realms/didit-app/protocol/openid-connect/token', {
+  const r = await fetch(`${DIDIT_VERIFY_BASE}${endpoint}`, {
     method: 'POST',
     headers: {
-      'Authorization': `Basic ${credentials}`,
-      'Content-Type':  'application/x-www-form-urlencoded',
-    },
-    body: 'grant_type=client_credentials',
-    signal: AbortSignal.timeout(10000),
-  });
-
-  const d = await r.json();
-  if (!d.access_token) throw new Error(`Didit auth failed: ${d.error_description || JSON.stringify(d)}`);
-
-  diditToken       = d.access_token;
-  diditTokenExpiry = Date.now() + (d.expires_in - 60) * 1000;
-  return diditToken;
-}
-
-// ── Didit API helper ──────────────────────────────────────────
-async function diditPost(endpoint, body) {
-  const token = await getDiditToken();
-  const r = await fetch(`${DIDIT_BASE}${endpoint}`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Content-Type':  'application/json',
+      'x-api-key':    apiKey,
+      'Content-Type': 'application/json',
     },
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(15000),
   });
-  return r.json();
+
+  const text = await r.text();
+  console.log(`Didit POST ${endpoint} → ${r.status}: ${text.slice(0, 300)}`);
+
+  try { return { status: r.status, data: JSON.parse(text) }; }
+  catch { return { status: r.status, data: { error: text } }; }
 }
 
-async function diditGet(endpoint) {
-  const token = await getDiditToken();
-  const r = await fetch(`${DIDIT_BASE}${endpoint}`, {
-    headers: { 'Authorization': `Bearer ${token}` },
+async function diditVerifyGet(endpoint) {
+  const apiKey = process.env.DIDIT_API_KEY;
+  if (!apiKey) throw new Error('DIDIT_API_KEY not set in Railway Variables');
+
+  const r = await fetch(`${DIDIT_VERIFY_BASE}${endpoint}`, {
+    headers: { 'x-api-key': apiKey },
     signal: AbortSignal.timeout(10000),
   });
-  return r.json();
+
+  const text = await r.text();
+  try { return { status: r.status, data: JSON.parse(text) }; }
+  catch { return { status: r.status, data: { error: text } }; }
 }
 
 // ══════════════════════════════════════════════════════════════
 //  ROUTE 1 — CREATE DIDIT VERIFICATION SESSION
-//  Frontend calls this → gets Didit verification URL
-//  User is redirected to complete KYC on Didit
 // ══════════════════════════════════════════════════════════════
 app.post('/kyc/didit-session', async (req, res) => {
   try {
@@ -1116,47 +1110,58 @@ app.post('/kyc/didit-session', async (req, res) => {
     if (!userId) return res.status(400).json({ error: 'userId required' });
     if (!db)     return res.status(500).json({ error: 'Database not connected' });
 
-    // Check if already verified
+    // Check user exists
     const userSnap = await db.collection('users').doc(userId).get();
     if (!userSnap.exists) return res.status(404).json({ error: 'User not found' });
+
     const user = userSnap.data();
     if (user.kycStatus === 'verified')
       return res.status(400).json({ error: 'KYC already verified' });
 
-    const APP_URL = process.env.APP_URL || 'https://inrtwallet.in';
+    const APP_URL    = process.env.APP_URL || 'https://inrtwallet.in';
+    const WORKFLOW   = process.env.DIDIT_WORKFLOW_ID || '';
 
-    // Create Didit verification session
-    const session = await diditPost('/v1/session/', {
-      vendor_data:  userId,           // we pass userId so webhook knows who to credit
+    if (!WORKFLOW)
+      return res.status(500).json({ error: 'DIDIT_WORKFLOW_ID not set in Railway Variables' });
+
+    // Create session on Didit verification API
+    const { status, data } = await diditVerifyPost('/v3/session/', {
+      workflow_id:  WORKFLOW,
+      vendor_data:  userId,
       callback:     `${APP_URL}/kyc-complete`,
-      features:     'OCR + FACE',     // document scan + face match
     });
 
-    if (!session?.session_id || !session?.url)
-      throw new Error(session?.detail || session?.message || 'Failed to create Didit session');
+    if (status !== 200 && status !== 201)
+      throw new Error(data?.detail || data?.message || data?.error || `Didit session failed (${status})`);
 
-    // Save session to Firestore
-    await db.collection('diditSessions').doc(session.session_id).set({
+    const sessionId  = data.session_id || data.id;
+    const sessionUrl = data.url        || data.session_url || data.verification_url;
+
+    if (!sessionId || !sessionUrl)
+      throw new Error('Didit did not return session_id or url. Check DIDIT_WORKFLOW_ID is correct.');
+
+    // Save to Firestore
+    await db.collection('diditSessions').doc(sessionId).set({
       userId,
-      sessionId:  session.session_id,
-      status:     'pending',
-      createdAt:  admin.firestore.FieldValue.serverTimestamp(),
-      expiresAt:  Date.now() + 30 * 60 * 1000, // 30 minutes
+      sessionId,
+      status:    'pending',
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      expiresAt: Date.now() + 30 * 60 * 1000,
     });
 
-    // Update user KYC status to in_progress
+    // Update user KYC to in_progress
     await db.collection('users').doc(userId).update({
-      kycStatus:  'in_progress',
-      updatedAt:  admin.firestore.FieldValue.serverTimestamp(),
+      kycStatus: 'in_progress',
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
 
-    console.log(`✅ Didit session created: ${session.session_id} for ${userId}`);
+    console.log(`✅ Didit session created: ${sessionId} for user ${userId}`);
 
     res.json({
-      success:    true,
-      sessionId:  session.session_id,
-      url:        session.url,           // redirect user to this URL
-      expiresIn:  1800,                  // 30 minutes
+      success:   true,
+      sessionId,
+      url:       sessionUrl,
+      expiresIn: 1800,
     });
 
   } catch (e) {
@@ -1167,115 +1172,126 @@ app.post('/kyc/didit-session', async (req, res) => {
 
 // ══════════════════════════════════════════════════════════════
 //  ROUTE 2 — DIDIT WEBHOOK
-//  Didit calls this after user completes verification
-//  Webhook URL: https://inrt-wallet-production.up.railway.app/kyc/didit-webhook
+//  Didit calls this automatically after verification completes
+//  URL already set: inrt-wallet-production.up.railway.app/kyc/didit-webhook
 // ══════════════════════════════════════════════════════════════
 app.post('/kyc/didit-webhook', async (req, res) => {
   try {
-    // Always acknowledge webhook immediately
+    // Always respond 200 immediately so Didit knows we received it
     res.json({ received: true });
 
     const body = req.body;
-    console.log('Didit webhook received:', JSON.stringify(body).slice(0, 300));
+    console.log('Didit webhook:', JSON.stringify(body).slice(0, 500));
 
     if (!db) return;
 
-    // Didit sends different event types
-    const eventType = body.event_type || body.type || '';
-    const sessionId = body.session_id || body.sessionId || '';
-    const status    = body.status     || '';
-    const vendorData= body.vendor_data || ''; // this is the userId we passed
+    // Didit v3 webhook fields
+    const sessionId  = body.session_id  || body.id            || '';
+    const status     = body.status      || '';
+    const vendorData = body.vendor_data || '';
+    const decision   = body.kyc_decision|| body.decision       || '';
 
-    // Only process completed verifications
-    if (!['verification.completed', 'verification.approved', 'APPROVED'].some(e =>
-      eventType.includes(e) || status.includes(e) || eventType === e || status === e
-    )) {
-      console.log(`Didit webhook: event=${eventType} status=${status} — skipping`);
+    // Approved statuses from Didit
+    const isApproved = [
+      'Approved', 'APPROVED', 'approved',
+      'completed', 'COMPLETED',
+      'verified',  'VERIFIED',
+    ].includes(status) || [
+      'Approved', 'APPROVED', 'approved',
+    ].includes(decision);
+
+    const isRejected = [
+      'Declined', 'DECLINED', 'declined',
+      'rejected',  'REJECTED',
+      'failed',    'FAILED',
+    ].includes(status) || [
+      'Declined', 'DECLINED', 'declined',
+    ].includes(decision);
+
+    if (!isApproved && !isRejected) {
+      console.log(`Didit webhook: status="${status}" decision="${decision}" — not final, skipping`);
       return;
     }
 
-    // Get userId — either from vendor_data or from our session record
+    // Resolve userId
     let userId = vendorData;
     if (!userId && sessionId) {
-      const sessionSnap = await db.collection('diditSessions').doc(sessionId).get();
-      if (sessionSnap.exists) userId = sessionSnap.data().userId;
+      const sessSnap = await db.collection('diditSessions').doc(sessionId).get();
+      if (sessSnap.exists) userId = sessSnap.data().userId;
     }
 
     if (!userId) {
-      console.warn('Didit webhook: could not determine userId from', { vendorData, sessionId });
+      console.warn('Didit webhook: cannot resolve userId', { vendorData, sessionId });
       return;
     }
 
-    // Check if already processed
+    // Check not already processed
     const userSnap = await db.collection('users').doc(userId).get();
-    if (!userSnap.exists) return;
-    if (userSnap.data().kycStatus === 'verified') {
-      console.log(`Didit webhook: ${userId} already verified`);
+    if (!userSnap.exists || userSnap.data().kycStatus === 'verified') {
+      console.log(`Didit webhook: ${userId} already processed`);
       return;
     }
 
-    // Extract identity data from webhook
-    const docData  = body.document || body.ocr_result    || {};
-    const faceData = body.face     || body.face_result    || {};
-    const fullName = docData.full_name || docData.name    || body.full_name || '';
-    const dob      = docData.date_of_birth || docData.dob || body.dob       || '';
-    const docType  = docData.document_type || 'ID'        || '';
-    const docNo    = docData.document_number               || '';
-    const country  = docData.country                       || 'IN';
+    if (isApproved) {
+      // Extract identity data
+      const docData  = body.document || body.extracted_data || {};
+      const faceData = body.face      || {};
+      const fullName = docData.full_name || docData.name     || body.full_name || '';
+      const dob      = docData.dob       || docData.date_of_birth              || '';
+      const docType  = docData.document_type                                   || '';
+      const kycRef   = `KYC${Date.now()}${Math.random().toString(36).slice(2,5).toUpperCase()}`;
 
-    const kycRef   = `KYC${Date.now()}${Math.random().toString(36).slice(2,5).toUpperCase()}`;
+      const batch = db.batch();
 
-    // Batch update — approve KYC + reward user
-    const batch = db.batch();
+      batch.set(db.collection('kyc').doc(userId), {
+        userId, kycRef, status: 'verified', kycType: 'didit',
+        autoApproved: true, diditSessionId: sessionId,
+        fullName, dob, docType,
+        faceMatch:    faceData.result || 'matched',
+        submittedAt:  admin.firestore.FieldValue.serverTimestamp(),
+        reviewedAt:   admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt:    admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
 
-    batch.set(db.collection('kyc').doc(userId), {
-      userId,
-      kycRef,
-      status:          'verified',
-      kycType:         'didit',
-      autoApproved:    true,
-      diditSessionId:  sessionId,
-      diditEventType:  eventType,
-      fullName,
-      dob,
-      docType,
-      docNo,
-      country,
-      faceMatch:       faceData.match_status || faceData.result || 'matched',
-      submittedAt:     admin.firestore.FieldValue.serverTimestamp(),
-      reviewedAt:      admin.firestore.FieldValue.serverTimestamp(),
-      updatedAt:       admin.firestore.FieldValue.serverTimestamp(),
-    }, { merge: true });
-
-    batch.update(db.collection('users').doc(userId), {
-      kycStatus:     'verified',
-      kycRef,
-      kycVerifiedAt: admin.firestore.FieldValue.serverTimestamp(),
-      rewardPoints:  admin.firestore.FieldValue.increment(500),
-      dailyLimit:    100000,
-      updatedAt:     admin.firestore.FieldValue.serverTimestamp(),
-    });
-
-    // Update session status
-    if (sessionId) {
-      batch.update(db.collection('diditSessions').doc(sessionId), {
-        status:     'completed',
-        completedAt:admin.firestore.FieldValue.serverTimestamp(),
+      batch.update(db.collection('users').doc(userId), {
+        kycStatus:     'verified',
+        kycRef,
+        kycVerifiedAt: admin.firestore.FieldValue.serverTimestamp(),
+        rewardPoints:  admin.firestore.FieldValue.increment(500),
+        dailyLimit:    100000,
+        updatedAt:     admin.firestore.FieldValue.serverTimestamp(),
       });
+
+      if (sessionId) {
+        batch.update(db.collection('diditSessions').doc(sessionId), {
+          status: 'completed',
+          completedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+      }
+
+      await batch.commit();
+      console.log(`✅ Didit KYC APPROVED: ${userId} | ${kycRef}`);
+
+    } else if (isRejected) {
+      await db.collection('users').doc(userId).update({
+        kycStatus:          'rejected',
+        kycRejectionReason: body.rejection_reason || body.reason || 'Identity verification failed',
+        updatedAt:          admin.firestore.FieldValue.serverTimestamp(),
+      });
+      await db.collection('kyc').doc(userId).set({
+        status:    'rejected',
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
+      console.log(`❌ Didit KYC REJECTED: ${userId}`);
     }
-
-    await batch.commit();
-
-    console.log(`✅ Didit KYC approved: ${userId} | ${kycRef}`);
 
   } catch (e) {
-    console.error('/kyc/didit-webhook:', e);
+    console.error('/kyc/didit-webhook error:', e);
   }
 });
 
 // ══════════════════════════════════════════════════════════════
-//  ROUTE 3 — CHECK KYC SESSION STATUS (frontend polls)
-//  After user returns from Didit, frontend polls this
+//  ROUTE 3 — POLL SESSION STATUS (frontend polls after redirect)
 // ══════════════════════════════════════════════════════════════
 app.get('/kyc/didit-status/:userId', async (req, res) => {
   try {
@@ -1287,52 +1303,59 @@ app.get('/kyc/didit-status/:userId', async (req, res) => {
 
     const kycStatus = userSnap.data().kycStatus || 'not_started';
 
-    // Also check Didit directly for latest session
+    // Already resolved
+    if (['verified', 'rejected'].includes(kycStatus))
+      return res.json({ status: kycStatus });
+
+    // Still in_progress — poll Didit directly
     if (kycStatus === 'in_progress') {
       try {
         const sessSnap = await db.collection('diditSessions')
           .where('userId', '==', userId)
           .orderBy('createdAt', 'desc')
-          .limit(1)
-          .get();
+          .limit(1).get();
 
         if (!sessSnap.empty) {
-          const sess = sessSnap.docs[0].data();
-          if (sess.sessionId) {
-            const diditResult = await diditGet(`/v1/session/${sess.sessionId}/decision/`);
-            console.log('Didit poll result:', diditResult);
+          const sess     = sessSnap.docs[0].data();
+          const sessionId= sess.sessionId;
 
-            // If Didit shows approved but webhook hasn't fired yet
-            if (diditResult?.kyc_decision === 'Approved' ||
-                diditResult?.status === 'APPROVED' ||
-                diditResult?.decision === 'approved') {
+          if (sessionId) {
+            const { status: httpStatus, data } = await diditVerifyGet(`/v3/session/${sessionId}/`);
+            console.log(`Didit poll ${sessionId}:`, data?.status, data?.kyc_decision);
 
+            const s = data?.status        || '';
+            const d = data?.kyc_decision  || '';
+
+            const approved = ['Approved','APPROVED','approved','completed','verified'].includes(s)
+                          || ['Approved','APPROVED','approved'].includes(d);
+            const rejected = ['Declined','DECLINED','declined','rejected','failed'].includes(s)
+                          || ['Declined','DECLINED','declined'].includes(d);
+
+            if (approved) {
               const kycRef = `KYC${Date.now()}${Math.random().toString(36).slice(2,5).toUpperCase()}`;
-
-              await db.collection('kyc').doc(userId).set({
+              const batch  = db.batch();
+              batch.set(db.collection('kyc').doc(userId), {
                 userId, kycRef, status: 'verified', kycType: 'didit',
-                autoApproved: true, diditSessionId: sess.sessionId,
+                autoApproved: true, diditSessionId: sessionId,
                 submittedAt:  admin.firestore.FieldValue.serverTimestamp(),
                 reviewedAt:   admin.firestore.FieldValue.serverTimestamp(),
                 updatedAt:    admin.firestore.FieldValue.serverTimestamp(),
               }, { merge: true });
-
-              await db.collection('users').doc(userId).update({
+              batch.update(db.collection('users').doc(userId), {
                 kycStatus: 'verified', kycRef,
                 kycVerifiedAt: admin.firestore.FieldValue.serverTimestamp(),
                 rewardPoints:  admin.firestore.FieldValue.increment(500),
                 dailyLimit:    100000,
                 updatedAt:     admin.firestore.FieldValue.serverTimestamp(),
               });
-
+              await batch.commit();
               return res.json({ status: 'verified', kycRef });
             }
 
-            if (diditResult?.kyc_decision === 'Declined' ||
-                diditResult?.status === 'DECLINED') {
+            if (rejected) {
               await db.collection('users').doc(userId).update({
                 kycStatus: 'rejected',
-                kycRejectionReason: 'Identity verification failed',
+                kycRejectionReason: data?.rejection_reason || 'Verification failed',
                 updatedAt: admin.firestore.FieldValue.serverTimestamp(),
               });
               return res.json({ status: 'rejected' });
@@ -1351,7 +1374,7 @@ app.get('/kyc/didit-status/:userId', async (req, res) => {
 });
 
 // ══════════════════════════════════════════════════════════════
-//  ROUTE 4 — GET KYC STATUS (existing route — keep working)
+//  ROUTE 4 — KYC STATUS (existing — keep working)
 // ══════════════════════════════════════════════════════════════
 app.get('/kyc/status/:userId', async (req, res) => {
   try {
@@ -1360,16 +1383,14 @@ app.get('/kyc/status/:userId', async (req, res) => {
     if (!snap.exists) return res.json({ status: 'not_started' });
     const d = snap.data();
     res.json({
-      status:          d.status,
-      kycRef:          d.kycRef,
-      aadhaarVerified: d.aadhaarVerified || false,
-      panVerified:     d.panVerified     || false,
+      status:  d.status,
+      kycRef:  d.kycRef,
+      kycType: d.kycType || 'manual',
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
-
 
 
 // ══════════════════════════════════════════════════════════════
