@@ -1125,7 +1125,7 @@ app.post('/kyc/didit-session', async (req, res) => {
       return res.status(500).json({ error: 'DIDIT_WORKFLOW_ID not set in Railway Variables' });
 
     // Create session on Didit verification API
-    const { status, data } = await diditVerifyPost('/v3/session/create/', {
+    const { status, data } = await diditVerifyPost('/v3/session/', {
   workflow_id:  WORKFLOW,
   vendor_data:  userId,
   callback:     `${APP_URL}/kyc-complete`,
@@ -1401,7 +1401,7 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`   Firebase  : ${adminAuth                    ? '✅' : '❌'}`);
   console.log(`   Razorpay  : ${process.env.RAZORPAY_KEY_ID  ? '✅' : '❌'}`);
   console.log(`   Resend    : ${process.env.RESEND_API_KEY   ? '✅' : '❌'}`);
-  console.log(`   Surepass  : ${process.env.SUREPASS_TOKEN   ? '✅' : '❌'}`);
+  
   console.log(`   Cashfree  : ${process.env.CASHFREE_APP_ID  ? '✅' : '❌'}`);
   console.log(`   Ezytm     : ${process.env.EZYTM_API_TOKEN  ? '✅' : '❌'}`);
   console.log(`   Admin Key : ${process.env.ADMIN_KEY        ? '✅' : '❌'}\n`);
