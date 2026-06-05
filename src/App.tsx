@@ -10,6 +10,7 @@ import SendMoney   from './pages/SendMoney';
 import PrivacyPolicy      from './pages/PrivacyPolicy';
 import TermsAndConditions from './pages/TermsAndConditions';
 import RefundPolicy       from './pages/RefundPolicy';
+import AdminKYC from './pages/AdminKYC';
 
 // ── Lazy ───────────────────────────────────────────────────────
 const TransactionHistory = lazy(() => import('./pages/TransactionHistory'));
@@ -113,6 +114,8 @@ export default function App() {
 
             // Add this route so Didit can redirect back
 <Route path="/kyc-complete" element={<KYCPage />} />
+
+<Route path="/admin/kyc" element={<AdminKYC />} />
 
             // Inside your Routes:
 <Route path="/privacy"       element={<PrivacyPolicy />} />
