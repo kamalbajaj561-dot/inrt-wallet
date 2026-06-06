@@ -24,7 +24,10 @@ try {
     ? JSON.parse(process.env.GOOGLE_CREDENTIALS)
     : require('./serviceAccountKey.json');
   if (!admin.apps.length) {
-    admin.initializeApp({ credential: admin.credential.cert(creds) });
+    admin.initializeApp({
+      credential:    admin.credential.cert(creds),
+      storageBucket: process.env.FIREBASE_STORAGE_BUCKET || 'inrt-wallet.firebasestorage.app',
+    });
     adminAuth = admin.auth();
     db        = admin.firestore();
     console.log('✅ Firebase Admin connected');
