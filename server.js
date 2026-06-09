@@ -877,6 +877,333 @@ app.get('/recharge/status/:orderId', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+/**
+ * INRT WALLET — DIDIT AUTO-APPROVE WEBHOOK
+ * Paste into server.js BEFORE app.listen(...)
+ *
+ * When Didit verifies a user:
+ *   1. Didit calls POST /kyc/didit-webhook
+ *   2. This route updates the user's kycStatus to "verified"
+ *   3. Adds 500 INRT reward points
+ *   4. Unlocks ₹1,00,000 daily limit
+ *   5. No manual action needed from you
+ *
+ * Webhook URL already set in your Didit dashboard:
+ *   https://inrt-wallet-production.up.railway.app/kyc/didit-webhook
+ *
+ * Railway env vars needed:
+ *   DIDIT_API_KEY     = lWI96iDUzWf8L50yRZjXmxVFTEK3Vc4FjlKgFxxqRhQ
+ *   DIDIT_WORKFLOW_ID = 0c011c7c-981e-4ff1-9895-7f74a763b806
+ *   APP_URL           = https://inrtwallet.in
+ */
+
+const DIDIT_VERIFY_BASE = 'https://verification.didit.me';
+
+async function diditVerifyGet(endpoint) {
+  const apiKey = process.env.DIDIT_API_KEY;
+  if (!apiKey) throw new Error('DIDIT_API_KEY not set');
+  const r = await fetch(`${DIDIT_VERIFY_BASE}${endpoint}`, {
+    headers: { 'x-api-key': apiKey },
+    signal: AbortSignal.timeout(10000),
+  });
+  const text = await r.text();
+  try { return { status: r.status, data: JSON.parse(text) }; }
+  catch { return { status: r.status, data: { error: text } }; }
+}
+
+// ══════════════════════════════════════════════════════════════
+//  ROUTE 1 — CREATE DIDIT SESSION (user starts KYC)
+// ══════════════════════════════════════════════════════════════
+app.post('/kyc/didit-session', async (req, res) => {
+  try {
+    const { userId } = req.body;
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+    if (!db)     return res.status(500).json({ error: 'Database not connected' });
+
+    const userSnap = await db.collection('users').doc(userId).get();
+    if (!userSnap.exists) return res.status(404).json({ error: 'User not found' });
+    if (userSnap.data().kycStatus === 'verified')
+      return res.status(400).json({ error: 'KYC already verified' });
+
+    const WORKFLOW = process.env.DIDIT_WORKFLOW_ID;
+    const APP_URL  = process.env.APP_URL || 'https://inrtwallet.in';
+    const apiKey   = process.env.DIDIT_API_KEY;
+
+    if (!WORKFLOW) return res.status(500).json({ error: 'DIDIT_WORKFLOW_ID not set in Railway' });
+    if (!apiKey)   return res.status(500).json({ error: 'DIDIT_API_KEY not set in Railway' });
+
+    const r = await fetch(`${DIDIT_VERIFY_BASE}/v3/session/`, {
+      method: 'POST',
+      headers: { 'x-api-key': apiKey, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        workflow_id: WORKFLOW,
+        vendor_data: userId,
+        callback:    `${APP_URL}/kyc-complete`,
+      }),
+      signal: AbortSignal.timeout(15000),
+    });
+
+    const text = await r.text();
+    console.log(`Didit session → ${r.status}: ${text.slice(0, 300)}`);
+    let data;
+    try { data = JSON.parse(text); }
+    catch { return res.status(500).json({ error: `Didit returned non-JSON: ${text.slice(0,200)}` }); }
+
+    if (r.status !== 200 && r.status !== 201)
+      return res.status(500).json({ error: data?.detail || data?.message || `Didit error (${r.status})` });
+
+    const sessionId  = data.session_id || data.id;
+    const sessionUrl = data.url || data.session_url;
+
+    if (!sessionId || !sessionUrl)
+      return res.status(500).json({ error: 'Didit did not return session_id or url' });
+
+    // Save session
+    await db.collection('diditSessions').doc(sessionId).set({
+      userId, sessionId, status: 'pending',
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      expiresAt: Date.now() + 30 * 60 * 1000,
+    });
+
+    // Mark user as in_progress
+    await db.collection('users').doc(userId).update({
+      kycStatus: 'in_progress',
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    console.log(`✅ Didit session: ${sessionId} for ${userId}`);
+    res.json({ success: true, sessionId, url: sessionUrl });
+
+  } catch (e) {
+    console.error('/kyc/didit-session:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════
+//  ROUTE 2 — DIDIT WEBHOOK (fires automatically after KYC)
+//  This is the key route — auto-approves user with zero clicks
+// ══════════════════════════════════════════════════════════════
+app.post('/kyc/didit-webhook', async (req, res) => {
+  // Always respond 200 immediately so Didit doesn't retry
+  res.json({ received: true });
+
+  try {
+    const body = req.body;
+    console.log('📥 Didit webhook received:', JSON.stringify(body).slice(0, 500));
+
+    if (!db) return;
+
+    const sessionId  = body.session_id  || body.id            || '';
+    const status     = body.status      || '';
+    const decision   = body.kyc_decision|| body.decision      || '';
+    const vendorData = body.vendor_data || '';
+
+    // ── Determine result ──────────────────────────────────────
+    const APPROVED_STATUSES = ['Approved','APPROVED','approved','completed','COMPLETED','verified','VERIFIED'];
+    const REJECTED_STATUSES = ['Declined','DECLINED','declined','rejected','REJECTED','failed','FAILED'];
+
+    const isApproved = APPROVED_STATUSES.includes(status) || APPROVED_STATUSES.includes(decision);
+    const isRejected = REJECTED_STATUSES.includes(status) || REJECTED_STATUSES.includes(decision);
+
+    if (!isApproved && !isRejected) {
+      console.log(`Didit webhook: status="${status}" decision="${decision}" — not final yet, ignoring`);
+      return;
+    }
+
+    // ── Resolve userId ────────────────────────────────────────
+    let userId = vendorData;
+    if (!userId && sessionId) {
+      const sessSnap = await db.collection('diditSessions').doc(sessionId).get();
+      if (sessSnap.exists) userId = sessSnap.data().userId;
+    }
+
+    if (!userId) {
+      console.warn('Didit webhook: cannot find userId from', { vendorData, sessionId });
+      return;
+    }
+
+    // ── Check not already processed ───────────────────────────
+    const userSnap = await db.collection('users').doc(userId).get();
+    if (!userSnap.exists) { console.warn('Didit webhook: user not found:', userId); return; }
+    if (userSnap.data().kycStatus === 'verified') {
+      console.log(`Didit webhook: ${userId} already verified, skipping`);
+      return;
+    }
+
+    // ── APPROVED ──────────────────────────────────────────────
+    if (isApproved) {
+      const docData  = body.document || body.extracted_data || body.ocr_result || {};
+      const faceData = body.face     || body.face_result    || {};
+      const fullName = docData.full_name || docData.name    || body.full_name || '';
+      const dob      = docData.dob || docData.date_of_birth || '';
+      const docType  = docData.document_type || 'PAN';
+      const kycRef   = `KYC${Date.now()}${Math.random().toString(36).slice(2,5).toUpperCase()}`;
+
+      const batch = db.batch();
+
+      // Update KYC document
+      batch.set(db.collection('kyc').doc(userId), {
+        userId,
+        kycRef,
+        status:         'verified',
+        kycType:        'didit_auto',
+        autoApproved:   true,
+        diditSessionId: sessionId,
+        diditStatus:    status,
+        diditDecision:  decision,
+        fullName,
+        dob,
+        docType,
+        faceMatch:      faceData.result || faceData.match_status || 'verified',
+        submittedAt:    admin.firestore.FieldValue.serverTimestamp(),
+        reviewedAt:     admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt:      admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
+
+      // Update user — unlock full wallet
+      batch.update(db.collection('users').doc(userId), {
+        kycStatus:     'verified',
+        kycRef,
+        kycVerifiedAt: admin.firestore.FieldValue.serverTimestamp(),
+        rewardPoints:  admin.firestore.FieldValue.increment(500),
+        dailyLimit:    100000,
+        updatedAt:     admin.firestore.FieldValue.serverTimestamp(),
+      });
+
+      // Update session
+      if (sessionId) {
+        batch.update(db.collection('diditSessions').doc(sessionId), {
+          status:      'completed',
+          completedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+      }
+
+      await batch.commit();
+      console.log(`✅ AUTO-APPROVED via Didit: ${userId} | ${kycRef}`);
+
+    // ── REJECTED ──────────────────────────────────────────────
+    } else if (isRejected) {
+      const reason = body.rejection_reason || body.reason || body.comment || 'Identity verification failed';
+
+      await db.collection('users').doc(userId).update({
+        kycStatus:          'rejected',
+        kycRejectionReason: reason,
+        updatedAt:          admin.firestore.FieldValue.serverTimestamp(),
+      });
+
+      await db.collection('kyc').doc(userId).set({
+        userId,
+        status:         'rejected',
+        kycType:        'didit_auto',
+        diditSessionId: sessionId,
+        rejectionReason:reason,
+        updatedAt:      admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
+
+      console.log(`❌ AUTO-REJECTED via Didit: ${userId} | reason: ${reason}`);
+    }
+
+  } catch (e) {
+    console.error('/kyc/didit-webhook error:', e);
+  }
+});
+
+// ══════════════════════════════════════════════════════════════
+//  ROUTE 3 — POLL STATUS (frontend polls after user returns)
+//  Also polls Didit directly if webhook hasn't fired yet
+// ══════════════════════════════════════════════════════════════
+app.get('/kyc/didit-status/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    if (!db) return res.json({ status: 'unknown' });
+
+    const userSnap  = await db.collection('users').doc(userId).get();
+    if (!userSnap.exists) return res.json({ status: 'not_found' });
+    const kycStatus = userSnap.data().kycStatus || 'not_started';
+
+    // Already done — return immediately
+    if (['verified', 'rejected'].includes(kycStatus))
+      return res.json({ status: kycStatus });
+
+    // Still in_progress — poll Didit directly (backup if webhook missed)
+    if (kycStatus === 'in_progress') {
+      try {
+        const sessSnap = await db.collection('diditSessions')
+          .where('userId', '==', userId)
+          .orderBy('createdAt', 'desc')
+          .limit(1).get();
+
+        if (!sessSnap.empty) {
+          const sess      = sessSnap.docs[0].data();
+          const sessionId = sess.sessionId;
+
+          if (sessionId) {
+            const { status: httpStatus, data } = await diditVerifyGet(`/v3/session/${sessionId}/`);
+            console.log(`Didit poll ${sessionId}: status=${data?.status} decision=${data?.kyc_decision}`);
+
+            const s = data?.status      || '';
+            const d = data?.kyc_decision || '';
+            const approved = ['Approved','APPROVED','approved','completed','verified'].includes(s) || ['Approved','APPROVED','approved'].includes(d);
+            const rejected = ['Declined','DECLINED','declined','rejected','failed'].includes(s)    || ['Declined','DECLINED','declined'].includes(d);
+
+            if (approved) {
+              const kycRef = `KYC${Date.now()}${Math.random().toString(36).slice(2,5).toUpperCase()}`;
+              const batch  = db.batch();
+              batch.set(db.collection('kyc').doc(userId), {
+                userId, kycRef, status: 'verified', kycType: 'didit_auto',
+                autoApproved: true, diditSessionId: sessionId,
+                submittedAt:  admin.firestore.FieldValue.serverTimestamp(),
+                reviewedAt:   admin.firestore.FieldValue.serverTimestamp(),
+                updatedAt:    admin.firestore.FieldValue.serverTimestamp(),
+              }, { merge: true });
+              batch.update(db.collection('users').doc(userId), {
+                kycStatus: 'verified', kycRef,
+                kycVerifiedAt: admin.firestore.FieldValue.serverTimestamp(),
+                rewardPoints:  admin.firestore.FieldValue.increment(500),
+                dailyLimit:    100000,
+                updatedAt:     admin.firestore.FieldValue.serverTimestamp(),
+              });
+              await batch.commit();
+              console.log(`✅ Didit poll approved: ${userId} | ${kycRef}`);
+              return res.json({ status: 'verified', kycRef });
+            }
+
+            if (rejected) {
+              await db.collection('users').doc(userId).update({
+                kycStatus: 'rejected',
+                kycRejectionReason: data?.rejection_reason || 'Verification failed',
+                updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+              });
+              return res.json({ status: 'rejected' });
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('Didit poll (non-critical):', e.message);
+      }
+    }
+
+    res.json({ status: kycStatus });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════
+//  ROUTE 4 — KYC STATUS (generic — used by frontend)
+// ══════════════════════════════════════════════════════════════
+app.get('/kyc/status/:userId', async (req, res) => {
+  try {
+    if (!db) return res.json({ status: 'unknown' });
+    const snap = await db.collection('kyc').doc(req.params.userId).get();
+    if (!snap.exists) return res.json({ status: 'not_started' });
+    const d = snap.data();
+    res.json({ status: d.status, kycRef: d.kycRef || null, kycType: d.kycType || 'manual', rejectionReason: d.rejectionReason || null });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+
 // ══════════════════════════════════════════════════════════════
 //  START SERVER
 // ══════════════════════════════════════════════════════════════
