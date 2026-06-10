@@ -1203,6 +1203,34 @@ app.get('/kyc/status/:userId', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Reset KYC status if user abandoned Didit page
+app.post('/kyc/reset-status', async (req, res) => {
+  try {
+    const { userId } = req.body;
+    if (!userId || !db) return res.status(400).json({ error: 'userId required' });
+
+    // Only reset if in_progress — never reset verified
+    const snap = await db.collection('users').doc(userId).get();
+    if (!snap.exists) return res.status(404).json({ error: 'User not found' });
+    if (snap.data().kycStatus === 'verified')
+      return res.json({ success: true, message: 'Already verified, no reset needed' });
+
+    await db.collection('users').doc(userId).update({
+      kycStatus: 'not_started',
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    await db.collection('kyc').doc(userId).set({
+      status:    'not_started',
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+
+    console.log(`🔄 KYC status reset: ${userId}`);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 // ══════════════════════════════════════════════════════════════
 //  START SERVER

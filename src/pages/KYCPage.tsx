@@ -185,11 +185,25 @@ export default function KYCPage() {
           ))}
         </div>
 
-        <div style={{ background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.06)', borderRadius:14, padding:'12px 16px', width:'100%' }}>
-          <p style={{ color:'rgba(255,255,255,0.3)', fontSize:12, margin:0, textAlign:'center', lineHeight:1.6 }}>
-            Do not close this page. You will be notified automatically when verification is complete.
-          </p>
-        </div>
+        <div style={{ background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.06)', borderRadius:14, padding:'12px 16px', width:'100%', marginBottom:16 }}>
+  <p style={{ color:'rgba(255,255,255,0.3)', fontSize:12, margin:0, textAlign:'center', lineHeight:1.6 }}>
+    Do not close this page. You will be notified automatically when verification is complete.
+  </p>
+</div>
+<button style={{ ...S.btnOutline, marginBottom:10 }}
+  onClick={async () => {
+    stopAll();
+    await fetch(`${API}/kyc/reset-status`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: user!.uid }),
+    });
+    await refreshProfile();
+    setScreen('intro');
+    setElapsed(0);
+  }}>
+  ← I haven't started yet — Go Back
+</button>
 
         <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
       </div>
