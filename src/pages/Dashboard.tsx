@@ -70,9 +70,9 @@ export default function Dashboard() {
     return () => { u1(); u2(); };
   }, [user]);
 
-  const bal      = profile?.balance       || 0;
-  const inrtBal  = profile?.rewardPoints || 0;
-  const points   = profile?.rewardPoints  || 0;
+const bal      = profile?.balance      ?? userProfile?.balance      ?? 0;
+const inrtBal  = profile?.rewardPoints ?? userProfile?.rewardPoints ?? 0;
+const points   = profile?.rewardPoints ?? userProfile?.rewardPoints ?? 0;
   const name     = profile?.name          || 'User';
   const phone    = profile?.phone         || '';
   const kyc      = profile?.kycStatus     || 'not_started';
