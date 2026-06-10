@@ -71,7 +71,7 @@ export default function Dashboard() {
   }, [user]);
 
   const bal      = profile?.balance       || 0;
-  const inrtBal  = bal; // 1 INRT = ₹1 stablecoin
+  const inrtBal  = profile?.rewardPoints || 0;
   const points   = profile?.rewardPoints  || 0;
   const name     = profile?.name          || 'User';
   const phone    = profile?.phone         || '';
