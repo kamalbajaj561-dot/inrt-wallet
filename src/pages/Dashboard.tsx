@@ -70,8 +70,8 @@ export default function Dashboard() {
 
   // ── Read directly from Firestore data — no fallback to stale ─
   const bal      = Number(profile?.balance      ?? 0);
-  const inrtBal_OLD  = Number(profile?.rewardPoints ?? 0);
-const inrtBal = Number(profile?.rewardPoints ?? 0);
+  const inrtBal  = Number(profile?.rewardPoints ?? 0);
+const inrtBal  = Number(profile?.rewardPoints ?? 0);
   const points   = Number(profile?.rewardPoints ?? 0);
   const name     = profile?.name      || user?.displayName || 'User';
   const phone    = profile?.phone     || '';
