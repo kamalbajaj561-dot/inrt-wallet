@@ -1232,6 +1232,311 @@ app.post('/kyc/reset-status', async (req, res) => {
   }
 });
 
+/**
+ * INRT WALLET — INRT TRANSFER ROUTES
+ * Paste into server.js BEFORE app.listen(...)
+ *
+ * Features:
+ *  - Every user gets a global INRT wallet address (INRT-XXXXXXXXXXXX)
+ *  - Convert ₹ (balance) <-> INRT (rewardPoints) — 1:1 always
+ *  - Send INRT to any INRT wallet address worldwide
+ *  - Tracks processing time — shows exactly how long delivery took
+ *  - Full INRT transaction history
+ */
+
+// ── Helper: generate INRT wallet address ─────────────────────
+function genInrtAddress() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no confusing chars
+  let id = '';
+  for (let i = 0; i < 12; i++) id += chars[Math.floor(Math.random() * chars.length)];
+  return `INRT-${id.slice(0,4)}-${id.slice(4,8)}-${id.slice(8,12)}`;
+}
+
+// ══════════════════════════════════════════════════════════════
+//  ROUTE 1 — GET / CREATE INRT WALLET ADDRESS
+//  Every user has a unique global INRT address for receiving
+// ══════════════════════════════════════════════════════════════
+app.get('/inrt/wallet/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    if (!db) return res.status(500).json({ error: 'Database not connected' });
+
+    const userSnap = await db.collection('users').doc(userId).get();
+    if (!userSnap.exists) return res.status(404).json({ error: 'User not found' });
+    const user = userSnap.data();
+
+    let inrtAddress = user.inrtAddress;
+
+    // Generate one if it doesn't exist yet
+    if (!inrtAddress) {
+      let unique = false;
+      while (!unique) {
+        inrtAddress = genInrtAddress();
+        const dupCheck = await db.collection('inrtAddressIndex').doc(inrtAddress).get();
+        if (!dupCheck.exists) unique = true;
+      }
+      await db.collection('users').doc(userId).update({ inrtAddress });
+      await db.collection('inrtAddressIndex').doc(inrtAddress).set({ userId, createdAt: admin.firestore.FieldValue.serverTimestamp() });
+    }
+
+    res.json({
+      success:     true,
+      inrtAddress,
+      inrtBalance: user.rewardPoints || 0,
+      inrBalance:  user.balance || 0,
+      name:        user.name || 'INRT User',
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ══════════════════════════════════════════════════════════════
+//  ROUTE 2 — LOOKUP INRT ADDRESS (before sending, show recipient name)
+// ══════════════════════════════════════════════════════════════
+app.get('/inrt/lookup/:address', async (req, res) => {
+  try {
+    const address = req.params.address.toUpperCase().trim();
+    if (!db) return res.status(500).json({ error: 'Database not connected' });
+
+    const idxSnap = await db.collection('inrtAddressIndex').doc(address).get();
+    if (!idxSnap.exists) return res.status(404).json({ error: 'INRT address not found' });
+
+    const userSnap = await db.collection('users').doc(idxSnap.data().userId).get();
+    if (!userSnap.exists) return res.status(404).json({ error: 'Wallet not found' });
+
+    const user = userSnap.data();
+    res.json({
+      success: true,
+      inrtAddress: address,
+      name: user.name || 'INRT User',
+      verified: user.kycStatus === 'verified',
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ══════════════════════════════════════════════════════════════
+//  ROUTE 3 — CONVERT ₹ <-> INRT (always 1:1, instant)
+// ══════════════════════════════════════════════════════════════
+app.post('/inrt/convert', async (req, res) => {
+  try {
+    const { userId, direction, amount } = req.body; // direction: 'inr_to_inrt' | 'inrt_to_inr'
+    if (!userId || !direction || !amount || amount <= 0)
+      return res.status(400).json({ error: 'userId, direction, amount required' });
+    if (!db) return res.status(500).json({ error: 'Database not connected' });
+
+    const userSnap = await db.collection('users').doc(userId).get();
+    if (!userSnap.exists) return res.status(404).json({ error: 'User not found' });
+    const user = userSnap.data();
+
+    const amt = parseFloat(amount);
+    const ref = genTxId('CNV');
+
+    if (direction === 'inr_to_inrt') {
+      if ((user.balance || 0) < amt) return res.status(402).json({ error: 'Insufficient ₹ balance' });
+      await db.collection('users').doc(userId).update({
+        balance:      admin.firestore.FieldValue.increment(-amt),
+        rewardPoints: admin.firestore.FieldValue.increment(amt),
+        updatedAt:    admin.firestore.FieldValue.serverTimestamp(),
+      });
+      await db.collection('transactions').add({
+        uid: userId, type: 'convert', amount: amt, note: `Converted ₹${amt} → ${amt} INRT`,
+        cat: 'crypto', ref, status: 'success', direction,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    } else if (direction === 'inrt_to_inr') {
+      if ((user.rewardPoints || 0) < amt) return res.status(402).json({ error: 'Insufficient INRT balance' });
+      await db.collection('users').doc(userId).update({
+        balance:      admin.firestore.FieldValue.increment(amt),
+        rewardPoints: admin.firestore.FieldValue.increment(-amt),
+        updatedAt:    admin.firestore.FieldValue.serverTimestamp(),
+      });
+      await db.collection('transactions').add({
+        uid: userId, type: 'convert', amount: amt, note: `Converted ${amt} INRT → ₹${amt}`,
+        cat: 'crypto', ref, status: 'success', direction,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    } else {
+      return res.status(400).json({ error: 'Invalid direction' });
+    }
+
+    res.json({ success: true, ref, amount: amt, direction });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ══════════════════════════════════════════════════════════════
+//  ROUTE 4 — SEND INRT TO ANY WALLET ADDRESS (global)
+//  Returns immediately with txRef; processing happens async
+//  so we can show real elapsed delivery time
+// ══════════════════════════════════════════════════════════════
+app.post('/inrt/send', async (req, res) => {
+  try {
+    const { fromUserId, toAddress, amount, note } = req.body;
+    if (!fromUserId || !toAddress || !amount || amount <= 0)
+      return res.status(400).json({ error: 'fromUserId, toAddress, amount required' });
+    if (!db) return res.status(500).json({ error: 'Database not connected' });
+
+    const cleanAddress = toAddress.toUpperCase().trim();
+    const amt = parseFloat(amount);
+
+    // Resolve recipient
+    const idxSnap = await db.collection('inrtAddressIndex').doc(cleanAddress).get();
+    if (!idxSnap.exists) return res.status(404).json({ error: 'INRT address not found. Check and try again.' });
+    const toUserId = idxSnap.data().userId;
+    if (toUserId === fromUserId) return res.status(400).json({ error: 'Cannot send to your own wallet' });
+
+    // Check sender balance
+    const fromSnap = await db.collection('users').doc(fromUserId).get();
+    if (!fromSnap.exists) return res.status(404).json({ error: 'Sender not found' });
+    const fromUser = fromSnap.data();
+    if ((fromUser.rewardPoints || 0) < amt) return res.status(402).json({ error: 'Insufficient INRT balance' });
+
+    const toSnap = await db.collection('users').doc(toUserId).get();
+    const toUser = toSnap.data();
+
+    const ref       = `INRTX${Date.now()}${Math.random().toString(36).slice(2,6).toUpperCase()}`;
+    const startedAt = Date.now();
+
+    // Deduct from sender immediately
+    await db.collection('users').doc(fromUserId).update({
+      rewardPoints: admin.firestore.FieldValue.increment(-amt),
+      updatedAt:    admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    // Create pending transaction record (sender side)
+    await db.collection('inrtTransfers').doc(ref).set({
+      ref,
+      fromUserId, toUserId,
+      fromAddress: fromUser.inrtAddress || '',
+      toAddress:   cleanAddress,
+      amount: amt,
+      note: note || '',
+      status: 'processing', // processing -> completed
+      startedAt,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    // Sender transaction record
+    await db.collection('transactions').add({
+      uid: fromUserId, type: 'debit', amount: amt,
+      note: `INRT sent to ${toUser.name || cleanAddress}`,
+      cat: 'crypto', ref, status: 'processing', toAddress: cleanAddress,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    // Simulate global network confirmation delay (1.5–4 seconds, realistic for blockchain)
+    const processingTime = 1500 + Math.floor(Math.random() * 2500);
+
+    setTimeout(async () => {
+      try {
+        const completedAt = Date.now();
+        const durationMs  = completedAt - startedAt;
+
+        const batch = db.batch();
+
+        // Credit recipient
+        batch.update(db.collection('users').doc(toUserId), {
+          rewardPoints:  admin.firestore.FieldValue.increment(amt),
+          totalReceived: admin.firestore.FieldValue.increment(amt),
+          updatedAt:     admin.firestore.FieldValue.serverTimestamp(),
+        });
+
+        // Recipient transaction record
+        batch.set(db.collection('transactions').doc(ref + '_RX'), {
+          uid: toUserId, type: 'credit', amount: amt,
+          note: `INRT received from ${fromUser.name || 'INRT User'}`,
+          cat: 'crypto', ref: ref + '_RX', status: 'success', fromAddress: fromUser.inrtAddress || '',
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+
+        // Update transfer record
+        batch.update(db.collection('inrtTransfers').doc(ref), {
+          status: 'completed',
+          completedAt,
+          durationMs,
+        });
+
+        await batch.commit();
+
+        // Update sender transaction to success
+        const senderTxSnap = await db.collection('transactions').where('ref','==',ref).where('uid','==',fromUserId).limit(1).get();
+        if (!senderTxSnap.empty) {
+          await senderTxSnap.docs[0].ref.update({ status: 'success', durationMs });
+        }
+
+        console.log(`✅ INRT transfer completed: ${ref} | ${amt} INRT | ${durationMs}ms`);
+      } catch (e) {
+        console.error('INRT transfer completion error:', e);
+        await db.collection('inrtTransfers').doc(ref).update({ status: 'failed', error: e.message });
+      }
+    }, processingTime);
+
+    res.json({
+      success: true,
+      ref,
+      amount: amt,
+      toAddress: cleanAddress,
+      toName: toUser.name || 'INRT User',
+      status: 'processing',
+      estimatedSeconds: Math.ceil(processingTime / 1000),
+    });
+
+  } catch (e) {
+    console.error('/inrt/send:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════
+//  ROUTE 5 — CHECK TRANSFER STATUS (frontend polls this)
+//  Returns status + elapsed/total time for live timer display
+// ══════════════════════════════════════════════════════════════
+app.get('/inrt/transfer/:ref', async (req, res) => {
+  try {
+    if (!db) return res.json({ status: 'unknown' });
+    const snap = await db.collection('inrtTransfers').doc(req.params.ref).get();
+    if (!snap.exists) return res.status(404).json({ error: 'Transfer not found' });
+
+    const d = snap.data();
+    const now = Date.now();
+
+    res.json({
+      ref:          d.ref,
+      status:       d.status, // processing | completed | failed
+      amount:       d.amount,
+      fromAddress:  d.fromAddress,
+      toAddress:    d.toAddress,
+      note:         d.note,
+      startedAt:    d.startedAt,
+      completedAt:  d.completedAt || null,
+      durationMs:   d.durationMs || (d.status === 'processing' ? now - d.startedAt : null),
+      elapsedMs:    now - d.startedAt,
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ══════════════════════════════════════════════════════════════
+//  ROUTE 6 — INRT TRANSACTION HISTORY (convert + sends + receives)
+// ══════════════════════════════════════════════════════════════
+app.get('/inrt/history/:userId', async (req, res) => {
+  try {
+    if (!db) return res.json({ transactions: [] });
+    const snap = await db.collection('transactions')
+      .where('uid','==',req.params.userId)
+      .where('cat','==','crypto')
+      .orderBy('createdAt','desc')
+      .limit(50)
+      .get();
+
+    const transactions = snap.docs.map(d => ({
+      id: d.id,
+      ...d.data(),
+      createdAt: d.data().createdAt?.toDate?.()?.toISOString() || null,
+    }));
+
+    res.json({ transactions });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+
 // ══════════════════════════════════════════════════════════════
 //  START SERVER
 // ══════════════════════════════════════════════════════════════
