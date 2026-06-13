@@ -11,6 +11,7 @@ import PrivacyPolicy      from './pages/PrivacyPolicy';
 import TermsAndConditions from './pages/TermsAndConditions';
 import RefundPolicy       from './pages/RefundPolicy';
 import AdminKYC from './pages/AdminKYC';
+import './styles/global.css';
 
 // ── Lazy ───────────────────────────────────────────────────────
 const TransactionHistory = lazy(() => import('./pages/TransactionHistory'));

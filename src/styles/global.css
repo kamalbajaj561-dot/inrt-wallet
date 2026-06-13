@@ -1,0 +1,69 @@
+/**
+ * INRT WALLET — global.css
+ * Add this to src/styles/theme.css (or import in main.tsx)
+ *
+ * FIXES:
+ *  - Half-screen layout on mobile (missing full-width/height base rules)
+ *  - Inconsistent box-sizing causing overflow
+ *  - Default browser margins on body
+ */
+
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html {
+  width: 100%;
+  height: 100%;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  width: 100%;
+  min-height: 100vh;
+  min-height: 100dvh;
+  margin: 0;
+  padding: 0;
+  font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+  background: #F6F8FA;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+#root {
+  width: 100%;
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Prevent horizontal scroll from any child overflow */
+img, video, canvas, svg {
+  max-width: 100%;
+  display: block;
+}
+
+/* Inputs should never zoom the page on focus (iOS) */
+input, select, textarea, button {
+  font-size: 16px;
+  font-family: inherit;
+}
+
+/* Remove default button styles globally */
+button {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+/* Scrollbar styling (optional, keeps app feel consistent) */
+::-webkit-scrollbar {
+  width: 0px;
+  height: 0px;
+}
+
+/* Safe area support for notched phones */
+.safe-top    { padding-top: env(safe-area-inset-top); }
+.safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
