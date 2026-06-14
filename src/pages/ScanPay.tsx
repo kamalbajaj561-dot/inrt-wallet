@@ -1,14 +1,9 @@
 /**
- * INRT WALLET — ScanPay.tsx
- * Fixed camera access for mobile browsers
- * Replace: src/pages/ScanPay.tsx (or wherever Scan page is)
- *
- * Camera fixes:
- *  - playsInline + muted + autoPlay (required for iOS Safari)
- *  - Fallback if facingMode constraint rejected
- *  - Clear permission error messages
- *  - HTTPS check (camera requires secure context)
- *  - Cleans up stream on unmount (prevents "camera in use" errors)
+ * INRT WALLET — ScanPay.tsx (FIXED)
+ * Root cause fixed: <video> element is now ALWAYS rendered in the DOM
+ * (hidden via CSS when inactive) so videoRef.current is never null
+ * when the camera stream is attached.
+ * Replace: src/pages/ScanPay.tsx
  */
 
 import { useState, useRef, useEffect } from 'react';
@@ -28,18 +23,14 @@ export default function ScanPay() {
   const { user } = useAuth();
   const navigate = useNavigate();
 
-  const [mode, setMode]   = useState<Mode>('scan');
+  const [mode, setMode] = useState<Mode>('scan');
   const [profile, setProfile] = useState<any>(null);
 
-  // Camera state
   const videoRef  = useRef<HTMLVideoElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const scanLoopRef = useRef<number | null>(null);
 
   const [camStatus, setCamStatus] = useState<'idle'|'requesting'|'active'|'error'>('idle');
   const [camErr, setCamErr]       = useState('');
-  const [scannedData, setScannedData] = useState('');
 
   useEffect(() => {
     if (!user?.uid) return;
@@ -49,19 +40,18 @@ export default function ScanPay() {
     return () => unsub();
   }, [user?.uid]);
 
-  // ── Start camera with full mobile compatibility ─────────────
+  // ── Start camera ─────────────────────────────────────────────
   const startCamera = async () => {
     setCamErr(''); setCamStatus('requesting');
 
-    // Check secure context — camera requires HTTPS (or localhost)
     if (typeof window !== 'undefined' && !window.isSecureContext) {
-      setCamErr('Camera requires a secure (HTTPS) connection. Please open this site via https://');
+      setCamErr('Camera requires HTTPS. Open this site via https:// (not http://).');
       setCamStatus('error');
       return;
     }
 
     if (!navigator.mediaDevices?.getUserMedia) {
-      setCamErr('Camera is not supported on this browser. Please use the QR upload option below.');
+      setCamErr('Camera not supported on this browser. Use Upload or Enter Manually below.');
       setCamStatus('error');
       return;
     }
@@ -69,72 +59,77 @@ export default function ScanPay() {
     try {
       let stream: MediaStream;
       try {
-        // Preferred: back camera on mobile
         stream = await navigator.mediaDevices.getUserMedia({
           video: { facingMode: { ideal: 'environment' } },
           audio: false,
         });
       } catch {
-        // Fallback: any available camera
-        stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        } catch {
+          // Laptop fallback — try front camera explicitly
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: 'user' }, audio: false,
+          });
+        }
       }
 
       streamRef.current = stream;
 
+      // video element is ALWAYS mounted now — ref is guaranteed to exist
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        videoRef.current.setAttribute('playsinline', 'true'); // iOS requirement
-        videoRef.current.setAttribute('muted', 'true');
-        await videoRef.current.play();
+        videoRef.current.muted = true;
+        videoRef.current.playsInline = true;
+        try {
+          await videoRef.current.play();
+        } catch (playErr) {
+          console.warn('video.play() error (often safe to ignore):', playErr);
+        }
       }
 
       setCamStatus('active');
     } catch (e: any) {
-      console.error('Camera error:', e.name, e.message);
+      console.error('Camera error:', e.name, e.message, e);
       if (e.name === 'NotAllowedError' || e.name === 'PermissionDeniedError') {
-        setCamErr('Camera permission denied. Tap the 🔒/ⓘ icon in your browser address bar → allow Camera, then try again.');
-      } else if (e.name === 'NotFoundError') {
+        setCamErr('Camera permission denied. Click the 🔒 / camera icon in your browser address bar → Allow camera → then tap Try Again.');
+      } else if (e.name === 'NotFoundError' || e.name === 'DevicesNotFoundError') {
         setCamErr('No camera found on this device.');
-      } else if (e.name === 'NotReadableError') {
-        setCamErr('Camera is being used by another app. Close other apps using the camera and try again.');
+      } else if (e.name === 'NotReadableError' || e.name === 'TrackStartError') {
+        setCamErr('Camera is being used by another app (close other camera apps/tabs) and try again.');
+      } else if (e.name === 'OverconstrainedError') {
+        setCamErr('Camera does not support requested settings. Tap Try Again to retry with default camera.');
       } else {
-        setCamErr(`Camera error: ${e.message || 'Unknown error'}`);
+        setCamErr(`Camera error: ${e.message || e.name || 'Unknown error'}`);
       }
       setCamStatus('error');
     }
   };
 
-  // ── Stop camera & cleanup ────────────────────────────────────
   const stopCamera = () => {
     streamRef.current?.getTracks().forEach(t => t.stop());
     streamRef.current = null;
-    if (scanLoopRef.current) cancelAnimationFrame(scanLoopRef.current);
+    if (videoRef.current) videoRef.current.srcObject = null;
     setCamStatus('idle');
   };
 
-  // ── Cleanup on unmount / mode change ─────────────────────────
   useEffect(() => {
-    if (mode !== 'scan') stopCamera();
+    if (mode === 'scan') {
+      startCamera();
+    } else {
+      stopCamera();
+    }
     return () => stopCamera();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode]);
 
-  // ── Auto-start when scan mode opens ──────────────────────────
-  useEffect(() => {
-    if (mode === 'scan' && camStatus === 'idle') startCamera();
-  }, [mode]);
-
-  // ── Handle file upload as fallback ───────────────────────────
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    // In production, decode QR from image using a library like jsQR
-    setScannedData('Image uploaded — processing…');
-    setTimeout(() => {
-      navigate('/send');
-    }, 1000);
+    setTimeout(() => navigate('/send'), 600);
   };
 
-  const upiId = profile?.upiId || (profile?.phone ? `${profile.phone}@inrt` : '');
+  const upiId       = profile?.upiId || (profile?.phone ? `${profile.phone}@inrt` : '');
   const inrtAddress = profile?.inrtAddress || '';
 
   return (
@@ -154,31 +149,38 @@ export default function ScanPay() {
         </div>
 
         {/* ── SCAN MODE ───────────────────────────────────────── */}
-        {mode==='scan'&&(
-          <div>
-            <div style={{ width:'100%', height:340, borderRadius:20, background:'#0A0A1A', position:'relative', overflow:'hidden', marginBottom:16, display:'flex', alignItems:'center', justifyContent:'center' }}>
+        <div style={{ display: mode==='scan' ? 'block' : 'none' }}>
+          <div style={{ width:'100%', height:340, borderRadius:20, background:'#0A0A1A', position:'relative', overflow:'hidden', marginBottom:16 }}>
 
-              {/* Live video feed */}
-              {camStatus==='active' && (
-                <video ref={videoRef} autoPlay playsInline muted
-                  style={{ width:'100%', height:'100%', objectFit:'cover', position:'absolute', inset:0 }}/>
-              )}
+            {/* Video — ALWAYS in DOM. Visibility toggled via CSS, never via conditional render */}
+            <video
+              ref={videoRef}
+              autoPlay
+              playsInline
+              muted
+              style={{
+                width:'100%', height:'100%', objectFit:'cover',
+                position:'absolute', inset:0,
+                opacity: camStatus==='active' ? 1 : 0,
+                transition:'opacity 0.2s',
+              }}
+            />
 
-              {/* Scan frame overlay */}
+            {/* Overlay states sit on top of (hidden) video */}
+            <div style={{ position:'absolute', inset:0, display:'flex', alignItems:'center', justifyContent:'center', pointerEvents:'none' }}>
               {camStatus==='active' && (
-                <div style={{ width:200, height:200, position:'relative', zIndex:2 }}>
+                <div style={{ width:200, height:200, position:'relative' }}>
                   {[
-                    { top:0, left:0, borderTop:'4px solid #00FF66', borderLeft:'4px solid #00FF66' },
-                    { top:0, right:0, borderTop:'4px solid #00FF66', borderRight:'4px solid #00FF66' },
-                    { bottom:0, left:0, borderBottom:'4px solid #00FF66', borderLeft:'4px solid #00FF66' },
-                    { bottom:0, right:0, borderBottom:'4px solid #00FF66', borderRight:'4px solid #00FF66' },
+                    { top:0, left:0,    border:'4px solid #00FF66', borderRight:'none',  borderBottom:'none' },
+                    { top:0, right:0,   border:'4px solid #00FF66', borderLeft:'none',   borderBottom:'none' },
+                    { bottom:0, left:0, border:'4px solid #00FF66', borderRight:'none',  borderTop:'none'    },
+                    { bottom:0, right:0,border:'4px solid #00FF66', borderLeft:'none',   borderTop:'none'    },
                   ].map((s,i)=>(
-                    <div key={i} style={{ position:'absolute', width:32, height:32, borderRadius:6, ...s, top:s.top, left:s.left, right:(s as any).right, bottom:(s as any).bottom }}/>
+                    <div key={i} style={{ position:'absolute', width:32, height:32, borderRadius:6, ...s }}/>
                   ))}
                 </div>
               )}
 
-              {/* Requesting permission */}
               {camStatus==='requesting' && (
                 <div style={{ textAlign:'center', padding:20 }}>
                   <div style={{ width:48, height:48, border:'4px solid rgba(0,229,204,0.2)', borderTopColor:'#00e5cc', borderRadius:'50%', animation:'spin 0.8s linear infinite', margin:'0 auto 16px' }}/>
@@ -186,9 +188,8 @@ export default function ScanPay() {
                 </div>
               )}
 
-              {/* Error state */}
               {camStatus==='error' && (
-                <div style={{ textAlign:'center', padding:24 }}>
+                <div style={{ textAlign:'center', padding:24, pointerEvents:'auto' }}>
                   <p style={{ fontSize:36, marginBottom:12 }}>📷</p>
                   <p style={{ color:'#FF9500', fontSize:13, fontWeight:600, marginBottom:16, lineHeight:1.6, padding:'0 12px' }}>{camErr}</p>
                   <button onClick={startCamera} style={{ background:'#00e5cc', color:'#000', border:'none', borderRadius:10, padding:'10px 24px', cursor:'pointer', fontSize:13, fontWeight:700, fontFamily:"'Plus Jakarta Sans',sans-serif" }}>
@@ -197,45 +198,43 @@ export default function ScanPay() {
                 </div>
               )}
 
-              {/* Idle */}
               {camStatus==='idle' && (
                 <p style={{ color:'rgba(255,255,255,0.4)', fontSize:13 }}>Starting camera…</p>
               )}
-
-              {/* Bottom hint */}
-              {camStatus==='active' && (
-                <p style={{ position:'absolute', bottom:18, color:'rgba(255,255,255,0.6)', fontSize:13, zIndex:2, textShadow:'0 1px 4px rgba(0,0,0,0.5)' }}>
-                  Point camera at any UPI QR code
-                </p>
-              )}
-            </div>
-
-            {/* Manual address entry fallback */}
-            <div style={{ background:T.light, border:`1px solid ${T.border}`, borderRadius:14, padding:'14px 16px', marginBottom:12 }}>
-              <p style={{ color:T.muted, fontSize:12, margin:'0 0 8px', fontWeight:600 }}>Camera not working?</p>
-              <div style={{ display:'flex', gap:8 }}>
-                <label style={{ flex:1, textAlign:'center' as const, padding:'11px', borderRadius:10, border:`1px solid ${T.border}`, background:T.card, cursor:'pointer', fontSize:13, fontWeight:700, color:T.navy, fontFamily:"'Plus Jakarta Sans',sans-serif" }}>
-                  📁 Upload QR Image
-                  <input type="file" accept="image/*" onChange={handleFileUpload} style={{ display:'none' }}/>
-                </label>
-                <button onClick={()=>navigate('/send')} style={{ flex:1, padding:'11px', borderRadius:10, border:'none', background:T.navy, color:'#fff', cursor:'pointer', fontSize:13, fontWeight:700, fontFamily:"'Plus Jakarta Sans',sans-serif" }}>
-                  ✍️ Enter Manually
-                </button>
-              </div>
             </div>
 
             {camStatus==='active' && (
-              <p style={{ textAlign:'center' as const, color:T.muted, fontSize:12 }}>
-                🔒 Camera access is used only for QR scanning and is not recorded or stored.
+              <p style={{ position:'absolute', bottom:18, left:0, right:0, textAlign:'center' as const, color:'rgba(255,255,255,0.6)', fontSize:13, textShadow:'0 1px 4px rgba(0,0,0,0.5)' }}>
+                Point camera at any UPI QR code
               </p>
             )}
           </div>
-        )}
+
+          {/* Manual fallback */}
+          <div style={{ background:T.light, border:`1px solid ${T.border}`, borderRadius:14, padding:'14px 16px', marginBottom:12 }}>
+            <p style={{ color:T.muted, fontSize:12, margin:'0 0 8px', fontWeight:600 }}>Camera not working?</p>
+            <div style={{ display:'flex', gap:8 }}>
+              <label style={{ flex:1, textAlign:'center' as const, padding:'11px', borderRadius:10, border:`1px solid ${T.border}`, background:T.card, cursor:'pointer', fontSize:13, fontWeight:700, color:T.navy, fontFamily:"'Plus Jakarta Sans',sans-serif" }}>
+                📁 Upload QR Image
+                <input type="file" accept="image/*" onChange={handleFileUpload} style={{ display:'none' }}/>
+              </label>
+              <button onClick={()=>navigate('/send')} style={{ flex:1, padding:'11px', borderRadius:10, border:'none', background:T.navy, color:'#fff', cursor:'pointer', fontSize:13, fontWeight:700, fontFamily:"'Plus Jakarta Sans',sans-serif" }}>
+                ✍️ Enter Manually
+              </button>
+            </div>
+          </div>
+
+          {camStatus==='active' && (
+            <p style={{ textAlign:'center' as const, color:T.muted, fontSize:12 }}>
+              🔒 Camera access is used only for QR scanning and is never recorded or stored.
+            </p>
+          )}
+        </div>
 
         {/* ── SHOW MY QR MODE ─────────────────────────────────── */}
         {mode==='show'&&(
           <div style={{ textAlign:'center' as const }}>
-            <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:18, padding:24, marginBottom:16, boxShadow:'0 2px 12px rgba(10,37,64,0.06)', display:'inline-block', width:'100%', boxSizing:'border-box' as const }}>
+            <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:18, padding:24, marginBottom:16, boxShadow:'0 2px 12px rgba(10,37,64,0.06)' }}>
               <div style={{ width:200, height:200, background:'#fff', borderRadius:10, margin:'0 auto 14px', overflow:'hidden' }}>
                 {upiId ? (
                   <img src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(`upi://pay?pa=${upiId}&pn=${encodeURIComponent(profile?.name||'INRT User')}&cu=INR`)}`} alt="UPI QR" style={{ width:'100%', height:'100%' }}/>

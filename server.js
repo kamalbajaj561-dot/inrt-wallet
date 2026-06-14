@@ -581,50 +581,9 @@ app.post('/payout/validate-upi', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.post('/payout/send-upi', async (req, res) => {
-  try {
-    const { fromUid, toUpiId, amount, note, name } = req.body;
-    if (!fromUid || !toUpiId || !amount || !db) return res.status(400).json({ error: 'Missing fields' });
-    const sSnap = await db.collection('users').doc(fromUid).get();
-    if (!sSnap.exists) return res.status(404).json({ error: 'Sender not found' });
-    const sender = sSnap.data();
-    if ((sender.balance||0) < amount) return res.status(402).json({ error: 'Insufficient balance' });
-    const today = new Date().toISOString().split('T')[0];
-    const lk    = `dailySent_${today}`;
-    const dl    = sender.kycStatus === 'verified' ? 100000 : 10000;
-    if ((sender[lk]||0) + amount > dl) return res.status(402).json({ error: 'Daily limit reached' });
-    const transferId = genTransferId();
-    await db.collection('users').doc(fromUid).update({ balance: admin.firestore.FieldValue.increment(-amount), [lk]: admin.firestore.FieldValue.increment(amount), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
-    const cfResponse = await cfPost('/payout/v1/directTransfer', { amount, transferId, transferMode: 'upi', remarks: note||`INRT from ${sender.name||sender.phone}`, beneDetails: { beneId: `BENE_${toUpiId.replace(/[@.]/g,'_')}`, name: name||'UPI Recipient', vpa: toUpiId } });
-    if (cfResponse.status !== 'SUCCESS') {
-      await db.collection('users').doc(fromUid).update({ balance: admin.firestore.FieldValue.increment(amount), [lk]: admin.firestore.FieldValue.increment(-amount), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
-      throw new Error(cfResponse.message || 'Transfer failed');
-    }
-    const pts = Math.floor(amount/10);
-    await db.collection('transactions').add({ uid: fromUid, type: 'debit', amount, note: note||`Sent to ${toUpiId}`, cat: 'transfer', ref: transferId, toUpiId, status: 'success', method: 'cashfree_upi', rewardPoints: pts, createdAt: admin.firestore.FieldValue.serverTimestamp() });
-    await db.collection('users').doc(fromUid).update({ rewardPoints: admin.firestore.FieldValue.increment(pts), totalSent: admin.firestore.FieldValue.increment(amount) });
-    res.json({ success: true, transferId, amount, toUpiId, rewardPoints: pts });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
 
-app.post('/payout/send-bank', async (req, res) => {
-  try {
-    const { fromUid, accountNo, ifsc, accountName, amount, note } = req.body;
-    if (!fromUid || !accountNo || !ifsc || !accountName || !amount || !db) return res.status(400).json({ error: 'Missing fields' });
-    const sSnap = await db.collection('users').doc(fromUid).get();
-    if (!sSnap.exists || (sSnap.data().balance||0) < amount) return res.status(402).json({ error: 'Insufficient balance' });
-    const transferId = genTransferId();
-    await db.collection('users').doc(fromUid).update({ balance: admin.firestore.FieldValue.increment(-amount), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
-    const cfResponse = await cfPost('/payout/v1/directTransfer', { amount, transferId, transferMode: 'imps', remarks: note||'INRT Bank Transfer', beneDetails: { beneId: `BENE_${accountNo}`, name: accountName, bankAccount: accountNo, ifsc: ifsc.toUpperCase() } });
-    if (cfResponse.status !== 'SUCCESS') {
-      await db.collection('users').doc(fromUid).update({ balance: admin.firestore.FieldValue.increment(amount), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
-      throw new Error(cfResponse.message || 'Bank transfer failed');
-    }
-    await db.collection('transactions').add({ uid: fromUid, type: 'debit', amount, note: note||`Bank transfer to ${accountName}`, cat: 'transfer', ref: transferId, accountNo: accountNo.slice(-4).padStart(accountNo.length,'X'), ifsc, accountName, status: 'success', method: 'cashfree_imps', createdAt: admin.firestore.FieldValue.serverTimestamp() });
-    await db.collection('users').doc(fromUid).update({ rewardPoints: admin.firestore.FieldValue.increment(Math.floor(amount/10)), totalSent: admin.firestore.FieldValue.increment(amount) });
-    res.json({ success: true, transferId, amount, accountName });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
+
+
 
 app.get('/payout/status/:transferId', async (req, res) => {
   try {
@@ -651,27 +610,7 @@ app.post('/payout/webhook', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.post('/payout/withdraw', async (req, res) => {
-  try {
-    const { userId, amount, upiId } = req.body;
-    if (!userId || !amount || !upiId || !db) return res.status(400).json({ error: 'Missing fields' });
-    if (amount < 100) return res.status(400).json({ error: 'Minimum ₹100' });
-    const snap = await db.collection('users').doc(userId).get();
-    if (!snap.exists) return res.status(404).json({ error: 'User not found' });
-    const user = snap.data();
-    if (user.kycStatus !== 'verified') return res.status(403).json({ error: 'Complete KYC to withdraw' });
-    if ((user.balance||0) < amount)    return res.status(402).json({ error: 'Insufficient balance' });
-    const transferId = genTransferId();
-    await db.collection('users').doc(userId).update({ balance: admin.firestore.FieldValue.increment(-amount), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
-    const cfResponse = await cfPost('/payout/v1/directTransfer', { amount, transferId, transferMode: 'upi', remarks: 'INRT Wallet Withdrawal', beneDetails: { beneId: `USER_${userId}`, name: user.name||'INRT User', vpa: upiId } });
-    if (cfResponse.status !== 'SUCCESS') {
-      await db.collection('users').doc(userId).update({ balance: admin.firestore.FieldValue.increment(amount), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
-      throw new Error(cfResponse.message || 'Withdrawal failed');
-    }
-    await db.collection('transactions').add({ uid: userId, type: 'debit', amount, note: `Withdrawal to ${upiId}`, cat: 'withdrawal', ref: transferId, toUpiId: upiId, status: 'success', method: 'cashfree_upi', createdAt: admin.firestore.FieldValue.serverTimestamp() });
-    res.json({ success: true, transferId, amount });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
+
 
 // ══════════════════════════════════════════════════════════════
 //  INSTAMOJO
@@ -1535,6 +1474,433 @@ app.get('/inrt/history/:userId', async (req, res) => {
     res.json({ transactions });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
+
+/**
+ * INRT WALLET — PAYOUT FIX ROUTES
+ * Paste into server.js BEFORE app.listen(...) — REPLACE existing
+ * /payout/send-upi, /payout/send-bank, /payout/withdraw routes
+ *
+ * ROOT CAUSE OF BUG:
+ * Old code: deduct balance → cfPost() → if cfResponse fails → refund
+ * If cfPost() itself THROWS (auth error, network error, bad credentials)
+ * execution jumps to outer catch block — refund code is SKIPPED
+ * Result: money deducted, no transfer, no refund, no transaction record
+ *
+ * FIX: Wrap the entire Cashfree call in its own try-catch so that
+ * BOTH thrown errors AND non-SUCCESS responses always trigger:
+ *  1. Immediate balance refund
+ *  2. Failed debit transaction record (shows in history)
+ *  3. Refund credit transaction record (shows in history)
+ */
+
+// ══════════════════════════════════════════════════════════════
+//  ROUTE 1 — SEND VIA UPI ID (FIXED)
+// ══════════════════════════════════════════════════════════════
+app.post('/payout/send-upi', async (req, res) => {
+  const { fromUid, toUpiId, amount, note, name } = req.body;
+  if (!fromUid || !toUpiId || !amount || !db)
+    return res.status(400).json({ error: 'Missing fields' });
+
+  // ── Step 1: Validate sender ───────────────────────────────
+  let sender;
+  try {
+    const sSnap = await db.collection('users').doc(fromUid).get();
+    if (!sSnap.exists) return res.status(404).json({ error: 'Sender not found' });
+    sender = sSnap.data();
+  } catch (e) {
+    return res.status(500).json({ error: 'Failed to load account' });
+  }
+
+  if ((sender.balance || 0) < amount)
+    return res.status(402).json({ error: 'Insufficient balance' });
+
+  const today = new Date().toISOString().split('T')[0];
+  const lk    = `dailySent_${today}`;
+  const dl    = sender.kycStatus === 'verified' ? 100000 : 10000;
+  if ((sender[lk] || 0) + amount > dl)
+    return res.status(402).json({ error: `Daily limit of ₹${dl.toLocaleString('en-IN')} reached` });
+
+  const transferId = genTransferId();
+  const txRef      = genTxId('TXN');
+
+  // ── Step 2: Deduct balance ────────────────────────────────
+  try {
+    await db.collection('users').doc(fromUid).update({
+      balance:   admin.firestore.FieldValue.increment(-amount),
+      [lk]:      admin.firestore.FieldValue.increment(amount),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  } catch (e) {
+    return res.status(500).json({ error: 'Failed to update balance. No money was deducted.' });
+  }
+
+  // ── Step 3: Call Cashfree (wrapped in try-catch) ──────────
+  let cfSuccess = false;
+  let cfError   = '';
+
+  try {
+    const cfResponse = await cfPost('/payout/v1/directTransfer', {
+      amount,
+      transferId,
+      transferMode: 'upi',
+      remarks: note || `INRT from ${sender.name || sender.phone}`,
+      beneDetails: {
+        beneId: `BENE_${toUpiId.replace(/[@.]/g, '_')}`,
+        name:   name || 'UPI Recipient',
+        vpa:    toUpiId,
+      },
+    });
+
+    if (cfResponse.status === 'SUCCESS') {
+      cfSuccess = true;
+    } else {
+      cfError = cfResponse.message || cfResponse.subCode || 'Transfer failed';
+    }
+  } catch (e: any) {
+    // cfPost() threw — Cashfree unreachable or auth failed
+    cfError = e.message || 'Cashfree service unavailable';
+    console.error('/payout/send-upi cfPost threw:', e.message);
+  }
+
+  // ── Step 4a: SUCCESS ─────────────────────────────────────
+  if (cfSuccess) {
+    const pts = Math.floor(amount / 10);
+    try {
+      await db.collection('transactions').add({
+        uid: fromUid, type: 'debit', amount,
+        note: note || `Sent to ${toUpiId}`,
+        cat: 'transfer', ref: transferId, toUpiId,
+        status: 'success', method: 'cashfree_upi',
+        rewardPoints: pts,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      await db.collection('users').doc(fromUid).update({
+        rewardPoints: admin.firestore.FieldValue.increment(pts),
+        totalSent:    admin.firestore.FieldValue.increment(amount),
+        updatedAt:    admin.firestore.FieldValue.serverTimestamp(),
+      });
+    } catch (e) { console.warn('Post-success logging error:', e); }
+    return res.json({ success: true, transferId, amount, toUpiId });
+  }
+
+  // ── Step 4b: FAILURE — refund + log ──────────────────────
+  try {
+    // Refund balance
+    await db.collection('users').doc(fromUid).update({
+      balance:   admin.firestore.FieldValue.increment(amount),
+      [lk]:      admin.firestore.FieldValue.increment(-amount),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    const batch = db.batch();
+
+    // Failed debit record (shows in history as failed)
+    batch.set(db.collection('transactions').doc(txRef), {
+      uid: fromUid, type: 'debit', amount,
+      note: `Failed: Send to ${toUpiId}`,
+      cat: 'transfer', ref: txRef, toUpiId,
+      status: 'failed', method: 'cashfree_upi',
+      failReason: cfError,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    // Refund credit record (shows in history as refund)
+    batch.set(db.collection('transactions').doc(`${txRef}_REFUND`), {
+      uid: fromUid, type: 'credit', amount,
+      note: `Refund: UPI transfer to ${toUpiId} failed`,
+      cat: 'refund', ref: `${txRef}_REFUND`,
+      status: 'success', originalRef: txRef,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    await batch.commit();
+    console.log(`💸 Refunded ₹${amount} to ${fromUid} — UPI failed: ${cfError}`);
+  } catch (refundErr) {
+    console.error('CRITICAL: Refund failed for', fromUid, amount, refundErr);
+    // Still return error to user but log the critical failure
+  }
+
+  return res.status(402).json({
+    error: `Transfer failed: ${cfError}. Your ₹${amount} has been refunded to your wallet.`,
+    refunded: true,
+  });
+});
+
+// ══════════════════════════════════════════════════════════════
+//  ROUTE 2 — SEND VIA BANK ACCOUNT (FIXED)
+// ══════════════════════════════════════════════════════════════
+app.post('/payout/send-bank', async (req, res) => {
+  const { fromUid, accountNo, ifsc, accountName, amount, note } = req.body;
+  if (!fromUid || !accountNo || !ifsc || !accountName || !amount || !db)
+    return res.status(400).json({ error: 'Missing fields' });
+
+  let sender;
+  try {
+    const sSnap = await db.collection('users').doc(fromUid).get();
+    if (!sSnap.exists) return res.status(404).json({ error: 'Sender not found' });
+    sender = sSnap.data();
+  } catch (e) {
+    return res.status(500).json({ error: 'Failed to load account' });
+  }
+
+  if ((sender.balance || 0) < amount)
+    return res.status(402).json({ error: 'Insufficient balance' });
+
+  const transferId = genTransferId();
+  const txRef      = genTxId('TXN');
+
+  // Deduct balance
+  try {
+    await db.collection('users').doc(fromUid).update({
+      balance:   admin.firestore.FieldValue.increment(-amount),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  } catch (e) {
+    return res.status(500).json({ error: 'Failed to update balance. No money was deducted.' });
+  }
+
+  // Call Cashfree
+  let cfSuccess = false;
+  let cfError   = '';
+  try {
+    const cfResponse = await cfPost('/payout/v1/directTransfer', {
+      amount, transferId, transferMode: 'imps',
+      remarks: note || 'INRT Bank Transfer',
+      beneDetails: {
+        beneId:      `BENE_${accountNo}`,
+        name:        accountName,
+        bankAccount: accountNo,
+        ifsc:        ifsc.toUpperCase(),
+      },
+    });
+    if (cfResponse.status === 'SUCCESS') {
+      cfSuccess = true;
+    } else {
+      cfError = cfResponse.message || 'Bank transfer failed';
+    }
+  } catch (e: any) {
+    cfError = e.message || 'Cashfree service unavailable';
+    console.error('/payout/send-bank cfPost threw:', e.message);
+  }
+
+  if (cfSuccess) {
+    const pts = Math.floor(amount / 10);
+    await db.collection('transactions').add({
+      uid: fromUid, type: 'debit', amount,
+      note: note || `Bank transfer to ${accountName}`,
+      cat: 'transfer', ref: transferId,
+      accountNo: accountNo.slice(-4).padStart(accountNo.length, 'X'),
+      ifsc, accountName, status: 'success', method: 'cashfree_imps',
+      rewardPoints: pts,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    await db.collection('users').doc(fromUid).update({
+      rewardPoints: admin.firestore.FieldValue.increment(pts),
+      totalSent:    admin.firestore.FieldValue.increment(amount),
+      updatedAt:    admin.firestore.FieldValue.serverTimestamp(),
+    });
+    return res.json({ success: true, transferId, amount, accountName });
+  }
+
+  // Refund
+  try {
+    await db.collection('users').doc(fromUid).update({
+      balance:   admin.firestore.FieldValue.increment(amount),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    const batch = db.batch();
+    batch.set(db.collection('transactions').doc(txRef), {
+      uid: fromUid, type: 'debit', amount,
+      note: `Failed: Bank transfer to ${accountName}`,
+      cat: 'transfer', ref: txRef, accountName, status: 'failed',
+      failReason: cfError,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    batch.set(db.collection('transactions').doc(`${txRef}_REFUND`), {
+      uid: fromUid, type: 'credit', amount,
+      note: `Refund: Bank transfer to ${accountName} failed`,
+      cat: 'refund', ref: `${txRef}_REFUND`, status: 'success',
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    await batch.commit();
+    console.log(`💸 Refunded ₹${amount} to ${fromUid} — bank failed: ${cfError}`);
+  } catch (refundErr) {
+    console.error('CRITICAL: Bank refund failed for', fromUid, amount, refundErr);
+  }
+
+  return res.status(402).json({
+    error: `Bank transfer failed: ${cfError}. Your ₹${amount} has been refunded to your wallet.`,
+    refunded: true,
+  });
+});
+
+// ══════════════════════════════════════════════════════════════
+//  ROUTE 3 — WITHDRAW TO UPI (FIXED)
+// ══════════════════════════════════════════════════════════════
+app.post('/payout/withdraw', async (req, res) => {
+  const { userId, amount, upiId } = req.body;
+  if (!userId || !amount || !upiId || !db)
+    return res.status(400).json({ error: 'Missing fields' });
+  if (amount < 100)
+    return res.status(400).json({ error: 'Minimum withdrawal ₹100' });
+
+  let user;
+  try {
+    const snap = await db.collection('users').doc(userId).get();
+    if (!snap.exists) return res.status(404).json({ error: 'User not found' });
+    user = snap.data();
+  } catch (e) {
+    return res.status(500).json({ error: 'Failed to load account' });
+  }
+
+  if (user.kycStatus !== 'verified')
+    return res.status(403).json({ error: 'Complete KYC to withdraw' });
+  if ((user.balance || 0) < amount)
+    return res.status(402).json({ error: 'Insufficient balance' });
+
+  const transferId = genTransferId();
+  const txRef      = genTxId('WDR');
+
+  try {
+    await db.collection('users').doc(userId).update({
+      balance:   admin.firestore.FieldValue.increment(-amount),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  } catch (e) {
+    return res.status(500).json({ error: 'Failed to update balance. No money was deducted.' });
+  }
+
+  let cfSuccess = false;
+  let cfError   = '';
+  try {
+    const cfResponse = await cfPost('/payout/v1/directTransfer', {
+      amount, transferId, transferMode: 'upi',
+      remarks: 'INRT Wallet Withdrawal',
+      beneDetails: {
+        beneId: `USER_${userId}`,
+        name:   user.name || 'INRT User',
+        vpa:    upiId,
+      },
+    });
+    if (cfResponse.status === 'SUCCESS') {
+      cfSuccess = true;
+    } else {
+      cfError = cfResponse.message || 'Withdrawal failed';
+    }
+  } catch (e: any) {
+    cfError = e.message || 'Cashfree service unavailable';
+    console.error('/payout/withdraw cfPost threw:', e.message);
+  }
+
+  if (cfSuccess) {
+    await db.collection('transactions').add({
+      uid: userId, type: 'debit', amount,
+      note: `Withdrawal to ${upiId}`,
+      cat: 'withdrawal', ref: transferId, toUpiId: upiId,
+      status: 'success', method: 'cashfree_upi',
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    return res.json({ success: true, transferId, amount });
+  }
+
+  // Refund
+  try {
+    await db.collection('users').doc(userId).update({
+      balance:   admin.firestore.FieldValue.increment(amount),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    const batch = db.batch();
+    batch.set(db.collection('transactions').doc(txRef), {
+      uid: userId, type: 'debit', amount,
+      note: `Failed: Withdrawal to ${upiId}`,
+      cat: 'withdrawal', ref: txRef, toUpiId: upiId,
+      status: 'failed', failReason: cfError,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    batch.set(db.collection('transactions').doc(`${txRef}_REFUND`), {
+      uid: userId, type: 'credit', amount,
+      note: `Refund: Withdrawal to ${upiId} failed`,
+      cat: 'refund', ref: `${txRef}_REFUND`, status: 'success',
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    await batch.commit();
+    console.log(`💸 Refunded ₹${amount} to ${userId} — withdrawal failed: ${cfError}`);
+  } catch (refundErr) {
+    console.error('CRITICAL: Withdrawal refund failed for', userId, amount, refundErr);
+  }
+
+  return res.status(402).json({
+    error: `Withdrawal failed: ${cfError}. Your ₹${amount} has been refunded to your wallet.`,
+    refunded: true,
+  });
+});
+
+// ══════════════════════════════════════════════════════════════
+//  ROUTE 4 — VALIDATE UPI ID (unchanged)
+// ══════════════════════════════════════════════════════════════
+app.post('/payout/validate-upi', async (req, res) => {
+  try {
+    const { upiId } = req.body;
+    if (!upiId) return res.status(400).json({ error: 'UPI ID required' });
+    if (process.env.NODE_ENV !== 'production')
+      return res.json({ valid: true, name: 'Test Account', upiId, bankName: 'Test Bank' });
+    const d = await cfPost('/payout/v1/validation/upiDetails', { vpa: upiId });
+    if (d.status !== 'SUCCESS') return res.status(400).json({ error: 'Invalid UPI ID' });
+    res.json({ valid: true, name: d.data?.name || 'UPI Account', upiId: d.data?.vpa || upiId, bankName: d.data?.bankName || '' });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// ══════════════════════════════════════════════════════════════
+//  ROUTE 5 — CASHFREE WEBHOOK (refund on async failure)
+// ══════════════════════════════════════════════════════════════
+app.post('/payout/webhook', async (req, res) => {
+  try {
+    const { transferId, status, utr, reason } = req.body;
+    if (!db || !transferId) return res.json({ received: true });
+    const snap = await db.collection('transactions').where('ref', '==', transferId).limit(1).get();
+    if (snap.empty) return res.json({ received: true });
+    const txDoc = snap.docs[0];
+    const tx    = txDoc.data();
+
+    if (status === 'SUCCESS') {
+      await txDoc.ref.update({ status: 'success', utr, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+    } else if (status === 'FAILED' || status === 'REVERSED') {
+      // Refund via webhook (async failure after initial success)
+      await db.collection('users').doc(tx.uid).update({
+        balance:   admin.firestore.FieldValue.increment(tx.amount),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      await txDoc.ref.update({ status: 'failed', failReason: reason || 'Transfer failed', updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+      await db.collection('transactions').add({
+        uid: tx.uid, type: 'credit', amount: tx.amount,
+        note: `Refund: Transfer failed (${reason || 'bank rejected'})`,
+        cat: 'refund', ref: `REF_${transferId}`, status: 'success',
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      console.log(`💸 Webhook refund: ₹${tx.amount} → ${tx.uid}`);
+    }
+    res.json({ received: true });
+  } catch (e: any) {
+    console.error('/payout/webhook:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════
+//  ROUTE 6 — CHECK TRANSFER STATUS
+// ══════════════════════════════════════════════════════════════
+app.get('/payout/status/:transferId', async (req, res) => {
+  try {
+    const d = await cfGet(`/payout/v1/getTransferStatus?transferId=${req.params.transferId}`);
+    res.json({
+      transferId: req.params.transferId,
+      status:     d.data?.transfer?.status || 'UNKNOWN',
+      amount:     d.data?.transfer?.amount,
+      utr:        d.data?.transfer?.utr    || null,
+    });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
 
 
 // ══════════════════════════════════════════════════════════════
