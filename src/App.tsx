@@ -11,6 +11,7 @@ import PrivacyPolicy      from './pages/PrivacyPolicy';
 import TermsAndConditions from './pages/TermsAndConditions';
 import RefundPolicy       from './pages/RefundPolicy';
 import AdminKYC from './pages/AdminKYC';
+import CheckoutPage from './pages/CheckoutPage';
 import './styles/global.css';
 
 // ── Lazy ───────────────────────────────────────────────────────
@@ -117,6 +118,8 @@ export default function App() {
 <Route path="/kyc-complete" element={<KYCPage />} />
 
 <Route path="/admin/kyc" element={<AdminKYC />} />
+
+<Route path="/checkout" element={<CheckoutPage />} />
 
             // Inside your Routes:
 <Route path="/privacy"       element={<PrivacyPolicy />} />

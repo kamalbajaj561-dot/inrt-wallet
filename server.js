@@ -1902,6 +1902,94 @@ app.get('/payout/status/:transferId', async (req, res) => {
 });
 
 
+/**
+ * INRT WALLET — CHECKOUT ROUTE
+ * Paste into server.js BEFORE app.listen(...)
+ *
+ * Verifies Razorpay payment and credits INRT (rewardPoints) to user wallet.
+ * This is the key missing piece for Buy INRT flow.
+ */
+
+// ── Verify Razorpay payment + credit INRT ──────────────────
+app.post('/checkout/verify-inrt-purchase', async (req, res) => {
+  try {
+    const {
+      razorpay_order_id,
+      razorpay_payment_id,
+      razorpay_signature,
+      userId,
+      amount,
+    } = req.body;
+
+    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature || !userId || !amount)
+      return res.status(400).json({ error: 'Missing required fields' });
+
+    if (!db)
+      return res.status(500).json({ error: 'Database not connected' });
+
+    // ── Verify signature ──────────────────────────────────────
+    const expectedSignature = crypto
+      .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET || '')
+      .update(`${razorpay_order_id}|${razorpay_payment_id}`)
+      .digest('hex');
+
+    if (expectedSignature !== razorpay_signature)
+      return res.status(400).json({ error: 'Invalid payment signature — possible fraud attempt' });
+
+    // ── Check for duplicate credit (idempotency) ──────────────
+    const existingSnap = await db.collection('transactions')
+      .where('ref', '==', razorpay_payment_id)
+      .limit(1).get();
+
+    if (!existingSnap.empty)
+      return res.json({ success: true, message: 'Already credited', duplicate: true });
+
+    // ── Credit INRT to user ───────────────────────────────────
+    const amt = parseFloat(amount);
+    const ref = `INRT_BUY_${razorpay_payment_id}`;
+
+    const batch = db.batch();
+
+    // Add INRT (rewardPoints) to user
+    batch.update(db.collection('users').doc(userId), {
+      rewardPoints:  admin.firestore.FieldValue.increment(amt),
+      totalReceived: admin.firestore.FieldValue.increment(amt),
+      updatedAt:     admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    // Transaction record — shows in history
+    batch.set(db.collection('transactions').doc(ref), {
+      uid:           userId,
+      type:          'credit',
+      amount:        amt,
+      note:          `Bought ${amt.toLocaleString()} INRT via Razorpay`,
+      cat:           'crypto',
+      ref,
+      status:        'success',
+      method:        'razorpay',
+      razorpayOrderId:   razorpay_order_id,
+      razorpayPaymentId: razorpay_payment_id,
+      createdAt:     admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    await batch.commit();
+
+    console.log(`✅ INRT purchased: ${amt} INRT → ${userId} | payment: ${razorpay_payment_id}`);
+
+    res.json({
+      success: true,
+      amount:  amt,
+      ref,
+      message: `${amt.toLocaleString()} INRT credited to your wallet`,
+    });
+
+  } catch (e: any) {
+    console.error('/checkout/verify-inrt-purchase:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+
 
 // ══════════════════════════════════════════════════════════════
 //  START SERVER
