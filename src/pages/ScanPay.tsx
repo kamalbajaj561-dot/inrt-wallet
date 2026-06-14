@@ -1,52 +1,39 @@
 /**
  * INRT WALLET — ScanPay.tsx
- * Uses jsQR library (loaded via CDN) to actually decode QR codes
- * from the camera feed in real time.
+ * QR scanning via jsqr npm package (not CDN — fixes load error)
+ *
+ * FIRST: run this in your project folder:
+ *   npm install jsqr
+ *
  * Replace: src/pages/ScanPay.tsx
  */
 
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { useNavigate }   from 'react-router-dom';
-import { useAuth }       from '../context/AuthContext';
-import { doc, onSnapshot } from 'firebase/firestore';
+import { useNavigate }       from 'react-router-dom';
+import { useAuth }           from '../context/AuthContext';
+import { doc, onSnapshot }   from 'firebase/firestore';
 import { db as firestoreDb } from '../lib/firebase';
+import jsQR                  from 'jsqr';
 
 const T = {
-  navy:'#0A2540', accent:'#0070F3', green:'#00C853', border:'#E8ECF0',
-  muted:'#6B7C93', light:'#F0F4F8', text:'#0A2540', card:'#FFFFFF',
+  navy:'#0A2540', accent:'#0070F3', green:'#00C853',
+  border:'#E8ECF0', muted:'#6B7C93', light:'#F0F4F8',
+  text:'#0A2540', card:'#FFFFFF', red:'#FF3B30',
 };
 
 type Mode = 'scan' | 'show';
 
-// Load jsQR from CDN
-let jsQRLib: any = null;
-async function loadJsQR() {
-  if (jsQRLib) return jsQRLib;
-  await new Promise<void>((resolve, reject) => {
-    if ((window as any).jsQR) { jsQRLib = (window as any).jsQR; resolve(); return; }
-    const s = document.createElement('script');
-    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js';
-    s.onload  = () => { jsQRLib = (window as any).jsQR; resolve(); };
-    s.onerror = () => reject(new Error('jsQR load failed'));
-    document.head.appendChild(s);
-  });
-  return jsQRLib;
-}
-
-// Parse UPI QR string
-function parseUpiQR(raw: string): { upiId: string; name: string; amount: string } | null {
-  if (!raw) return null;
+function parseUpiQR(raw: string) {
   try {
-    // Handle standard UPI deep link: upi://pay?pa=...&pn=...&am=...
     if (raw.startsWith('upi://')) {
-      const url    = new URL(raw);
-      const upiId  = url.searchParams.get('pa') || '';
-      const name   = url.searchParams.get('pn') || '';
-      const amount = url.searchParams.get('am') || '';
-      if (upiId) return { upiId, name, amount };
+      const url = new URL(raw);
+      return {
+        upiId:  url.searchParams.get('pa') || '',
+        name:   url.searchParams.get('pn') || '',
+        amount: url.searchParams.get('am') || '',
+      };
     }
-    // Handle plain UPI ID (e.g. name@paytm)
-    if (raw.includes('@') && !raw.includes(' ')) {
+    if (raw.includes('@') && !raw.includes(' ') && raw.length < 60) {
       return { upiId: raw, name: '', amount: '' };
     }
   } catch {}
@@ -54,8 +41,8 @@ function parseUpiQR(raw: string): { upiId: string; name: string; amount: string 
 }
 
 export default function ScanPay() {
-  const { user }  = useAuth();
-  const navigate  = useNavigate();
+  const { user } = useAuth();
+  const navigate = useNavigate();
 
   const [mode, setMode]       = useState<Mode>('scan');
   const [profile, setProfile] = useState<any>(null);
@@ -64,26 +51,25 @@ export default function ScanPay() {
   const canvasRef   = useRef<HTMLCanvasElement>(null);
   const streamRef   = useRef<MediaStream | null>(null);
   const rafRef      = useRef<number | null>(null);
-  const scanningRef = useRef(false);
+  const activeRef   = useRef(false);
 
-  const [camStatus, setCamStatus] = useState<'idle'|'requesting'|'active'|'error'>('idle');
-  const [camErr, setCamErr]       = useState('');
-  const [scanResult, setScanResult] = useState<{ upiId:string; name:string; amount:string } | null>(null);
+  const [camStatus, setCamStatus]   = useState<'idle'|'requesting'|'active'|'error'>('idle');
+  const [camErr, setCamErr]         = useState('');
+  const [scanned, setScanned]       = useState<{upiId:string;name:string;amount:string}|null>(null);
   const [payAmount, setPayAmount]   = useState('');
-  const [paying, setPaying]         = useState(false);
   const [payErr, setPayErr]         = useState('');
 
   useEffect(() => {
     if (!user?.uid) return;
-    const unsub = onSnapshot(doc(firestoreDb, 'users', user.uid), snap => {
+    const unsub = onSnapshot(doc(firestoreDb,'users',user.uid), snap => {
       if (snap.exists()) setProfile(snap.data());
     });
     return () => unsub();
   }, [user?.uid]);
 
-  // ── QR scan loop ─────────────────────────────────────────────
-  const scanLoop = useCallback(async () => {
-    if (!scanningRef.current) return;
+  // ── QR scan loop using jsqr npm package ──────────────────────
+  const scanLoop = useCallback(() => {
+    if (!activeRef.current) return;
     const video  = videoRef.current;
     const canvas = canvasRef.current;
     if (!video || !canvas || video.readyState < 2) {
@@ -92,64 +78,77 @@ export default function ScanPay() {
     }
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-    canvas.width  = video.videoWidth;
-    canvas.height = video.videoHeight;
+    canvas.width  = video.videoWidth  || 640;
+    canvas.height = video.videoHeight || 480;
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     try {
-      const qr = jsQRLib(imgData.data, imgData.width, imgData.height, { inversionAttempts: 'dontInvert' });
-      if (qr?.data) {
-        const parsed = parseUpiQR(qr.data);
-        if (parsed) {
-          scanningRef.current = false;
-          setScanResult(parsed);
+      const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const result  = jsQR(imgData.data, imgData.width, imgData.height, {
+        inversionAttempts: 'dontInvert',
+      });
+      if (result?.data) {
+        const parsed = parseUpiQR(result.data);
+        if (parsed?.upiId) {
+          activeRef.current = false;
+          setScanned(parsed);
           if (parsed.amount) setPayAmount(parsed.amount);
           return;
         }
       }
-    } catch {}
+    } catch (e) {
+      console.warn('QR scan frame error:', e);
+    }
     rafRef.current = requestAnimationFrame(scanLoop);
   }, []);
 
   // ── Start camera ──────────────────────────────────────────────
   const startCamera = async () => {
-    setCamErr(''); setCamStatus('requesting'); setScanResult(null);
-    if (!window.isSecureContext) {
-      setCamErr('Camera requires HTTPS. Open https://inrtwallet.in'); setCamStatus('error'); return;
-    }
+    setCamErr(''); setCamStatus('requesting'); setScanned(null);
+    activeRef.current = false;
+
     if (!navigator.mediaDevices?.getUserMedia) {
-      setCamErr('Camera not supported on this browser. Upload a QR image instead.'); setCamStatus('error'); return;
+      setCamErr('Camera not available. Try using Upload QR Image below.'); setCamStatus('error'); return;
     }
-    try {
-      await loadJsQR();
-    } catch {
-      setCamErr('QR scanner library failed to load. Check your internet connection.'); setCamStatus('error'); return;
+    if (typeof window !== 'undefined' && !window.isSecureContext) {
+      setCamErr('Camera requires HTTPS. Make sure you are on https://inrtwallet.in'); setCamStatus('error'); return;
     }
+
     try {
       let stream: MediaStream;
-      try { stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal:'environment' } }, audio:false }); }
-      catch { stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false }); }
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
+          audio: false,
+        });
+      } catch {
+        stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      }
+
       streamRef.current = stream;
+
       if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        videoRef.current.muted = true;
+        videoRef.current.srcObject  = stream;
+        videoRef.current.muted      = true;
         videoRef.current.playsInline = true;
         await videoRef.current.play();
       }
+
       setCamStatus('active');
-      scanningRef.current = true;
+      activeRef.current = true;
       rafRef.current = requestAnimationFrame(scanLoop);
+
     } catch (e: any) {
-      if (e.name === 'NotAllowedError')  setCamErr('Camera permission denied. Tap the 🔒 icon in address bar → Allow Camera → Try Again.');
-      else if (e.name === 'NotFoundError') setCamErr('No camera found on this device.');
-      else if (e.name === 'NotReadableError') setCamErr('Camera is in use by another app. Close it and try again.');
-      else setCamErr(`Camera error: ${e.message}`);
+      const name = e.name || '';
+      if (name === 'NotAllowedError')   setCamErr('Camera permission denied.\n\nTap the 🔒 icon in your browser address bar → tap Camera → Allow → then tap Try Again.');
+      else if (name === 'NotFoundError') setCamErr('No camera found on this device. Use "Upload QR Image" instead.');
+      else if (name === 'NotReadableError') setCamErr('Camera is being used by another app. Close WhatsApp, Instagram or other camera apps, then tap Try Again.');
+      else setCamErr(`Camera error (${name || 'unknown'}): ${e.message}`);
       setCamStatus('error');
     }
   };
 
   const stopCamera = () => {
-    scanningRef.current = false;
+    activeRef.current = false;
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
     streamRef.current?.getTracks().forEach(t => t.stop());
     streamRef.current = null;
@@ -163,12 +162,11 @@ export default function ScanPay() {
     return () => stopCamera();
   }, [mode]);
 
-  // ── Handle file upload — scan QR from image ──────────────────
+  // ── Upload QR image ───────────────────────────────────────────
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     try {
-      await loadJsQR();
       const bitmap = await createImageBitmap(file);
       const canvas = document.createElement('canvas');
       canvas.width  = bitmap.width;
@@ -176,186 +174,188 @@ export default function ScanPay() {
       const ctx = canvas.getContext('2d')!;
       ctx.drawImage(bitmap, 0, 0);
       const imgData = ctx.getImageData(0, 0, bitmap.width, bitmap.height);
-      const qr = jsQRLib(imgData.data, imgData.width, imgData.height, { inversionAttempts: 'attemptBoth' });
-      if (qr?.data) {
-        const parsed = parseUpiQR(qr.data);
-        if (parsed) { setScanResult(parsed); if (parsed.amount) setPayAmount(parsed.amount); return; }
-        alert(`QR found but not a UPI code: ${qr.data.slice(0,60)}`);
+      const result  = jsQR(imgData.data, imgData.width, imgData.height, { inversionAttempts: 'attemptBoth' });
+      if (result?.data) {
+        const parsed = parseUpiQR(result.data);
+        if (parsed?.upiId) { setScanned(parsed); if (parsed.amount) setPayAmount(parsed.amount); return; }
+        alert(`QR found but is not a UPI code:\n${result.data.slice(0,80)}`);
       } else {
-        alert('No QR code found in this image. Try a clearer photo.');
+        alert('No QR code detected in this image. Please try a clearer photo with better lighting.');
       }
-    } catch { alert('Failed to read QR from image.'); }
+    } catch { alert('Failed to read image. Please try again.'); }
+    e.target.value = '';
   };
 
+  const bal         = Number(profile?.balance ?? 0);
   const upiId       = profile?.upiId || (profile?.phone ? `${profile.phone}@inrt` : '');
   const inrtAddress = profile?.inrtAddress || '';
-  const bal         = Number(profile?.balance ?? 0);
 
-  const handlePay = async () => {
-    if (!scanResult || !payAmount || parseFloat(payAmount) <= 0) return;
+  const handlePay = () => {
+    if (!scanned || !payAmount || parseFloat(payAmount) <= 0) return;
     if (parseFloat(payAmount) > bal) return setPayErr('Insufficient balance');
-    setPaying(true); setPayErr('');
-    navigate(`/send?upiId=${scanResult.upiId}&amount=${payAmount}&name=${encodeURIComponent(scanResult.name)}`);
+    navigate(`/send?upiId=${encodeURIComponent(scanned.upiId)}&amount=${payAmount}&name=${encodeURIComponent(scanned.name)}`);
   };
 
   return (
     <div style={{ maxWidth:480, margin:'0 auto', minHeight:'100vh', background:T.card, fontFamily:"'Plus Jakarta Sans',sans-serif" }}>
-      <div style={{ padding:'24px' }}>
-        <button onClick={()=>navigate('/dashboard')} style={{ background:'none', border:'none', color:T.accent, cursor:'pointer', fontSize:14, fontWeight:700, padding:'0 0 20px', display:'block' }}>← Back</button>
+      <div style={{ padding:'52px 20px 24px' }}>
+        <button onClick={()=>navigate('/dashboard')} style={{ background:'none', border:'none', color:T.accent, cursor:'pointer', fontSize:14, fontWeight:700, padding:'0 0 16px', display:'block' }}>← Back</button>
         <h2 style={{ fontFamily:"'Plus Jakarta Sans',sans-serif", fontWeight:800, fontSize:24, color:T.text, marginBottom:16 }}>Scan & Pay</h2>
 
-        <div style={{ display:'flex', gap:8, marginBottom:16 }}>
+        {/* Mode tabs */}
+        <div style={{ display:'flex', gap:8, marginBottom:20 }}>
           {([['scan','📷 Scan QR'],['show','🖼️ My QR']] as [Mode,string][]).map(([m,l])=>(
-            <button key={m} onClick={()=>{ setMode(m); setScanResult(null); }}
-              style={{ flex:1, padding:'11px', borderRadius:12, cursor:'pointer', border:`2px solid ${mode===m?T.navy:T.border}`, background:mode===m?T.navy+'08':'transparent', color:mode===m?T.navy:T.muted, fontWeight:700, fontFamily:"'Plus Jakarta Sans',sans-serif" }}>
+            <button key={m} onClick={()=>{ setMode(m as Mode); setScanned(null); setPayErr(''); }}
+              style={{ flex:1, padding:'12px', borderRadius:12, cursor:'pointer', border:`2px solid ${mode===m?T.navy:T.border}`, background:mode===m?`${T.navy}0a`:'transparent', color:mode===m?T.navy:T.muted, fontWeight:700, fontFamily:"'Plus Jakarta Sans',sans-serif", fontSize:13 }}>
               {l}
             </button>
           ))}
         </div>
 
         {/* ── SCAN MODE ─────────────────────────────────────── */}
-        <div style={{ display: mode==='scan' ? 'block' : 'none' }}>
-
-          {/* If QR scanned — show payment form */}
-          {scanResult ? (
-            <div>
-              <div style={{ background:'#E8FAF0', border:`1px solid ${T.green}30`, borderRadius:16, padding:'16px', marginBottom:16, display:'flex', gap:12, alignItems:'center' }}>
-                <span style={{ fontSize:28 }}>✅</span>
-                <div>
-                  <p style={{ fontWeight:700, fontSize:14, color:T.text, margin:0 }}>QR Scanned!</p>
-                  <p style={{ fontSize:12, color:T.muted, margin:'2px 0 0' }}>{scanResult.upiId}</p>
-                  {scanResult.name && <p style={{ fontSize:13, fontWeight:600, color:T.text, margin:'2px 0 0' }}>{scanResult.name}</p>}
+        {mode==='scan' && (
+          <>
+            {scanned ? (
+              /* Payment confirm form */
+              <div>
+                <div style={{ background:'#E8FAF0', border:`1px solid ${T.green}40`, borderRadius:16, padding:'16px', marginBottom:16, display:'flex', gap:12, alignItems:'center' }}>
+                  <div style={{ width:44, height:44, background:`${T.green}18`, borderRadius:12, display:'flex', alignItems:'center', justifyContent:'center', fontSize:22, flexShrink:0 }}>✅</div>
+                  <div>
+                    <p style={{ fontWeight:700, fontSize:14, color:T.text, margin:0 }}>QR Code Scanned!</p>
+                    <p style={{ fontSize:12, color:T.muted, margin:'2px 0 0', wordBreak:'break-all' as const }}>{scanned.upiId}</p>
+                    {scanned.name && <p style={{ fontSize:13, fontWeight:600, color:T.text, margin:'2px 0 0' }}>{scanned.name}</p>}
+                  </div>
                 </div>
-              </div>
 
-              <p style={{ fontSize:11, fontWeight:700, color:T.muted, margin:'0 0 8px', letterSpacing:0.5 }}>AMOUNT (₹)</p>
-              <div style={{ display:'flex', alignItems:'center', gap:8, background:T.light, borderRadius:14, padding:'14px 16px', marginBottom:8, border:`1.5px solid ${payAmount?T.navy:T.border}` }}>
-                <span style={{ color:T.navy, fontSize:22, fontWeight:800 }}>₹</span>
-                <input type="number" value={payAmount} onChange={e=>setPayAmount(e.target.value)} placeholder="0"
-                  style={{ flex:1, background:'none', border:'none', outline:'none', fontFamily:"'Plus Jakarta Sans',sans-serif", fontWeight:800, fontSize:28, color:T.text }}/>
-              </div>
-              <p style={{ color:T.muted, fontSize:12, margin:'0 0 16px' }}>Balance: ₹{bal.toLocaleString('en-IN')}</p>
-              {payErr && <p style={{ color:'#FF3B30', fontSize:12, marginBottom:8 }}>{payErr}</p>}
-              <div style={{ display:'flex', gap:8 }}>
-                <button onClick={()=>{ setScanResult(null); startCamera(); }}
-                  style={{ flex:1, padding:'14px', borderRadius:12, border:`1px solid ${T.border}`, background:'transparent', color:T.muted, fontWeight:700, cursor:'pointer', fontFamily:"'Plus Jakarta Sans',sans-serif" }}>
-                  Re-scan
-                </button>
-                <button onClick={handlePay} disabled={paying||!payAmount||parseFloat(payAmount)<=0}
-                  style={{ flex:2, padding:'14px', borderRadius:12, border:'none', background:T.navy, color:'#fff', fontWeight:700, fontSize:14, cursor:'pointer', fontFamily:"'Plus Jakarta Sans',sans-serif", opacity:(!payAmount||parseFloat(payAmount)<=0)?0.5:1 }}>
-                  {paying ? '⏳ Processing…' : `Pay ₹${payAmount||'0'}`}
-                </button>
-              </div>
-            </div>
-          ) : (
-            <div>
-              {/* Camera viewport */}
-              <div style={{ width:'100%', height:320, borderRadius:20, background:'#0A0A1A', position:'relative', overflow:'hidden', marginBottom:16 }}>
-                {/* Video — ALWAYS in DOM */}
-                <video ref={videoRef} autoPlay playsInline muted
-                  style={{ width:'100%', height:'100%', objectFit:'cover', position:'absolute', inset:0, opacity:camStatus==='active'?1:0, transition:'opacity 0.2s' }}/>
-                {/* Hidden canvas for QR decoding */}
-                <canvas ref={canvasRef} style={{ display:'none' }}/>
-
-                {/* Corner markers */}
-                {camStatus==='active'&&(
-                  <div style={{ position:'absolute', inset:0, display:'flex', alignItems:'center', justifyContent:'center' }}>
-                    <div style={{ width:180, height:180, position:'relative' }}>
-                      {[
-                        { top:0, left:0 }, { top:0, right:0 },
-                        { bottom:0, left:0 }, { bottom:0, right:0 },
-                      ].map((pos,i)=>(
-                        <div key={i} style={{ position:'absolute', width:28, height:28, borderRadius:4,
-                          borderTop:i<2?'4px solid #00FF66':'none', borderBottom:i>=2?'4px solid #00FF66':'none',
-                          borderLeft:i%2===0?'4px solid #00FF66':'none', borderRight:i%2===1?'4px solid #00FF66':'none',
-                          ...pos }}/>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* Loading spinner */}
-                {camStatus==='requesting'&&(
-                  <div style={{ position:'absolute', inset:0, display:'flex', flexDirection:'column' as const, alignItems:'center', justifyContent:'center', gap:12 }}>
-                    <div style={{ width:44, height:44, border:'4px solid rgba(0,229,204,0.2)', borderTopColor:'#00e5cc', borderRadius:'50%', animation:'spin 0.8s linear infinite' }}/>
-                    <p style={{ color:'rgba(255,255,255,0.5)', fontSize:13 }}>Starting camera…</p>
-                  </div>
-                )}
-
-                {/* Error */}
-                {camStatus==='error'&&(
-                  <div style={{ position:'absolute', inset:0, display:'flex', flexDirection:'column' as const, alignItems:'center', justifyContent:'center', padding:24, textAlign:'center' as const }}>
-                    <p style={{ fontSize:36, marginBottom:12 }}>📷</p>
-                    <p style={{ color:'#FF9500', fontSize:13, fontWeight:600, marginBottom:16, lineHeight:1.6 }}>{camErr}</p>
-                    <button onClick={startCamera} style={{ background:'#00e5cc', color:'#000', border:'none', borderRadius:10, padding:'10px 24px', cursor:'pointer', fontSize:13, fontWeight:700, fontFamily:"'Plus Jakarta Sans',sans-serif" }}>
-                      🔄 Try Again
-                    </button>
-                  </div>
-                )}
-
-                {camStatus==='active'&&(
-                  <p style={{ position:'absolute', bottom:16, left:0, right:0, textAlign:'center' as const, color:'rgba(255,255,255,0.7)', fontSize:13 }}>
-                    🔍 Scanning for QR code…
-                  </p>
-                )}
-              </div>
-
-              {/* Tips */}
-              {camStatus==='active'&&(
-                <div style={{ background:T.light, borderRadius:12, padding:'12px 14px', marginBottom:12 }}>
-                  {['Hold camera steady — 10-15cm from QR','Make sure QR code is well lit','Works with UPI, Paytm, PhonePe, INRT QR codes'].map((t,i)=>(
-                    <p key={i} style={{ color:T.muted, fontSize:12, margin:'2px 0' }}>• {t}</p>
-                  ))}
+                <p style={{ fontSize:11, fontWeight:700, color:T.muted, margin:'0 0 8px', letterSpacing:0.5 }}>AMOUNT (₹)</p>
+                <div style={{ display:'flex', alignItems:'center', gap:8, background:T.light, borderRadius:14, padding:'14px 16px', marginBottom:8, border:`1.5px solid ${payAmount?T.navy:T.border}` }}>
+                  <span style={{ color:T.navy, fontSize:22, fontWeight:800 }}>₹</span>
+                  <input type="number" value={payAmount} onChange={e=>setPayAmount(e.target.value)} placeholder="0" autoFocus
+                    style={{ flex:1, background:'none', border:'none', outline:'none', fontFamily:"'Plus Jakarta Sans',sans-serif", fontWeight:800, fontSize:28, color:T.text }}/>
                 </div>
-              )}
-
-              {/* Fallback options */}
-              <div style={{ background:T.light, border:`1px solid ${T.border}`, borderRadius:14, padding:'14px 16px' }}>
-                <p style={{ color:T.muted, fontSize:12, margin:'0 0 8px', fontWeight:600 }}>Or choose an option:</p>
-                <div style={{ display:'flex', gap:8 }}>
-                  <label style={{ flex:1, textAlign:'center' as const, padding:'11px', borderRadius:10, border:`1px solid ${T.border}`, background:T.card, cursor:'pointer', fontSize:13, fontWeight:700, color:T.navy, fontFamily:"'Plus Jakarta Sans',sans-serif" }}>
-                    📁 Upload QR Image
-                    <input type="file" accept="image/*" onChange={handleFileUpload} style={{ display:'none' }}/>
-                  </label>
-                  <button onClick={()=>navigate('/send')} style={{ flex:1, padding:'11px', borderRadius:10, border:'none', background:T.navy, color:'#fff', cursor:'pointer', fontSize:13, fontWeight:700, fontFamily:"'Plus Jakarta Sans',sans-serif" }}>
-                    ✍️ Enter UPI ID
+                <p style={{ color:T.muted, fontSize:12, margin:'0 0 16px' }}>Your balance: ₹{bal.toLocaleString('en-IN')}</p>
+                {payErr && <p style={{ color:T.red, fontSize:12, marginBottom:12 }}>⚠️ {payErr}</p>}
+                <div style={{ display:'flex', gap:10 }}>
+                  <button onClick={()=>{ setScanned(null); startCamera(); }}
+                    style={{ flex:1, padding:'14px', borderRadius:12, border:`1px solid ${T.border}`, background:'transparent', color:T.muted, fontWeight:700, cursor:'pointer', fontFamily:"'Plus Jakarta Sans',sans-serif" }}>
+                    Re-scan
+                  </button>
+                  <button onClick={handlePay} disabled={!payAmount || parseFloat(payAmount)<=0}
+                    style={{ flex:2, padding:'14px', borderRadius:12, border:'none', background:T.navy, color:'#fff', fontWeight:700, fontSize:15, cursor:'pointer', fontFamily:"'Plus Jakarta Sans',sans-serif", opacity:(!payAmount||parseFloat(payAmount)<=0)?0.5:1 }}>
+                    Pay ₹{payAmount||'0'}
                   </button>
                 </div>
               </div>
-            </div>
-          )}
-        </div>
+            ) : (
+              <>
+                {/* Camera box — video always in DOM */}
+                <div style={{ width:'100%', height:300, borderRadius:20, background:'#0D0D1A', position:'relative', overflow:'hidden', marginBottom:16 }}>
+                  <video ref={videoRef} autoPlay playsInline muted
+                    style={{ width:'100%', height:'100%', objectFit:'cover', display:'block',
+                      opacity: camStatus==='active' ? 1 : 0, transition:'opacity 0.3s' }}/>
+                  <canvas ref={canvasRef} style={{ display:'none' }}/>
+
+                  {/* Corner markers */}
+                  {camStatus==='active' && (
+                    <div style={{ position:'absolute', inset:0, display:'flex', alignItems:'center', justifyContent:'center', pointerEvents:'none' }}>
+                      <div style={{ width:180, height:180, position:'relative' }}>
+                        {[
+                          { top:0,    left:0,  borderTop:'3px solid #00FF88', borderLeft:'3px solid #00FF88'   },
+                          { top:0,    right:0, borderTop:'3px solid #00FF88', borderRight:'3px solid #00FF88'  },
+                          { bottom:0, left:0,  borderBottom:'3px solid #00FF88', borderLeft:'3px solid #00FF88'  },
+                          { bottom:0, right:0, borderBottom:'3px solid #00FF88', borderRight:'3px solid #00FF88' },
+                        ].map((s,i)=>(
+                          <div key={i} style={{ position:'absolute', width:30, height:30, borderRadius:4, ...s }}/>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Spinner while requesting */}
+                  {camStatus==='requesting' && (
+                    <div style={{ position:'absolute', inset:0, display:'flex', flexDirection:'column' as const, alignItems:'center', justifyContent:'center', gap:12 }}>
+                      <div style={{ width:44, height:44, border:'4px solid rgba(0,229,204,0.15)', borderTopColor:'#00e5cc', borderRadius:'50%', animation:'spin 0.8s linear infinite' }}/>
+                      <p style={{ color:'rgba(255,255,255,0.5)', fontSize:13, margin:0 }}>Starting camera…</p>
+                    </div>
+                  )}
+
+                  {/* Error */}
+                  {camStatus==='error' && (
+                    <div style={{ position:'absolute', inset:0, display:'flex', flexDirection:'column' as const, alignItems:'center', justifyContent:'center', padding:20, textAlign:'center' as const }}>
+                      <p style={{ fontSize:32, marginBottom:10 }}>📷</p>
+                      <p style={{ color:'#FF9500', fontSize:12, fontWeight:600, lineHeight:1.6, margin:'0 0 14px', whiteSpace:'pre-line' as const }}>{camErr}</p>
+                      <button onClick={startCamera} style={{ background:'#00e5cc', color:'#000', border:'none', borderRadius:10, padding:'10px 20px', cursor:'pointer', fontSize:13, fontWeight:700, fontFamily:"'Plus Jakarta Sans',sans-serif" }}>
+                        🔄 Try Again
+                      </button>
+                    </div>
+                  )}
+
+                  {camStatus==='active' && (
+                    <div style={{ position:'absolute', bottom:0, left:0, right:0, padding:'12px', background:'linear-gradient(transparent,rgba(0,0,0,0.5))', textAlign:'center' as const }}>
+                      <p style={{ color:'rgba(255,255,255,0.8)', fontSize:12, margin:0 }}>🔍 Scanning for QR code…</p>
+                    </div>
+                  )}
+                </div>
+
+                {/* Tips when active */}
+                {camStatus==='active' && (
+                  <div style={{ background:T.light, borderRadius:12, padding:'10px 14px', marginBottom:12 }}>
+                    <p style={{ color:T.muted, fontSize:11, margin:'0 0 4px', fontWeight:700 }}>Tips for best results:</p>
+                    {['Hold phone 15-20cm from QR code','Ensure good lighting, no shadows','Keep camera steady for 1-2 seconds'].map((t,i)=>(
+                      <p key={i} style={{ color:T.muted, fontSize:11, margin:'2px 0' }}>• {t}</p>
+                    ))}
+                  </div>
+                )}
+
+                {/* Fallback */}
+                <div style={{ background:T.light, border:`1px solid ${T.border}`, borderRadius:14, padding:'14px 16px' }}>
+                  <p style={{ color:T.muted, fontSize:12, fontWeight:600, margin:'0 0 10px' }}>Other options:</p>
+                  <div style={{ display:'flex', gap:8 }}>
+                    <label style={{ flex:1, display:'flex', alignItems:'center', justifyContent:'center', padding:'12px', borderRadius:10, border:`1px solid ${T.border}`, background:T.card, cursor:'pointer', fontSize:13, fontWeight:700, color:T.navy, fontFamily:"'Plus Jakarta Sans',sans-serif", gap:6 }}>
+                      📁 Upload QR
+                      <input type="file" accept="image/*" onChange={handleFileUpload} style={{ display:'none' }}/>
+                    </label>
+                    <button onClick={()=>navigate('/send')} style={{ flex:1, padding:'12px', borderRadius:10, border:'none', background:T.navy, color:'#fff', cursor:'pointer', fontSize:13, fontWeight:700, fontFamily:"'Plus Jakarta Sans',sans-serif" }}>
+                      ✍️ Enter UPI ID
+                    </button>
+                  </div>
+                </div>
+              </>
+            )}
+          </>
+        )}
 
         {/* ── MY QR MODE ──────────────────────────────────────── */}
-        {mode==='show'&&(
+        {mode==='show' && (
           <div style={{ textAlign:'center' as const }}>
-            <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:18, padding:24, marginBottom:16, boxShadow:'0 2px 12px rgba(10,37,64,0.06)' }}>
-              <div style={{ width:200, height:200, background:'#fff', borderRadius:10, margin:'0 auto 14px', overflow:'hidden' }}>
+            <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:20, padding:24, marginBottom:16, boxShadow:'0 4px 20px rgba(10,37,64,0.08)' }}>
+              <div style={{ width:200, height:200, background:'#fff', borderRadius:12, margin:'0 auto 16px', overflow:'hidden', padding:8 }}>
                 {upiId ? (
-                  <img src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(`upi://pay?pa=${upiId}&pn=${encodeURIComponent(profile?.name||'INRT User')}&cu=INR`)}`} alt="UPI QR" style={{ width:'100%', height:'100%' }}/>
+                  <img src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(`upi://pay?pa=${upiId}&pn=${encodeURIComponent(profile?.name||'INRT User')}&cu=INR`)}`}
+                    alt="UPI QR" style={{ width:'100%', height:'100%' }}/>
                 ) : (
-                  <div style={{ display:'flex', alignItems:'center', justifyContent:'center', height:'100%', color:'#999' }}>Loading…</div>
+                  <div style={{ display:'flex', alignItems:'center', justifyContent:'center', height:'100%', color:'#999', fontSize:13 }}>Generating…</div>
                 )}
               </div>
-              <p style={{ fontFamily:"'Plus Jakarta Sans',sans-serif", fontWeight:800, fontSize:17, margin:'0 0 2px', color:T.text }}>{profile?.name || 'INRT User'}</p>
-              <p style={{ fontSize:13, color:T.muted, margin:0 }}>{upiId}</p>
+              <p style={{ fontFamily:"'Plus Jakarta Sans',sans-serif", fontWeight:800, fontSize:18, margin:'0 0 4px', color:T.text }}>{profile?.name || 'INRT User'}</p>
+              <p style={{ fontSize:13, color:T.muted, margin:'0 0 16px' }}>{upiId}</p>
+              <div style={{ display:'flex', gap:10 }}>
+                <button style={{ flex:1, padding:'12px', borderRadius:12, border:'none', background:T.accent, color:'#fff', fontWeight:700, fontSize:13, cursor:'pointer', fontFamily:"'Plus Jakarta Sans',sans-serif" }}
+                  onClick={()=>navigator.share ? navigator.share({ title:'Pay me via UPI', text:upiId }) : navigator.clipboard.writeText(upiId).then(()=>alert('Copied!'))}>
+                  📤 Share
+                </button>
+                <button style={{ flex:1, padding:'12px', borderRadius:12, border:`1px solid ${T.border}`, background:'transparent', color:T.text, fontWeight:700, fontSize:13, cursor:'pointer', fontFamily:"'Plus Jakarta Sans',sans-serif" }}
+                  onClick={()=>navigator.clipboard.writeText(upiId).then(()=>alert('UPI ID copied!'))}>
+                  📋 Copy
+                </button>
+              </div>
             </div>
-            {inrtAddress&&(
-              <div onClick={()=>navigate('/crypto')} style={{ background:'rgba(123,47,190,0.05)', border:'1px solid rgba(123,47,190,0.15)', borderRadius:14, padding:'14px 16px', marginBottom:16, cursor:'pointer' }}>
-                <p style={{ color:'#7B2FBE', fontWeight:700, fontSize:12, margin:'0 0 4px' }}>🪙 Receive INRT globally</p>
-                <p style={{ color:T.muted, fontSize:11, margin:0, fontFamily:'monospace' }}>{inrtAddress} →</p>
+            {inrtAddress && (
+              <div onClick={()=>navigate('/crypto')} style={{ background:'rgba(123,47,190,0.06)', border:'1px solid rgba(123,47,190,0.2)', borderRadius:14, padding:'14px 16px', cursor:'pointer', textAlign:'left' as const }}>
+                <p style={{ color:'#7B2FBE', fontWeight:700, fontSize:13, margin:'0 0 4px' }}>🪙 Receive INRT globally</p>
+                <p style={{ color:T.muted, fontSize:11, margin:0, fontFamily:'monospace' }}>{inrtAddress}</p>
               </div>
             )}
-            <div style={{ display:'flex', gap:10 }}>
-              <button style={{ flex:1, padding:'12px', borderRadius:12, border:'none', background:T.accent, color:'#fff', fontWeight:700, fontSize:13, cursor:'pointer', fontFamily:"'Plus Jakarta Sans',sans-serif" }}
-                onClick={()=>navigator.share ? navigator.share({ title:'Pay me via UPI', text:upiId }) : navigator.clipboard.writeText(upiId).then(()=>alert('UPI ID copied!'))}>
-                📤 Share
-              </button>
-              <button style={{ flex:1, padding:'12px', borderRadius:12, border:`1px solid ${T.border}`, background:'transparent', color:T.text, fontWeight:700, fontSize:13, cursor:'pointer', fontFamily:"'Plus Jakarta Sans',sans-serif" }}
-                onClick={()=>navigator.clipboard.writeText(upiId).then(()=>alert('UPI ID copied!'))}>
-                📋 Copy UPI ID
-              </button>
-            </div>
           </div>
         )}
       </div>
