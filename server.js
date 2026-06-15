@@ -581,9 +581,50 @@ app.post('/payout/validate-upi', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+app.post('/payout/send-upi', async (req, res) => {
+  try {
+    const { fromUid, toUpiId, amount, note, name } = req.body;
+    if (!fromUid || !toUpiId || !amount || !db) return res.status(400).json({ error: 'Missing fields' });
+    const sSnap = await db.collection('users').doc(fromUid).get();
+    if (!sSnap.exists) return res.status(404).json({ error: 'Sender not found' });
+    const sender = sSnap.data();
+    if ((sender.balance||0) < amount) return res.status(402).json({ error: 'Insufficient balance' });
+    const today = new Date().toISOString().split('T')[0];
+    const lk    = `dailySent_${today}`;
+    const dl    = sender.kycStatus === 'verified' ? 100000 : 10000;
+    if ((sender[lk]||0) + amount > dl) return res.status(402).json({ error: 'Daily limit reached' });
+    const transferId = genTransferId();
+    await db.collection('users').doc(fromUid).update({ balance: admin.firestore.FieldValue.increment(-amount), [lk]: admin.firestore.FieldValue.increment(amount), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+    const cfResponse = await cfPost('/payout/v1/directTransfer', { amount, transferId, transferMode: 'upi', remarks: note||`INRT from ${sender.name||sender.phone}`, beneDetails: { beneId: `BENE_${toUpiId.replace(/[@.]/g,'_')}`, name: name||'UPI Recipient', vpa: toUpiId } });
+    if (cfResponse.status !== 'SUCCESS') {
+      await db.collection('users').doc(fromUid).update({ balance: admin.firestore.FieldValue.increment(amount), [lk]: admin.firestore.FieldValue.increment(-amount), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+      throw new Error(cfResponse.message || 'Transfer failed');
+    }
+    const pts = Math.floor(amount/10);
+    await db.collection('transactions').add({ uid: fromUid, type: 'debit', amount, note: note||`Sent to ${toUpiId}`, cat: 'transfer', ref: transferId, toUpiId, status: 'success', method: 'cashfree_upi', rewardPoints: pts, createdAt: admin.firestore.FieldValue.serverTimestamp() });
+    await db.collection('users').doc(fromUid).update({ rewardPoints: admin.firestore.FieldValue.increment(pts), totalSent: admin.firestore.FieldValue.increment(amount) });
+    res.json({ success: true, transferId, amount, toUpiId, rewardPoints: pts });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
-
-
+app.post('/payout/send-bank', async (req, res) => {
+  try {
+    const { fromUid, accountNo, ifsc, accountName, amount, note } = req.body;
+    if (!fromUid || !accountNo || !ifsc || !accountName || !amount || !db) return res.status(400).json({ error: 'Missing fields' });
+    const sSnap = await db.collection('users').doc(fromUid).get();
+    if (!sSnap.exists || (sSnap.data().balance||0) < amount) return res.status(402).json({ error: 'Insufficient balance' });
+    const transferId = genTransferId();
+    await db.collection('users').doc(fromUid).update({ balance: admin.firestore.FieldValue.increment(-amount), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+    const cfResponse = await cfPost('/payout/v1/directTransfer', { amount, transferId, transferMode: 'imps', remarks: note||'INRT Bank Transfer', beneDetails: { beneId: `BENE_${accountNo}`, name: accountName, bankAccount: accountNo, ifsc: ifsc.toUpperCase() } });
+    if (cfResponse.status !== 'SUCCESS') {
+      await db.collection('users').doc(fromUid).update({ balance: admin.firestore.FieldValue.increment(amount), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+      throw new Error(cfResponse.message || 'Bank transfer failed');
+    }
+    await db.collection('transactions').add({ uid: fromUid, type: 'debit', amount, note: note||`Bank transfer to ${accountName}`, cat: 'transfer', ref: transferId, accountNo: accountNo.slice(-4).padStart(accountNo.length,'X'), ifsc, accountName, status: 'success', method: 'cashfree_imps', createdAt: admin.firestore.FieldValue.serverTimestamp() });
+    await db.collection('users').doc(fromUid).update({ rewardPoints: admin.firestore.FieldValue.increment(Math.floor(amount/10)), totalSent: admin.firestore.FieldValue.increment(amount) });
+    res.json({ success: true, transferId, amount, accountName });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
 app.get('/payout/status/:transferId', async (req, res) => {
   try {
@@ -610,7 +651,27 @@ app.post('/payout/webhook', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-
+app.post('/payout/withdraw', async (req, res) => {
+  try {
+    const { userId, amount, upiId } = req.body;
+    if (!userId || !amount || !upiId || !db) return res.status(400).json({ error: 'Missing fields' });
+    if (amount < 100) return res.status(400).json({ error: 'Minimum ₹100' });
+    const snap = await db.collection('users').doc(userId).get();
+    if (!snap.exists) return res.status(404).json({ error: 'User not found' });
+    const user = snap.data();
+    if (user.kycStatus !== 'verified') return res.status(403).json({ error: 'Complete KYC to withdraw' });
+    if ((user.balance||0) < amount)    return res.status(402).json({ error: 'Insufficient balance' });
+    const transferId = genTransferId();
+    await db.collection('users').doc(userId).update({ balance: admin.firestore.FieldValue.increment(-amount), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+    const cfResponse = await cfPost('/payout/v1/directTransfer', { amount, transferId, transferMode: 'upi', remarks: 'INRT Wallet Withdrawal', beneDetails: { beneId: `USER_${userId}`, name: user.name||'INRT User', vpa: upiId } });
+    if (cfResponse.status !== 'SUCCESS') {
+      await db.collection('users').doc(userId).update({ balance: admin.firestore.FieldValue.increment(amount), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+      throw new Error(cfResponse.message || 'Withdrawal failed');
+    }
+    await db.collection('transactions').add({ uid: userId, type: 'debit', amount, note: `Withdrawal to ${upiId}`, cat: 'withdrawal', ref: transferId, toUpiId: upiId, status: 'success', method: 'cashfree_upi', createdAt: admin.firestore.FieldValue.serverTimestamp() });
+    res.json({ success: true, transferId, amount });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
 // ══════════════════════════════════════════════════════════════
 //  INSTAMOJO
@@ -816,33 +877,15 @@ app.get('/recharge/status/:orderId', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-/**
- * INRT WALLET — DIDIT AUTO-APPROVE WEBHOOK
- * Paste into server.js BEFORE app.listen(...)
- *
- * When Didit verifies a user:
- *   1. Didit calls POST /kyc/didit-webhook
- *   2. This route updates the user's kycStatus to "verified"
- *   3. Adds 500 INRT reward points
- *   4. Unlocks ₹1,00,000 daily limit
- *   5. No manual action needed from you
- *
- * Webhook URL already set in your Didit dashboard:
- *   https://inrt-wallet-production.up.railway.app/kyc/didit-webhook
- *
- * Railway env vars needed:
- *   DIDIT_API_KEY     = lWI96iDUzWf8L50yRZjXmxVFTEK3Vc4FjlKgFxxqRhQ
- *   DIDIT_WORKFLOW_ID = 0c011c7c-981e-4ff1-9895-7f74a763b806
- *   APP_URL           = https://inrtwallet.in
- */
 
-const DIDIT_VERIFY_BASE = 'https://verification.didit.me';
+// ══════════════════════════════════════════════════════════════
+//  KYC — DIDIT AUTO-APPROVE ROUTES
+// ══════════════════════════════════════════════════════════════
+const DIDIT_BASE = 'https://verification.didit.me';
 
-async function diditVerifyGet(endpoint) {
-  const apiKey = process.env.DIDIT_API_KEY;
-  if (!apiKey) throw new Error('DIDIT_API_KEY not set');
-  const r = await fetch(`${DIDIT_VERIFY_BASE}${endpoint}`, {
-    headers: { 'x-api-key': apiKey },
+async function diditGet(endpoint) {
+  const r = await fetch(`${DIDIT_BASE}${endpoint}`, {
+    headers: { 'x-api-key': process.env.DIDIT_API_KEY || '' },
     signal: AbortSignal.timeout(10000),
   });
   const text = await r.text();
@@ -850,1146 +893,272 @@ async function diditVerifyGet(endpoint) {
   catch { return { status: r.status, data: { error: text } }; }
 }
 
-// ══════════════════════════════════════════════════════════════
-//  ROUTE 1 — CREATE DIDIT SESSION (user starts KYC)
-// ══════════════════════════════════════════════════════════════
 app.post('/kyc/didit-session', async (req, res) => {
   try {
     const { userId } = req.body;
-    if (!userId) return res.status(400).json({ error: 'userId required' });
-    if (!db)     return res.status(500).json({ error: 'Database not connected' });
-
-    const userSnap = await db.collection('users').doc(userId).get();
-    if (!userSnap.exists) return res.status(404).json({ error: 'User not found' });
-    if (userSnap.data().kycStatus === 'verified')
-      return res.status(400).json({ error: 'KYC already verified' });
-
+    if (!userId || !db) return res.status(400).json({ error: 'userId required' });
+    const snap = await db.collection('users').doc(userId).get();
+    if (!snap.exists) return res.status(404).json({ error: 'User not found' });
+    if (snap.data().kycStatus === 'verified') return res.status(400).json({ error: 'Already verified' });
     const WORKFLOW = process.env.DIDIT_WORKFLOW_ID;
     const APP_URL  = process.env.APP_URL || 'https://inrtwallet.in';
     const apiKey   = process.env.DIDIT_API_KEY;
-
-    if (!WORKFLOW) return res.status(500).json({ error: 'DIDIT_WORKFLOW_ID not set in Railway' });
-    if (!apiKey)   return res.status(500).json({ error: 'DIDIT_API_KEY not set in Railway' });
-
-    const r = await fetch(`${DIDIT_VERIFY_BASE}/v3/session/`, {
+    if (!WORKFLOW || !apiKey) return res.status(500).json({ error: 'Didit not configured in Railway vars' });
+    const r = await fetch(`${DIDIT_BASE}/v3/session/`, {
       method: 'POST',
       headers: { 'x-api-key': apiKey, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        workflow_id: WORKFLOW,
-        vendor_data: userId,
-        callback:    `${APP_URL}/kyc-complete`,
-      }),
+      body: JSON.stringify({ workflow_id: WORKFLOW, vendor_data: userId, callback: `${APP_URL}/kyc-complete` }),
       signal: AbortSignal.timeout(15000),
     });
-
     const text = await r.text();
-    console.log(`Didit session → ${r.status}: ${text.slice(0, 300)}`);
-    let data;
-    try { data = JSON.parse(text); }
-    catch { return res.status(500).json({ error: `Didit returned non-JSON: ${text.slice(0,200)}` }); }
-
-    if (r.status !== 200 && r.status !== 201)
-      return res.status(500).json({ error: data?.detail || data?.message || `Didit error (${r.status})` });
-
-    const sessionId  = data.session_id || data.id;
+    let data; try { data = JSON.parse(text); } catch { return res.status(500).json({ error: `Didit non-JSON: ${text.slice(0,100)}` }); }
+    if (r.status !== 200 && r.status !== 201) return res.status(500).json({ error: data?.detail || data?.message || `Didit error (${r.status})` });
+    const sessionId = data.session_id || data.id;
     const sessionUrl = data.url || data.session_url;
-
-    if (!sessionId || !sessionUrl)
-      return res.status(500).json({ error: 'Didit did not return session_id or url' });
-
-    // Save session
-    await db.collection('diditSessions').doc(sessionId).set({
-      userId, sessionId, status: 'pending',
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      expiresAt: Date.now() + 30 * 60 * 1000,
-    });
-
-    // Mark user as in_progress
-    await db.collection('users').doc(userId).update({
-      kycStatus: 'in_progress',
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-
-    console.log(`✅ Didit session: ${sessionId} for ${userId}`);
+    if (!sessionId || !sessionUrl) return res.status(500).json({ error: 'Didit did not return session_id or url' });
+    await db.collection('diditSessions').doc(sessionId).set({ userId, sessionId, status: 'pending', createdAt: admin.firestore.FieldValue.serverTimestamp() });
+    await db.collection('users').doc(userId).update({ kycStatus: 'in_progress', updatedAt: admin.firestore.FieldValue.serverTimestamp() });
     res.json({ success: true, sessionId, url: sessionUrl });
-
-  } catch (e) {
-    console.error('/kyc/didit-session:', e);
-    res.status(500).json({ error: e.message });
-  }
+  } catch (e) { console.error('/kyc/didit-session:', e); res.status(500).json({ error: e.message }); }
 });
 
-// ══════════════════════════════════════════════════════════════
-//  ROUTE 2 — DIDIT WEBHOOK (fires automatically after KYC)
-//  This is the key route — auto-approves user with zero clicks
-// ══════════════════════════════════════════════════════════════
 app.post('/kyc/didit-webhook', async (req, res) => {
-  // Always respond 200 immediately so Didit doesn't retry
   res.json({ received: true });
-
   try {
     const body = req.body;
-    console.log('📥 Didit webhook received:', JSON.stringify(body).slice(0, 500));
-
     if (!db) return;
-
-    const sessionId  = body.session_id  || body.id            || '';
-    const status     = body.status      || '';
-    const decision   = body.kyc_decision|| body.decision      || '';
+    const sessionId  = body.session_id || body.id || '';
+    const status     = body.status || '';
+    const decision   = body.kyc_decision || body.decision || '';
     const vendorData = body.vendor_data || '';
-
-    // ── Determine result ──────────────────────────────────────
-    const APPROVED_STATUSES = ['Approved','APPROVED','approved','completed','COMPLETED','verified','VERIFIED'];
-    const REJECTED_STATUSES = ['Declined','DECLINED','declined','rejected','REJECTED','failed','FAILED'];
-
-    const isApproved = APPROVED_STATUSES.includes(status) || APPROVED_STATUSES.includes(decision);
-    const isRejected = REJECTED_STATUSES.includes(status) || REJECTED_STATUSES.includes(decision);
-
-    if (!isApproved && !isRejected) {
-      console.log(`Didit webhook: status="${status}" decision="${decision}" — not final yet, ignoring`);
-      return;
-    }
-
-    // ── Resolve userId ────────────────────────────────────────
+    const APPROVED   = ['Approved','APPROVED','approved','completed','COMPLETED','verified','VERIFIED'];
+    const REJECTED   = ['Declined','DECLINED','declined','rejected','REJECTED','failed','FAILED'];
+    const isApproved = APPROVED.includes(status) || APPROVED.includes(decision);
+    const isRejected = REJECTED.includes(status)  || REJECTED.includes(decision);
+    if (!isApproved && !isRejected) return;
     let userId = vendorData;
     if (!userId && sessionId) {
-      const sessSnap = await db.collection('diditSessions').doc(sessionId).get();
-      if (sessSnap.exists) userId = sessSnap.data().userId;
+      const s = await db.collection('diditSessions').doc(sessionId).get();
+      if (s.exists) userId = s.data().userId;
     }
-
-    if (!userId) {
-      console.warn('Didit webhook: cannot find userId from', { vendorData, sessionId });
-      return;
-    }
-
-    // ── Check not already processed ───────────────────────────
-    const userSnap = await db.collection('users').doc(userId).get();
-    if (!userSnap.exists) { console.warn('Didit webhook: user not found:', userId); return; }
-    if (userSnap.data().kycStatus === 'verified') {
-      console.log(`Didit webhook: ${userId} already verified, skipping`);
-      return;
-    }
-
-    // ── APPROVED ──────────────────────────────────────────────
+    if (!userId) return;
+    const uSnap = await db.collection('users').doc(userId).get();
+    if (!uSnap.exists || uSnap.data().kycStatus === 'verified') return;
     if (isApproved) {
-      const docData  = body.document || body.extracted_data || body.ocr_result || {};
-      const faceData = body.face     || body.face_result    || {};
-      const fullName = docData.full_name || docData.name    || body.full_name || '';
-      const dob      = docData.dob || docData.date_of_birth || '';
-      const docType  = docData.document_type || 'PAN';
-      const kycRef   = `KYC${Date.now()}${Math.random().toString(36).slice(2,5).toUpperCase()}`;
-
-      const batch = db.batch();
-
-      // Update KYC document
-      batch.set(db.collection('kyc').doc(userId), {
-        userId,
-        kycRef,
-        status:         'verified',
-        kycType:        'didit_auto',
-        autoApproved:   true,
-        diditSessionId: sessionId,
-        diditStatus:    status,
-        diditDecision:  decision,
-        fullName,
-        dob,
-        docType,
-        faceMatch:      faceData.result || faceData.match_status || 'verified',
-        submittedAt:    admin.firestore.FieldValue.serverTimestamp(),
-        reviewedAt:     admin.firestore.FieldValue.serverTimestamp(),
-        updatedAt:      admin.firestore.FieldValue.serverTimestamp(),
-      }, { merge: true });
-
-      // Update user — unlock full wallet
-      batch.update(db.collection('users').doc(userId), {
-        kycStatus:     'verified',
-        kycRef,
-        kycVerifiedAt: admin.firestore.FieldValue.serverTimestamp(),
-        rewardPoints:  admin.firestore.FieldValue.increment(500),
-        dailyLimit:    100000,
-        updatedAt:     admin.firestore.FieldValue.serverTimestamp(),
-      });
-
-      // Update session
-      if (sessionId) {
-        batch.update(db.collection('diditSessions').doc(sessionId), {
-          status:      'completed',
-          completedAt: admin.firestore.FieldValue.serverTimestamp(),
-        });
-      }
-
+      const kycRef = `KYC${Date.now()}${Math.random().toString(36).slice(2,5).toUpperCase()}`;
+      const batch  = db.batch();
+      batch.set(db.collection('kyc').doc(userId), { userId, kycRef, status:'verified', kycType:'didit_auto', autoApproved:true, diditSessionId:sessionId, submittedAt:admin.firestore.FieldValue.serverTimestamp(), reviewedAt:admin.firestore.FieldValue.serverTimestamp(), updatedAt:admin.firestore.FieldValue.serverTimestamp() }, { merge:true });
+      batch.update(db.collection('users').doc(userId), { kycStatus:'verified', kycRef, kycVerifiedAt:admin.firestore.FieldValue.serverTimestamp(), rewardPoints:admin.firestore.FieldValue.increment(500), dailyLimit:100000, updatedAt:admin.firestore.FieldValue.serverTimestamp() });
+      batch.set(db.collection('transactions').doc(`KYC_BONUS_${kycRef}`), { uid:userId, type:'credit', amount:500, note:'KYC Verified — Welcome Bonus 🎉', cat:'rewards', ref:`KYC_BONUS_${kycRef}`, status:'success', createdAt:admin.firestore.FieldValue.serverTimestamp() });
       await batch.commit();
-      console.log(`✅ AUTO-APPROVED via Didit: ${userId} | ${kycRef}`);
-
-    // ── REJECTED ──────────────────────────────────────────────
+      console.log(`✅ AUTO-APPROVED: ${userId} | ${kycRef}`);
     } else if (isRejected) {
-      const reason = body.rejection_reason || body.reason || body.comment || 'Identity verification failed';
-
-      await db.collection('users').doc(userId).update({
-        kycStatus:          'rejected',
-        kycRejectionReason: reason,
-        updatedAt:          admin.firestore.FieldValue.serverTimestamp(),
-      });
-
-      await db.collection('kyc').doc(userId).set({
-        userId,
-        status:         'rejected',
-        kycType:        'didit_auto',
-        diditSessionId: sessionId,
-        rejectionReason:reason,
-        updatedAt:      admin.firestore.FieldValue.serverTimestamp(),
-      }, { merge: true });
-
-      console.log(`❌ AUTO-REJECTED via Didit: ${userId} | reason: ${reason}`);
+      const reason = body.rejection_reason || body.reason || 'Verification failed';
+      await db.collection('users').doc(userId).update({ kycStatus:'rejected', kycRejectionReason:reason, updatedAt:admin.firestore.FieldValue.serverTimestamp() });
+      await db.collection('kyc').doc(userId).set({ userId, status:'rejected', kycType:'didit_auto', rejectionReason:reason, updatedAt:admin.firestore.FieldValue.serverTimestamp() }, { merge:true });
+      console.log(`❌ AUTO-REJECTED: ${userId}`);
     }
-
-  } catch (e) {
-    console.error('/kyc/didit-webhook error:', e);
-  }
+  } catch (e) { console.error('/kyc/didit-webhook error:', e); }
 });
 
-// ══════════════════════════════════════════════════════════════
-//  ROUTE 3 — POLL STATUS (frontend polls after user returns)
-//  Also polls Didit directly if webhook hasn't fired yet
-// ══════════════════════════════════════════════════════════════
 app.get('/kyc/didit-status/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
-    if (!db) return res.json({ status: 'unknown' });
-
-    const userSnap  = await db.collection('users').doc(userId).get();
-    if (!userSnap.exists) return res.json({ status: 'not_found' });
-    const kycStatus = userSnap.data().kycStatus || 'not_started';
-
-    // Already done — return immediately
-    if (['verified', 'rejected'].includes(kycStatus))
-      return res.json({ status: kycStatus });
-
-    // Still in_progress — poll Didit directly (backup if webhook missed)
+    if (!db) return res.json({ status:'unknown' });
+    const snap = await db.collection('users').doc(userId).get();
+    if (!snap.exists) return res.json({ status:'not_found' });
+    const kycStatus = snap.data().kycStatus || 'not_started';
+    if (['verified','rejected'].includes(kycStatus)) return res.json({ status:kycStatus });
     if (kycStatus === 'in_progress') {
       try {
-        const sessSnap = await db.collection('diditSessions')
-          .where('userId', '==', userId)
-          .orderBy('createdAt', 'desc')
-          .limit(1).get();
-
+        const sessSnap = await db.collection('diditSessions').where('userId','==',userId).orderBy('createdAt','desc').limit(1).get();
         if (!sessSnap.empty) {
-          const sess      = sessSnap.docs[0].data();
-          const sessionId = sess.sessionId;
-
+          const sessionId = sessSnap.docs[0].data().sessionId;
           if (sessionId) {
-            const { status: httpStatus, data } = await diditVerifyGet(`/v3/session/${sessionId}/`);
-            console.log(`Didit poll ${sessionId}: status=${data?.status} decision=${data?.kyc_decision}`);
-
-            const s = data?.status      || '';
-            const d = data?.kyc_decision || '';
+            const { status: hs, data } = await diditGet(`/v3/session/${sessionId}/`);
+            const s = data?.status || '', d = data?.kyc_decision || '';
             const approved = ['Approved','APPROVED','approved','completed','verified'].includes(s) || ['Approved','APPROVED','approved'].includes(d);
-            const rejected = ['Declined','DECLINED','declined','rejected','failed'].includes(s)    || ['Declined','DECLINED','declined'].includes(d);
-
+            const rejected = ['Declined','DECLINED','declined','rejected','failed'].includes(s) || ['Declined','DECLINED','declined'].includes(d);
             if (approved) {
               const kycRef = `KYC${Date.now()}${Math.random().toString(36).slice(2,5).toUpperCase()}`;
               const batch  = db.batch();
-              batch.set(db.collection('kyc').doc(userId), {
-                userId, kycRef, status: 'verified', kycType: 'didit_auto',
-                autoApproved: true, diditSessionId: sessionId,
-                submittedAt:  admin.firestore.FieldValue.serverTimestamp(),
-                reviewedAt:   admin.firestore.FieldValue.serverTimestamp(),
-                updatedAt:    admin.firestore.FieldValue.serverTimestamp(),
-              }, { merge: true });
-              batch.update(db.collection('users').doc(userId), {
-                kycStatus: 'verified', kycRef,
-                kycVerifiedAt: admin.firestore.FieldValue.serverTimestamp(),
-                rewardPoints:  admin.firestore.FieldValue.increment(500),
-                dailyLimit:    100000,
-                updatedAt:     admin.firestore.FieldValue.serverTimestamp(),
-              });
+              batch.set(db.collection('kyc').doc(userId), { userId, kycRef, status:'verified', kycType:'didit_auto', autoApproved:true, diditSessionId:sessionId, submittedAt:admin.firestore.FieldValue.serverTimestamp(), reviewedAt:admin.firestore.FieldValue.serverTimestamp(), updatedAt:admin.firestore.FieldValue.serverTimestamp() }, { merge:true });
+              batch.update(db.collection('users').doc(userId), { kycStatus:'verified', kycRef, kycVerifiedAt:admin.firestore.FieldValue.serverTimestamp(), rewardPoints:admin.firestore.FieldValue.increment(500), dailyLimit:100000, updatedAt:admin.firestore.FieldValue.serverTimestamp() });
               await batch.commit();
-              console.log(`✅ Didit poll approved: ${userId} | ${kycRef}`);
-              return res.json({ status: 'verified', kycRef });
+              return res.json({ status:'verified', kycRef });
             }
-
             if (rejected) {
-              await db.collection('users').doc(userId).update({
-                kycStatus: 'rejected',
-                kycRejectionReason: data?.rejection_reason || 'Verification failed',
-                updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-              });
-              return res.json({ status: 'rejected' });
+              await db.collection('users').doc(userId).update({ kycStatus:'rejected', updatedAt:admin.firestore.FieldValue.serverTimestamp() });
+              return res.json({ status:'rejected' });
             }
           }
         }
-      } catch (e) {
-        console.warn('Didit poll (non-critical):', e.message);
-      }
+      } catch (e) { console.warn('Didit poll:', e.message); }
     }
-
-    res.json({ status: kycStatus });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+    res.json({ status:kycStatus });
+  } catch (e) { res.status(500).json({ error:e.message }); }
 });
 
-// ══════════════════════════════════════════════════════════════
-//  ROUTE 4 — KYC STATUS (generic — used by frontend)
-// ══════════════════════════════════════════════════════════════
-app.get('/kyc/status/:userId', async (req, res) => {
-  try {
-    if (!db) return res.json({ status: 'unknown' });
-    const snap = await db.collection('kyc').doc(req.params.userId).get();
-    if (!snap.exists) return res.json({ status: 'not_started' });
-    const d = snap.data();
-    res.json({ status: d.status, kycRef: d.kycRef || null, kycType: d.kycType || 'manual', rejectionReason: d.rejectionReason || null });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// Reset KYC status if user abandoned Didit page
 app.post('/kyc/reset-status', async (req, res) => {
   try {
     const { userId } = req.body;
-    if (!userId || !db) return res.status(400).json({ error: 'userId required' });
-
-    // Only reset if in_progress — never reset verified
+    if (!userId || !db) return res.status(400).json({ error:'userId required' });
     const snap = await db.collection('users').doc(userId).get();
-    if (!snap.exists) return res.status(404).json({ error: 'User not found' });
-    if (snap.data().kycStatus === 'verified')
-      return res.json({ success: true, message: 'Already verified, no reset needed' });
-
-    await db.collection('users').doc(userId).update({
-      kycStatus: 'not_started',
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-
-    await db.collection('kyc').doc(userId).set({
-      status:    'not_started',
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    }, { merge: true });
-
-    console.log(`🔄 KYC status reset: ${userId}`);
-    res.json({ success: true });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+    if (!snap.exists) return res.status(404).json({ error:'User not found' });
+    if (snap.data().kycStatus === 'verified') return res.json({ success:true, message:'Already verified' });
+    await db.collection('users').doc(userId).update({ kycStatus:'not_started', updatedAt:admin.firestore.FieldValue.serverTimestamp() });
+    await db.collection('kyc').doc(userId).set({ status:'not_started', updatedAt:admin.firestore.FieldValue.serverTimestamp() }, { merge:true });
+    res.json({ success:true });
+  } catch (e) { res.status(500).json({ error:e.message }); }
 });
 
-/**
- * INRT WALLET — INRT TRANSFER ROUTES
- * Paste into server.js BEFORE app.listen(...)
- *
- * Features:
- *  - Every user gets a global INRT wallet address (INRT-XXXXXXXXXXXX)
- *  - Convert ₹ (balance) <-> INRT (rewardPoints) — 1:1 always
- *  - Send INRT to any INRT wallet address worldwide
- *  - Tracks processing time — shows exactly how long delivery took
- *  - Full INRT transaction history
- */
-
-// ── Helper: generate INRT wallet address ─────────────────────
+// ══════════════════════════════════════════════════════════════
+//  INRT GLOBAL TRANSFER ROUTES
+// ══════════════════════════════════════════════════════════════
 function genInrtAddress() {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no confusing chars
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   let id = '';
-  for (let i = 0; i < 12; i++) id += chars[Math.floor(Math.random() * chars.length)];
+  for (let i=0; i<12; i++) id += chars[Math.floor(Math.random()*chars.length)];
   return `INRT-${id.slice(0,4)}-${id.slice(4,8)}-${id.slice(8,12)}`;
 }
 
-// ══════════════════════════════════════════════════════════════
-//  ROUTE 1 — GET / CREATE INRT WALLET ADDRESS
-//  Every user has a unique global INRT address for receiving
-// ══════════════════════════════════════════════════════════════
 app.get('/inrt/wallet/:userId', async (req, res) => {
   try {
-    const { userId } = req.params;
-    if (!db) return res.status(500).json({ error: 'Database not connected' });
-
-    const userSnap = await db.collection('users').doc(userId).get();
-    if (!userSnap.exists) return res.status(404).json({ error: 'User not found' });
-    const user = userSnap.data();
-
+    if (!db) return res.status(500).json({ error:'DB not connected' });
+    const snap = await db.collection('users').doc(req.params.userId).get();
+    if (!snap.exists) return res.status(404).json({ error:'User not found' });
+    const user = snap.data();
     let inrtAddress = user.inrtAddress;
-
-    // Generate one if it doesn't exist yet
     if (!inrtAddress) {
       let unique = false;
       while (!unique) {
         inrtAddress = genInrtAddress();
-        const dupCheck = await db.collection('inrtAddressIndex').doc(inrtAddress).get();
-        if (!dupCheck.exists) unique = true;
+        const dup = await db.collection('inrtAddressIndex').doc(inrtAddress).get();
+        if (!dup.exists) unique = true;
       }
-      await db.collection('users').doc(userId).update({ inrtAddress });
-      await db.collection('inrtAddressIndex').doc(inrtAddress).set({ userId, createdAt: admin.firestore.FieldValue.serverTimestamp() });
+      await db.collection('users').doc(req.params.userId).update({ inrtAddress });
+      await db.collection('inrtAddressIndex').doc(inrtAddress).set({ userId:req.params.userId, createdAt:admin.firestore.FieldValue.serverTimestamp() });
     }
-
-    res.json({
-      success:     true,
-      inrtAddress,
-      inrtBalance: user.rewardPoints || 0,
-      inrBalance:  user.balance || 0,
-      name:        user.name || 'INRT User',
-    });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+    res.json({ success:true, inrtAddress, inrtBalance:user.rewardPoints||0, inrBalance:user.balance||0, name:user.name||'INRT User' });
+  } catch (e) { res.status(500).json({ error:e.message }); }
 });
 
-// ══════════════════════════════════════════════════════════════
-//  ROUTE 2 — LOOKUP INRT ADDRESS (before sending, show recipient name)
-// ══════════════════════════════════════════════════════════════
 app.get('/inrt/lookup/:address', async (req, res) => {
   try {
+    if (!db) return res.status(500).json({ error:'DB not connected' });
     const address = req.params.address.toUpperCase().trim();
-    if (!db) return res.status(500).json({ error: 'Database not connected' });
-
     const idxSnap = await db.collection('inrtAddressIndex').doc(address).get();
-    if (!idxSnap.exists) return res.status(404).json({ error: 'INRT address not found' });
-
-    const userSnap = await db.collection('users').doc(idxSnap.data().userId).get();
-    if (!userSnap.exists) return res.status(404).json({ error: 'Wallet not found' });
-
-    const user = userSnap.data();
-    res.json({
-      success: true,
-      inrtAddress: address,
-      name: user.name || 'INRT User',
-      verified: user.kycStatus === 'verified',
-    });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+    if (!idxSnap.exists) return res.status(404).json({ error:'INRT address not found. Check and try again.' });
+    const uSnap = await db.collection('users').doc(idxSnap.data().userId).get();
+    if (!uSnap.exists) return res.status(404).json({ error:'Wallet not found' });
+    const u = uSnap.data();
+    res.json({ success:true, inrtAddress:address, name:u.name||'INRT User', verified:u.kycStatus==='verified' });
+  } catch (e) { res.status(500).json({ error:e.message }); }
 });
 
-// ══════════════════════════════════════════════════════════════
-//  ROUTE 3 — CONVERT ₹ <-> INRT (always 1:1, instant)
-// ══════════════════════════════════════════════════════════════
 app.post('/inrt/convert', async (req, res) => {
   try {
-    const { userId, direction, amount } = req.body; // direction: 'inr_to_inrt' | 'inrt_to_inr'
-    if (!userId || !direction || !amount || amount <= 0)
-      return res.status(400).json({ error: 'userId, direction, amount required' });
-    if (!db) return res.status(500).json({ error: 'Database not connected' });
-
-    const userSnap = await db.collection('users').doc(userId).get();
-    if (!userSnap.exists) return res.status(404).json({ error: 'User not found' });
-    const user = userSnap.data();
-
+    const { userId, direction, amount } = req.body;
+    if (!userId || !direction || !amount || amount<=0 || !db) return res.status(400).json({ error:'Missing fields' });
+    const snap = await db.collection('users').doc(userId).get();
+    if (!snap.exists) return res.status(404).json({ error:'User not found' });
+    const user = snap.data();
     const amt = parseFloat(amount);
     const ref = genTxId('CNV');
-
     if (direction === 'inr_to_inrt') {
-      if ((user.balance || 0) < amt) return res.status(402).json({ error: 'Insufficient ₹ balance' });
-      await db.collection('users').doc(userId).update({
-        balance:      admin.firestore.FieldValue.increment(-amt),
-        rewardPoints: admin.firestore.FieldValue.increment(amt),
-        updatedAt:    admin.firestore.FieldValue.serverTimestamp(),
-      });
-      await db.collection('transactions').add({
-        uid: userId, type: 'convert', amount: amt, note: `Converted ₹${amt} → ${amt} INRT`,
-        cat: 'crypto', ref, status: 'success', direction,
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
+      if ((user.balance||0) < amt) return res.status(402).json({ error:'Insufficient ₹ balance' });
+      await db.collection('users').doc(userId).update({ balance:admin.firestore.FieldValue.increment(-amt), rewardPoints:admin.firestore.FieldValue.increment(amt), updatedAt:admin.firestore.FieldValue.serverTimestamp() });
+      await db.collection('transactions').add({ uid:userId, type:'convert', amount:amt, note:`Converted ₹${amt} → ${amt} INRT`, cat:'crypto', ref, status:'success', direction, createdAt:admin.firestore.FieldValue.serverTimestamp() });
     } else if (direction === 'inrt_to_inr') {
-      if ((user.rewardPoints || 0) < amt) return res.status(402).json({ error: 'Insufficient INRT balance' });
-      await db.collection('users').doc(userId).update({
-        balance:      admin.firestore.FieldValue.increment(amt),
-        rewardPoints: admin.firestore.FieldValue.increment(-amt),
-        updatedAt:    admin.firestore.FieldValue.serverTimestamp(),
-      });
-      await db.collection('transactions').add({
-        uid: userId, type: 'convert', amount: amt, note: `Converted ${amt} INRT → ₹${amt}`,
-        cat: 'crypto', ref, status: 'success', direction,
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
-    } else {
-      return res.status(400).json({ error: 'Invalid direction' });
-    }
-
-    res.json({ success: true, ref, amount: amt, direction });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+      if ((user.rewardPoints||0) < amt) return res.status(402).json({ error:'Insufficient INRT balance' });
+      await db.collection('users').doc(userId).update({ balance:admin.firestore.FieldValue.increment(amt), rewardPoints:admin.firestore.FieldValue.increment(-amt), updatedAt:admin.firestore.FieldValue.serverTimestamp() });
+      await db.collection('transactions').add({ uid:userId, type:'convert', amount:amt, note:`Converted ${amt} INRT → ₹${amt}`, cat:'crypto', ref, status:'success', direction, createdAt:admin.firestore.FieldValue.serverTimestamp() });
+    } else return res.status(400).json({ error:'Invalid direction' });
+    res.json({ success:true, ref, amount:amt, direction });
+  } catch (e) { res.status(500).json({ error:e.message }); }
 });
 
-// ══════════════════════════════════════════════════════════════
-//  ROUTE 4 — SEND INRT TO ANY WALLET ADDRESS (global)
-//  Returns immediately with txRef; processing happens async
-//  so we can show real elapsed delivery time
-// ══════════════════════════════════════════════════════════════
 app.post('/inrt/send', async (req, res) => {
   try {
     const { fromUserId, toAddress, amount, note } = req.body;
-    if (!fromUserId || !toAddress || !amount || amount <= 0)
-      return res.status(400).json({ error: 'fromUserId, toAddress, amount required' });
-    if (!db) return res.status(500).json({ error: 'Database not connected' });
-
+    if (!fromUserId || !toAddress || !amount || amount<=0 || !db) return res.status(400).json({ error:'Missing fields' });
     const cleanAddress = toAddress.toUpperCase().trim();
     const amt = parseFloat(amount);
-
-    // Resolve recipient
     const idxSnap = await db.collection('inrtAddressIndex').doc(cleanAddress).get();
-    if (!idxSnap.exists) return res.status(404).json({ error: 'INRT address not found. Check and try again.' });
+    if (!idxSnap.exists) return res.status(404).json({ error:'INRT address not found' });
     const toUserId = idxSnap.data().userId;
-    if (toUserId === fromUserId) return res.status(400).json({ error: 'Cannot send to your own wallet' });
-
-    // Check sender balance
+    if (toUserId === fromUserId) return res.status(400).json({ error:'Cannot send to your own wallet' });
     const fromSnap = await db.collection('users').doc(fromUserId).get();
-    if (!fromSnap.exists) return res.status(404).json({ error: 'Sender not found' });
+    if (!fromSnap.exists) return res.status(404).json({ error:'Sender not found' });
     const fromUser = fromSnap.data();
-    if ((fromUser.rewardPoints || 0) < amt) return res.status(402).json({ error: 'Insufficient INRT balance' });
-
+    if ((fromUser.rewardPoints||0) < amt) return res.status(402).json({ error:'Insufficient INRT balance' });
     const toSnap = await db.collection('users').doc(toUserId).get();
     const toUser = toSnap.data();
-
-    const ref       = `INRTX${Date.now()}${Math.random().toString(36).slice(2,6).toUpperCase()}`;
+    const ref = `INRTX${Date.now()}${Math.random().toString(36).slice(2,6).toUpperCase()}`;
     const startedAt = Date.now();
-
-    // Deduct from sender immediately
-    await db.collection('users').doc(fromUserId).update({
-      rewardPoints: admin.firestore.FieldValue.increment(-amt),
-      updatedAt:    admin.firestore.FieldValue.serverTimestamp(),
-    });
-
-    // Create pending transaction record (sender side)
-    await db.collection('inrtTransfers').doc(ref).set({
-      ref,
-      fromUserId, toUserId,
-      fromAddress: fromUser.inrtAddress || '',
-      toAddress:   cleanAddress,
-      amount: amt,
-      note: note || '',
-      status: 'processing', // processing -> completed
-      startedAt,
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-
-    // Sender transaction record
-    await db.collection('transactions').add({
-      uid: fromUserId, type: 'debit', amount: amt,
-      note: `INRT sent to ${toUser.name || cleanAddress}`,
-      cat: 'crypto', ref, status: 'processing', toAddress: cleanAddress,
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-
-    // Simulate global network confirmation delay (1.5–4 seconds, realistic for blockchain)
-    const processingTime = 1500 + Math.floor(Math.random() * 2500);
-
+    await db.collection('users').doc(fromUserId).update({ rewardPoints:admin.firestore.FieldValue.increment(-amt), updatedAt:admin.firestore.FieldValue.serverTimestamp() });
+    await db.collection('inrtTransfers').doc(ref).set({ ref, fromUserId, toUserId, fromAddress:fromUser.inrtAddress||'', toAddress:cleanAddress, amount:amt, note:note||'', status:'processing', startedAt, createdAt:admin.firestore.FieldValue.serverTimestamp() });
+    await db.collection('transactions').add({ uid:fromUserId, type:'debit', amount:amt, note:`INRT sent to ${toUser.name||cleanAddress}`, cat:'crypto', ref, status:'processing', toAddress:cleanAddress, createdAt:admin.firestore.FieldValue.serverTimestamp() });
+    const processingTime = 1500 + Math.floor(Math.random()*2500);
     setTimeout(async () => {
       try {
         const completedAt = Date.now();
         const durationMs  = completedAt - startedAt;
-
         const batch = db.batch();
-
-        // Credit recipient
-        batch.update(db.collection('users').doc(toUserId), {
-          rewardPoints:  admin.firestore.FieldValue.increment(amt),
-          totalReceived: admin.firestore.FieldValue.increment(amt),
-          updatedAt:     admin.firestore.FieldValue.serverTimestamp(),
-        });
-
-        // Recipient transaction record
-        batch.set(db.collection('transactions').doc(ref + '_RX'), {
-          uid: toUserId, type: 'credit', amount: amt,
-          note: `INRT received from ${fromUser.name || 'INRT User'}`,
-          cat: 'crypto', ref: ref + '_RX', status: 'success', fromAddress: fromUser.inrtAddress || '',
-          createdAt: admin.firestore.FieldValue.serverTimestamp(),
-        });
-
-        // Update transfer record
-        batch.update(db.collection('inrtTransfers').doc(ref), {
-          status: 'completed',
-          completedAt,
-          durationMs,
-        });
-
+        batch.update(db.collection('users').doc(toUserId), { rewardPoints:admin.firestore.FieldValue.increment(amt), totalReceived:admin.firestore.FieldValue.increment(amt), updatedAt:admin.firestore.FieldValue.serverTimestamp() });
+        batch.set(db.collection('transactions').doc(ref+'_RX'), { uid:toUserId, type:'credit', amount:amt, note:`INRT received from ${fromUser.name||'INRT User'}`, cat:'crypto', ref:ref+'_RX', status:'success', fromAddress:fromUser.inrtAddress||'', createdAt:admin.firestore.FieldValue.serverTimestamp() });
+        batch.update(db.collection('inrtTransfers').doc(ref), { status:'completed', completedAt, durationMs });
         await batch.commit();
-
-        // Update sender transaction to success
-        const senderTxSnap = await db.collection('transactions').where('ref','==',ref).where('uid','==',fromUserId).limit(1).get();
-        if (!senderTxSnap.empty) {
-          await senderTxSnap.docs[0].ref.update({ status: 'success', durationMs });
-        }
-
-        console.log(`✅ INRT transfer completed: ${ref} | ${amt} INRT | ${durationMs}ms`);
-      } catch (e) {
-        console.error('INRT transfer completion error:', e);
-        await db.collection('inrtTransfers').doc(ref).update({ status: 'failed', error: e.message });
-      }
+        const sSnap = await db.collection('transactions').where('ref','==',ref).where('uid','==',fromUserId).limit(1).get();
+        if (!sSnap.empty) await sSnap.docs[0].ref.update({ status:'success', durationMs });
+        console.log(`✅ INRT transfer: ${ref} | ${amt} INRT | ${durationMs}ms`);
+      } catch (e) { console.error('INRT transfer complete error:', e); }
     }, processingTime);
-
-    res.json({
-      success: true,
-      ref,
-      amount: amt,
-      toAddress: cleanAddress,
-      toName: toUser.name || 'INRT User',
-      status: 'processing',
-      estimatedSeconds: Math.ceil(processingTime / 1000),
-    });
-
-  } catch (e) {
-    console.error('/inrt/send:', e);
-    res.status(500).json({ error: e.message });
-  }
+    res.json({ success:true, ref, amount:amt, toAddress:cleanAddress, toName:toUser.name||'INRT User', status:'processing', estimatedSeconds:Math.ceil(processingTime/1000) });
+  } catch (e) { res.status(500).json({ error:e.message }); }
 });
 
-// ══════════════════════════════════════════════════════════════
-//  ROUTE 5 — CHECK TRANSFER STATUS (frontend polls this)
-//  Returns status + elapsed/total time for live timer display
-// ══════════════════════════════════════════════════════════════
 app.get('/inrt/transfer/:ref', async (req, res) => {
   try {
-    if (!db) return res.json({ status: 'unknown' });
+    if (!db) return res.json({ status:'unknown' });
     const snap = await db.collection('inrtTransfers').doc(req.params.ref).get();
-    if (!snap.exists) return res.status(404).json({ error: 'Transfer not found' });
-
+    if (!snap.exists) return res.status(404).json({ error:'Transfer not found' });
     const d = snap.data();
-    const now = Date.now();
-
-    res.json({
-      ref:          d.ref,
-      status:       d.status, // processing | completed | failed
-      amount:       d.amount,
-      fromAddress:  d.fromAddress,
-      toAddress:    d.toAddress,
-      note:         d.note,
-      startedAt:    d.startedAt,
-      completedAt:  d.completedAt || null,
-      durationMs:   d.durationMs || (d.status === 'processing' ? now - d.startedAt : null),
-      elapsedMs:    now - d.startedAt,
-    });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+    res.json({ ref:d.ref, status:d.status, amount:d.amount, fromAddress:d.fromAddress, toAddress:d.toAddress, note:d.note, startedAt:d.startedAt, completedAt:d.completedAt||null, durationMs:d.durationMs||(d.status==='processing'?Date.now()-d.startedAt:null), elapsedMs:Date.now()-d.startedAt });
+  } catch (e) { res.status(500).json({ error:e.message }); }
 });
 
-// ══════════════════════════════════════════════════════════════
-//  ROUTE 6 — INRT TRANSACTION HISTORY (convert + sends + receives)
-// ══════════════════════════════════════════════════════════════
 app.get('/inrt/history/:userId', async (req, res) => {
   try {
-    if (!db) return res.json({ transactions: [] });
-    const snap = await db.collection('transactions')
-      .where('uid','==',req.params.userId)
-      .where('cat','==','crypto')
-      .orderBy('createdAt','desc')
-      .limit(50)
-      .get();
-
-    const transactions = snap.docs.map(d => ({
-      id: d.id,
-      ...d.data(),
-      createdAt: d.data().createdAt?.toDate?.()?.toISOString() || null,
-    }));
-
-    res.json({ transactions });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-/**
- * INRT WALLET — PAYOUT FIX ROUTES
- * Paste into server.js BEFORE app.listen(...) — REPLACE existing
- * /payout/send-upi, /payout/send-bank, /payout/withdraw routes
- *
- * ROOT CAUSE OF BUG:
- * Old code: deduct balance → cfPost() → if cfResponse fails → refund
- * If cfPost() itself THROWS (auth error, network error, bad credentials)
- * execution jumps to outer catch block — refund code is SKIPPED
- * Result: money deducted, no transfer, no refund, no transaction record
- *
- * FIX: Wrap the entire Cashfree call in its own try-catch so that
- * BOTH thrown errors AND non-SUCCESS responses always trigger:
- *  1. Immediate balance refund
- *  2. Failed debit transaction record (shows in history)
- *  3. Refund credit transaction record (shows in history)
- */
-
-// ══════════════════════════════════════════════════════════════
-//  ROUTE 1 — SEND VIA UPI ID (FIXED)
-// ══════════════════════════════════════════════════════════════
-app.post('/payout/send-upi', async (req, res) => {
-  const { fromUid, toUpiId, amount, note, name } = req.body;
-  if (!fromUid || !toUpiId || !amount || !db)
-    return res.status(400).json({ error: 'Missing fields' });
-
-  // ── Step 1: Validate sender ───────────────────────────────
-  let sender;
-  try {
-    const sSnap = await db.collection('users').doc(fromUid).get();
-    if (!sSnap.exists) return res.status(404).json({ error: 'Sender not found' });
-    sender = sSnap.data();
-  } catch (e) {
-    return res.status(500).json({ error: 'Failed to load account' });
-  }
-
-  if ((sender.balance || 0) < amount)
-    return res.status(402).json({ error: 'Insufficient balance' });
-
-  const today = new Date().toISOString().split('T')[0];
-  const lk    = `dailySent_${today}`;
-  const dl    = sender.kycStatus === 'verified' ? 100000 : 10000;
-  if ((sender[lk] || 0) + amount > dl)
-    return res.status(402).json({ error: `Daily limit of ₹${dl.toLocaleString('en-IN')} reached` });
-
-  const transferId = genTransferId();
-  const txRef      = genTxId('TXN');
-
-  // ── Step 2: Deduct balance ────────────────────────────────
-  try {
-    await db.collection('users').doc(fromUid).update({
-      balance:   admin.firestore.FieldValue.increment(-amount),
-      [lk]:      admin.firestore.FieldValue.increment(amount),
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-  } catch (e) {
-    return res.status(500).json({ error: 'Failed to update balance. No money was deducted.' });
-  }
-
-  // ── Step 3: Call Cashfree (wrapped in try-catch) ──────────
-  let cfSuccess = false;
-  let cfError   = '';
-
-  try {
-    const cfResponse = await cfPost('/payout/v1/directTransfer', {
-      amount,
-      transferId,
-      transferMode: 'upi',
-      remarks: note || `INRT from ${sender.name || sender.phone}`,
-      beneDetails: {
-        beneId: `BENE_${toUpiId.replace(/[@.]/g, '_')}`,
-        name:   name || 'UPI Recipient',
-        vpa:    toUpiId,
-      },
-    });
-
-    if (cfResponse.status === 'SUCCESS') {
-      cfSuccess = true;
-    } else {
-      cfError = cfResponse.message || cfResponse.subCode || 'Transfer failed';
-    }
-  } catch (e: any) {
-    // cfPost() threw — Cashfree unreachable or auth failed
-    cfError = e.message || 'Cashfree service unavailable';
-    console.error('/payout/send-upi cfPost threw:', e.message);
-  }
-
-  // ── Step 4a: SUCCESS ─────────────────────────────────────
-  if (cfSuccess) {
-    const pts = Math.floor(amount / 10);
-    try {
-      await db.collection('transactions').add({
-        uid: fromUid, type: 'debit', amount,
-        note: note || `Sent to ${toUpiId}`,
-        cat: 'transfer', ref: transferId, toUpiId,
-        status: 'success', method: 'cashfree_upi',
-        rewardPoints: pts,
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
-      await db.collection('users').doc(fromUid).update({
-        rewardPoints: admin.firestore.FieldValue.increment(pts),
-        totalSent:    admin.firestore.FieldValue.increment(amount),
-        updatedAt:    admin.firestore.FieldValue.serverTimestamp(),
-      });
-    } catch (e) { console.warn('Post-success logging error:', e); }
-    return res.json({ success: true, transferId, amount, toUpiId });
-  }
-
-  // ── Step 4b: FAILURE — refund + log ──────────────────────
-  try {
-    // Refund balance
-    await db.collection('users').doc(fromUid).update({
-      balance:   admin.firestore.FieldValue.increment(amount),
-      [lk]:      admin.firestore.FieldValue.increment(-amount),
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-
-    const batch = db.batch();
-
-    // Failed debit record (shows in history as failed)
-    batch.set(db.collection('transactions').doc(txRef), {
-      uid: fromUid, type: 'debit', amount,
-      note: `Failed: Send to ${toUpiId}`,
-      cat: 'transfer', ref: txRef, toUpiId,
-      status: 'failed', method: 'cashfree_upi',
-      failReason: cfError,
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-
-    // Refund credit record (shows in history as refund)
-    batch.set(db.collection('transactions').doc(`${txRef}_REFUND`), {
-      uid: fromUid, type: 'credit', amount,
-      note: `Refund: UPI transfer to ${toUpiId} failed`,
-      cat: 'refund', ref: `${txRef}_REFUND`,
-      status: 'success', originalRef: txRef,
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-
-    await batch.commit();
-    console.log(`💸 Refunded ₹${amount} to ${fromUid} — UPI failed: ${cfError}`);
-  } catch (refundErr) {
-    console.error('CRITICAL: Refund failed for', fromUid, amount, refundErr);
-    // Still return error to user but log the critical failure
-  }
-
-  return res.status(402).json({
-    error: `Transfer failed: ${cfError}. Your ₹${amount} has been refunded to your wallet.`,
-    refunded: true,
-  });
+    if (!db) return res.json({ transactions:[] });
+    const snap = await db.collection('transactions').where('uid','==',req.params.userId).where('cat','==','crypto').orderBy('createdAt','desc').limit(50).get();
+    res.json({ transactions:snap.docs.map(d => ({ id:d.id, ...d.data(), createdAt:d.data().createdAt?.toDate?.()?.toISOString()||null })) });
+  } catch (e) { res.status(500).json({ error:e.message }); }
 });
 
 // ══════════════════════════════════════════════════════════════
-//  ROUTE 2 — SEND VIA BANK ACCOUNT (FIXED)
+//  CHECKOUT — BUY INRT VIA RAZORPAY
 // ══════════════════════════════════════════════════════════════
-app.post('/payout/send-bank', async (req, res) => {
-  const { fromUid, accountNo, ifsc, accountName, amount, note } = req.body;
-  if (!fromUid || !accountNo || !ifsc || !accountName || !amount || !db)
-    return res.status(400).json({ error: 'Missing fields' });
-
-  let sender;
-  try {
-    const sSnap = await db.collection('users').doc(fromUid).get();
-    if (!sSnap.exists) return res.status(404).json({ error: 'Sender not found' });
-    sender = sSnap.data();
-  } catch (e) {
-    return res.status(500).json({ error: 'Failed to load account' });
-  }
-
-  if ((sender.balance || 0) < amount)
-    return res.status(402).json({ error: 'Insufficient balance' });
-
-  const transferId = genTransferId();
-  const txRef      = genTxId('TXN');
-
-  // Deduct balance
-  try {
-    await db.collection('users').doc(fromUid).update({
-      balance:   admin.firestore.FieldValue.increment(-amount),
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-  } catch (e) {
-    return res.status(500).json({ error: 'Failed to update balance. No money was deducted.' });
-  }
-
-  // Call Cashfree
-  let cfSuccess = false;
-  let cfError   = '';
-  try {
-    const cfResponse = await cfPost('/payout/v1/directTransfer', {
-      amount, transferId, transferMode: 'imps',
-      remarks: note || 'INRT Bank Transfer',
-      beneDetails: {
-        beneId:      `BENE_${accountNo}`,
-        name:        accountName,
-        bankAccount: accountNo,
-        ifsc:        ifsc.toUpperCase(),
-      },
-    });
-    if (cfResponse.status === 'SUCCESS') {
-      cfSuccess = true;
-    } else {
-      cfError = cfResponse.message || 'Bank transfer failed';
-    }
-  } catch (e: any) {
-    cfError = e.message || 'Cashfree service unavailable';
-    console.error('/payout/send-bank cfPost threw:', e.message);
-  }
-
-  if (cfSuccess) {
-    const pts = Math.floor(amount / 10);
-    await db.collection('transactions').add({
-      uid: fromUid, type: 'debit', amount,
-      note: note || `Bank transfer to ${accountName}`,
-      cat: 'transfer', ref: transferId,
-      accountNo: accountNo.slice(-4).padStart(accountNo.length, 'X'),
-      ifsc, accountName, status: 'success', method: 'cashfree_imps',
-      rewardPoints: pts,
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-    await db.collection('users').doc(fromUid).update({
-      rewardPoints: admin.firestore.FieldValue.increment(pts),
-      totalSent:    admin.firestore.FieldValue.increment(amount),
-      updatedAt:    admin.firestore.FieldValue.serverTimestamp(),
-    });
-    return res.json({ success: true, transferId, amount, accountName });
-  }
-
-  // Refund
-  try {
-    await db.collection('users').doc(fromUid).update({
-      balance:   admin.firestore.FieldValue.increment(amount),
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-    const batch = db.batch();
-    batch.set(db.collection('transactions').doc(txRef), {
-      uid: fromUid, type: 'debit', amount,
-      note: `Failed: Bank transfer to ${accountName}`,
-      cat: 'transfer', ref: txRef, accountName, status: 'failed',
-      failReason: cfError,
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-    batch.set(db.collection('transactions').doc(`${txRef}_REFUND`), {
-      uid: fromUid, type: 'credit', amount,
-      note: `Refund: Bank transfer to ${accountName} failed`,
-      cat: 'refund', ref: `${txRef}_REFUND`, status: 'success',
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-    await batch.commit();
-    console.log(`💸 Refunded ₹${amount} to ${fromUid} — bank failed: ${cfError}`);
-  } catch (refundErr) {
-    console.error('CRITICAL: Bank refund failed for', fromUid, amount, refundErr);
-  }
-
-  return res.status(402).json({
-    error: `Bank transfer failed: ${cfError}. Your ₹${amount} has been refunded to your wallet.`,
-    refunded: true,
-  });
-});
-
-// ══════════════════════════════════════════════════════════════
-//  ROUTE 3 — WITHDRAW TO UPI (FIXED)
-// ══════════════════════════════════════════════════════════════
-app.post('/payout/withdraw', async (req, res) => {
-  const { userId, amount, upiId } = req.body;
-  if (!userId || !amount || !upiId || !db)
-    return res.status(400).json({ error: 'Missing fields' });
-  if (amount < 100)
-    return res.status(400).json({ error: 'Minimum withdrawal ₹100' });
-
-  let user;
-  try {
-    const snap = await db.collection('users').doc(userId).get();
-    if (!snap.exists) return res.status(404).json({ error: 'User not found' });
-    user = snap.data();
-  } catch (e) {
-    return res.status(500).json({ error: 'Failed to load account' });
-  }
-
-  if (user.kycStatus !== 'verified')
-    return res.status(403).json({ error: 'Complete KYC to withdraw' });
-  if ((user.balance || 0) < amount)
-    return res.status(402).json({ error: 'Insufficient balance' });
-
-  const transferId = genTransferId();
-  const txRef      = genTxId('WDR');
-
-  try {
-    await db.collection('users').doc(userId).update({
-      balance:   admin.firestore.FieldValue.increment(-amount),
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-  } catch (e) {
-    return res.status(500).json({ error: 'Failed to update balance. No money was deducted.' });
-  }
-
-  let cfSuccess = false;
-  let cfError   = '';
-  try {
-    const cfResponse = await cfPost('/payout/v1/directTransfer', {
-      amount, transferId, transferMode: 'upi',
-      remarks: 'INRT Wallet Withdrawal',
-      beneDetails: {
-        beneId: `USER_${userId}`,
-        name:   user.name || 'INRT User',
-        vpa:    upiId,
-      },
-    });
-    if (cfResponse.status === 'SUCCESS') {
-      cfSuccess = true;
-    } else {
-      cfError = cfResponse.message || 'Withdrawal failed';
-    }
-  } catch (e: any) {
-    cfError = e.message || 'Cashfree service unavailable';
-    console.error('/payout/withdraw cfPost threw:', e.message);
-  }
-
-  if (cfSuccess) {
-    await db.collection('transactions').add({
-      uid: userId, type: 'debit', amount,
-      note: `Withdrawal to ${upiId}`,
-      cat: 'withdrawal', ref: transferId, toUpiId: upiId,
-      status: 'success', method: 'cashfree_upi',
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-    return res.json({ success: true, transferId, amount });
-  }
-
-  // Refund
-  try {
-    await db.collection('users').doc(userId).update({
-      balance:   admin.firestore.FieldValue.increment(amount),
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-    const batch = db.batch();
-    batch.set(db.collection('transactions').doc(txRef), {
-      uid: userId, type: 'debit', amount,
-      note: `Failed: Withdrawal to ${upiId}`,
-      cat: 'withdrawal', ref: txRef, toUpiId: upiId,
-      status: 'failed', failReason: cfError,
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-    batch.set(db.collection('transactions').doc(`${txRef}_REFUND`), {
-      uid: userId, type: 'credit', amount,
-      note: `Refund: Withdrawal to ${upiId} failed`,
-      cat: 'refund', ref: `${txRef}_REFUND`, status: 'success',
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-    await batch.commit();
-    console.log(`💸 Refunded ₹${amount} to ${userId} — withdrawal failed: ${cfError}`);
-  } catch (refundErr) {
-    console.error('CRITICAL: Withdrawal refund failed for', userId, amount, refundErr);
-  }
-
-  return res.status(402).json({
-    error: `Withdrawal failed: ${cfError}. Your ₹${amount} has been refunded to your wallet.`,
-    refunded: true,
-  });
-});
-
-// ══════════════════════════════════════════════════════════════
-//  ROUTE 4 — VALIDATE UPI ID (unchanged)
-// ══════════════════════════════════════════════════════════════
-app.post('/payout/validate-upi', async (req, res) => {
-  try {
-    const { upiId } = req.body;
-    if (!upiId) return res.status(400).json({ error: 'UPI ID required' });
-    if (process.env.NODE_ENV !== 'production')
-      return res.json({ valid: true, name: 'Test Account', upiId, bankName: 'Test Bank' });
-    const d = await cfPost('/payout/v1/validation/upiDetails', { vpa: upiId });
-    if (d.status !== 'SUCCESS') return res.status(400).json({ error: 'Invalid UPI ID' });
-    res.json({ valid: true, name: d.data?.name || 'UPI Account', upiId: d.data?.vpa || upiId, bankName: d.data?.bankName || '' });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
-});
-
-// ══════════════════════════════════════════════════════════════
-//  ROUTE 5 — CASHFREE WEBHOOK (refund on async failure)
-// ══════════════════════════════════════════════════════════════
-app.post('/payout/webhook', async (req, res) => {
-  try {
-    const { transferId, status, utr, reason } = req.body;
-    if (!db || !transferId) return res.json({ received: true });
-    const snap = await db.collection('transactions').where('ref', '==', transferId).limit(1).get();
-    if (snap.empty) return res.json({ received: true });
-    const txDoc = snap.docs[0];
-    const tx    = txDoc.data();
-
-    if (status === 'SUCCESS') {
-      await txDoc.ref.update({ status: 'success', utr, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
-    } else if (status === 'FAILED' || status === 'REVERSED') {
-      // Refund via webhook (async failure after initial success)
-      await db.collection('users').doc(tx.uid).update({
-        balance:   admin.firestore.FieldValue.increment(tx.amount),
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
-      await txDoc.ref.update({ status: 'failed', failReason: reason || 'Transfer failed', updatedAt: admin.firestore.FieldValue.serverTimestamp() });
-      await db.collection('transactions').add({
-        uid: tx.uid, type: 'credit', amount: tx.amount,
-        note: `Refund: Transfer failed (${reason || 'bank rejected'})`,
-        cat: 'refund', ref: `REF_${transferId}`, status: 'success',
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
-      console.log(`💸 Webhook refund: ₹${tx.amount} → ${tx.uid}`);
-    }
-    res.json({ received: true });
-  } catch (e: any) {
-    console.error('/payout/webhook:', e);
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// ══════════════════════════════════════════════════════════════
-//  ROUTE 6 — CHECK TRANSFER STATUS
-// ══════════════════════════════════════════════════════════════
-app.get('/payout/status/:transferId', async (req, res) => {
-  try {
-    const d = await cfGet(`/payout/v1/getTransferStatus?transferId=${req.params.transferId}`);
-    res.json({
-      transferId: req.params.transferId,
-      status:     d.data?.transfer?.status || 'UNKNOWN',
-      amount:     d.data?.transfer?.amount,
-      utr:        d.data?.transfer?.utr    || null,
-    });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
-});
-
-
-/**
- * INRT WALLET — CHECKOUT ROUTE
- * Paste into server.js BEFORE app.listen(...)
- *
- * Verifies Razorpay payment and credits INRT (rewardPoints) to user wallet.
- * This is the key missing piece for Buy INRT flow.
- */
-
-// ── Verify Razorpay payment + credit INRT ──────────────────
 app.post('/checkout/verify-inrt-purchase', async (req, res) => {
   try {
-    const {
-      razorpay_order_id,
-      razorpay_payment_id,
-      razorpay_signature,
-      userId,
-      amount,
-    } = req.body;
-
+    const { razorpay_order_id, razorpay_payment_id, razorpay_signature, userId, amount } = req.body;
     if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature || !userId || !amount)
-      return res.status(400).json({ error: 'Missing required fields' });
-
-    if (!db)
-      return res.status(500).json({ error: 'Database not connected' });
-
-    // ── Verify signature ──────────────────────────────────────
-    const expectedSignature = crypto
-      .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET || '')
-      .update(`${razorpay_order_id}|${razorpay_payment_id}`)
-      .digest('hex');
-
-    if (expectedSignature !== razorpay_signature)
-      return res.status(400).json({ error: 'Invalid payment signature — possible fraud attempt' });
-
-    // ── Check for duplicate credit (idempotency) ──────────────
-    const existingSnap = await db.collection('transactions')
-      .where('ref', '==', razorpay_payment_id)
-      .limit(1).get();
-
-    if (!existingSnap.empty)
-      return res.json({ success: true, message: 'Already credited', duplicate: true });
-
-    // ── Credit INRT to user ───────────────────────────────────
+      return res.status(400).json({ error:'Missing fields' });
+    if (!db) return res.status(500).json({ error:'DB not connected' });
+    const expected = crypto.createHmac('sha256', process.env.RAZORPAY_KEY_SECRET||'').update(`${razorpay_order_id}|${razorpay_payment_id}`).digest('hex');
+    if (expected !== razorpay_signature) return res.status(400).json({ error:'Invalid payment signature' });
+    const existing = await db.collection('transactions').where('ref','==',`INRT_BUY_${razorpay_payment_id}`).limit(1).get();
+    if (!existing.empty) return res.json({ success:true, message:'Already credited', duplicate:true });
     const amt = parseFloat(amount);
     const ref = `INRT_BUY_${razorpay_payment_id}`;
-
     const batch = db.batch();
-
-    // Add INRT (rewardPoints) to user
-    batch.update(db.collection('users').doc(userId), {
-      rewardPoints:  admin.firestore.FieldValue.increment(amt),
-      totalReceived: admin.firestore.FieldValue.increment(amt),
-      updatedAt:     admin.firestore.FieldValue.serverTimestamp(),
-    });
-
-    // Transaction record — shows in history
-    batch.set(db.collection('transactions').doc(ref), {
-      uid:           userId,
-      type:          'credit',
-      amount:        amt,
-      note:          `Bought ${amt.toLocaleString()} INRT via Razorpay`,
-      cat:           'crypto',
-      ref,
-      status:        'success',
-      method:        'razorpay',
-      razorpayOrderId:   razorpay_order_id,
-      razorpayPaymentId: razorpay_payment_id,
-      createdAt:     admin.firestore.FieldValue.serverTimestamp(),
-    });
-
+    batch.update(db.collection('users').doc(userId), { rewardPoints:admin.firestore.FieldValue.increment(amt), totalReceived:admin.firestore.FieldValue.increment(amt), updatedAt:admin.firestore.FieldValue.serverTimestamp() });
+    batch.set(db.collection('transactions').doc(ref), { uid:userId, type:'credit', amount:amt, note:`Bought ${amt.toLocaleString()} INRT via Razorpay`, cat:'crypto', ref, status:'success', method:'razorpay', razorpayOrderId:razorpay_order_id, razorpayPaymentId:razorpay_payment_id, createdAt:admin.firestore.FieldValue.serverTimestamp() });
     await batch.commit();
-
-    console.log(`✅ INRT purchased: ${amt} INRT → ${userId} | payment: ${razorpay_payment_id}`);
-
-    res.json({
-      success: true,
-      amount:  amt,
-      ref,
-      message: `${amt.toLocaleString()} INRT credited to your wallet`,
-    });
-
-  } catch (e: any) {
-    console.error('/checkout/verify-inrt-purchase:', e);
-    res.status(500).json({ error: e.message });
-  }
+    console.log(`✅ INRT purchased: ${amt} → ${userId}`);
+    res.json({ success:true, amount:amt, ref, message:`${amt.toLocaleString()} INRT credited` });
+  } catch (e) { console.error('/checkout/verify-inrt-purchase:', e); res.status(500).json({ error:e.message }); }
 });
-
-
 
 // ══════════════════════════════════════════════════════════════
 //  START SERVER
@@ -2000,7 +1169,7 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`   Razorpay  : ${process.env.RAZORPAY_KEY_ID      ? '✅' : '❌'}`);
   console.log(`   Resend    : ${process.env.RESEND_API_KEY        ? '✅' : '❌'}`);
   console.log(`   Cashfree  : ${process.env.CASHFREE_APP_ID       ? '✅' : '❌'}`);
-  console.log(`   Instamojo : ${process.env.INSTAMOJO_API_KEY     ? '✅' : '❌'}`);
+  console.log(`   Didit     : ${process.env.DIDIT_API_KEY         ? '✅' : '❌'}`);
   console.log(`   Ezytm     : ${process.env.EZYTM_API_TOKEN       ? '✅' : '❌'}`);
   console.log(`   Admin Key : ${process.env.ADMIN_KEY             ? '✅' : '❌'}\n`);
 });
