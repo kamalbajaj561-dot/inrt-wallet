@@ -353,7 +353,7 @@ app.post('/kyc/admin/review', async (req, res) => {
       kycStatus: newStatus, kycRef: kycRef || null,
       kycReviewedAt: admin.firestore.FieldValue.serverTimestamp(),
       ...(action === 'approve' && {
-        rewardPoints:  admin.firestore.FieldValue.increment(500),
+        inrtBalance: admin.firestore.FieldValue.increment(500),
         kycVerifiedAt: admin.firestore.FieldValue.serverTimestamp(),
         dailyLimit:    100000,
       }),
@@ -417,7 +417,7 @@ app.get('/admin/users', async (req, res) => {
     const users = snap.docs.map(d => ({
       id: d.id, name: d.data().name||'', phone: d.data().phone||'',
       balance: d.data().balance||0, kycStatus: d.data().kycStatus||'not_started',
-      rewardPoints: d.data().rewardPoints||0,
+      inrtBalance: d.data().inrtBalance||0,
       createdAt: d.data().createdAt?.toDate?.()?.toISOString()||null,
     }));
     res.json({ users, count: users.length });
@@ -452,11 +452,11 @@ app.get('/admin/users', async (req, res) => {
     const commission = await earnCommission(amount, 'transfer');
     const batch = db.batch();
     batch.update(db.collection('users').doc(fromUid), { balance: admin.firestore.FieldValue.increment(-amount), totalSent: admin.firestore.FieldValue.increment(amount), [lk]: admin.firestore.FieldValue.increment(amount), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
-    batch.update(db.collection('users').doc(toUid),   { balance: admin.firestore.FieldValue.increment(amount), totalReceived: admin.firestore.FieldValue.increment(amount), rewardPoints: admin.firestore.FieldValue.increment(pts), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
-    batch.set(db.collection('transactions').doc(ref),         { uid: fromUid, toUid, type: 'debit',  amount, note: note||'Transfer', cat: 'transfer', ref, status: 'success', commission, rewardPoints: pts, createdAt: admin.firestore.FieldValue.serverTimestamp() });
+    batch.update(db.collection('users').doc(toUid),   { balance: admin.firestore.FieldValue.increment(amount), totalReceived: admin.firestore.FieldValue.increment(amount), inrtBalance: admin.firestore.FieldValue.increment(pts), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+    batch.set(db.collection('transactions').doc(ref),         { uid: fromUid, toUid, type: 'debit',  amount, note: note||'Transfer', cat: 'transfer', ref, status: 'success', commission, inrtBalance: pts, createdAt: admin.firestore.FieldValue.serverTimestamp() });
     batch.set(db.collection('transactions').doc(ref+'_CR'),   { uid: toUid, fromUid, type: 'credit', amount, note: `Received from ${sender.name||'INRT User'}`, cat: 'transfer', ref: ref+'_CR', status: 'success', createdAt: admin.firestore.FieldValue.serverTimestamp() });
     await batch.commit();
-    res.json({ success: true, ref, amount, commission, rewardPoints: pts });
+    res.json({ success: true, ref, amount, commission, inrtBalance: pts });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -500,7 +500,7 @@ app.post('/payment/upi-webhook', async (req, res) => {
     const pending = pSnap.data();
     const ref = genTxId('UPI'), pts = Math.floor(amount/10);
     const batch = db.batch();
-    batch.update(db.collection('users').doc(pending.userId), { balance: admin.firestore.FieldValue.increment(parseFloat(amount)), totalReceived: admin.firestore.FieldValue.increment(parseFloat(amount)), rewardPoints: admin.firestore.FieldValue.increment(pts), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+    batch.update(db.collection('users').doc(pending.userId), { balance: admin.firestore.FieldValue.increment(parseFloat(amount)), totalReceived: admin.firestore.FieldValue.increment(parseFloat(amount)), inrtBalance: admin.firestore.FieldValue.increment(pts), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
     batch.set(db.collection('transactions').doc(ref), { uid: pending.userId, type: 'credit', amount: parseFloat(amount), note: `UPI from ${payerVpa||'UPI'}`, cat: 'add_money', ref, status: 'success', payerVpa, upiTxnId: txnId, createdAt: admin.firestore.FieldValue.serverTimestamp() });
     batch.update(pSnap.ref, { status: 'success', paidAt: admin.firestore.FieldValue.serverTimestamp(), ref });
     await batch.commit();
@@ -531,10 +531,10 @@ app.post('/payment/bill', async (req, res) => {
     const ref = genTxId('BILL'), cashback = Math.floor(amount*0.02), pts = Math.floor(amount/10);
     const commission = await earnCommission(amount, 'bills');
     const batch = db.batch();
-    batch.update(db.collection('users').doc(userId), { balance: admin.firestore.FieldValue.increment(-amount+cashback), cashback: admin.firestore.FieldValue.increment(cashback), rewardPoints: admin.firestore.FieldValue.increment(pts), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
-    batch.set(db.collection('transactions').doc(ref), { uid: userId, type: 'debit', amount, note: `${category} — ${provider||''}`, cat: 'bills', ref, status: 'success', accountNo, cashback, commission, rewardPoints: pts, createdAt: admin.firestore.FieldValue.serverTimestamp() });
+    batch.update(db.collection('users').doc(userId), { balance: admin.firestore.FieldValue.increment(-amount+cashback), cashback: admin.firestore.FieldValue.increment(cashback), inrtBalance: admin.firestore.FieldValue.increment(pts), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+    batch.set(db.collection('transactions').doc(ref), { uid: userId, type: 'debit', amount, note: `${category} — ${provider||''}`, cat: 'bills', ref, status: 'success', accountNo, cashback, commission, inrtBalance: pts, createdAt: admin.firestore.FieldValue.serverTimestamp() });
     await batch.commit();
-    res.json({ success: true, ref, amount, cashback, rewardPoints: pts, commission });
+    res.json({ success: true, ref, amount, cashback, inrtBalance: pts, commission });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -608,9 +608,9 @@ app.post('/payout/send-upi', async (req, res) => {
       throw new Error(cfResponse.message || 'Transfer failed');
     }
     const pts = Math.floor(amount/10);
-    await db.collection('transactions').add({ uid: fromUid, type: 'debit', amount, note: note||`Sent to ${toUpiId}`, cat: 'transfer', ref: transferId, toUpiId, status: 'success', method: 'cashfree_upi', rewardPoints: pts, createdAt: admin.firestore.FieldValue.serverTimestamp() });
-    await db.collection('users').doc(fromUid).update({ rewardPoints: admin.firestore.FieldValue.increment(pts), totalSent: admin.firestore.FieldValue.increment(amount) });
-    res.json({ success: true, transferId, amount, toUpiId, rewardPoints: pts });
+    await db.collection('transactions').add({ uid: fromUid, type: 'debit', amount, note: note||`Sent to ${toUpiId}`, cat: 'transfer', ref: transferId, toUpiId, status: 'success', method: 'cashfree_upi', inrtBalance: pts, createdAt: admin.firestore.FieldValue.serverTimestamp() });
+    await db.collection('users').doc(fromUid).update({ inrtBalance: admin.firestore.FieldValue.increment(pts), totalSent: admin.firestore.FieldValue.increment(amount) });
+    res.json({ success: true, transferId, amount, toUpiId, inrtBalance: pts });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -628,7 +628,7 @@ app.post('/payout/send-bank', async (req, res) => {
       throw new Error(cfResponse.message || 'Bank transfer failed');
     }
     await db.collection('transactions').add({ uid: fromUid, type: 'debit', amount, note: note||`Bank transfer to ${accountName}`, cat: 'transfer', ref: transferId, accountNo: accountNo.slice(-4).padStart(accountNo.length,'X'), ifsc, accountName, status: 'success', method: 'cashfree_imps', createdAt: admin.firestore.FieldValue.serverTimestamp() });
-    await db.collection('users').doc(fromUid).update({ rewardPoints: admin.firestore.FieldValue.increment(Math.floor(amount/10)), totalSent: admin.firestore.FieldValue.increment(amount) });
+    await db.collection('users').doc(fromUid).update({ inrtBalance: admin.firestore.FieldValue.increment(Math.floor(amount/10)), totalSent: admin.firestore.FieldValue.increment(amount) });
     res.json({ success: true, transferId, amount, accountName });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -729,8 +729,8 @@ app.post('/instamojo/webhook', async (req, res) => {
     if (payment.status === 'success') return res.json({ received: true });
     const paidAmount = parseFloat(amount), pts = Math.floor(paidAmount/10), ref = `IM${payment_id}`;
     const batch = db.batch();
-    batch.update(db.collection('users').doc(payment.userId), { balance: admin.firestore.FieldValue.increment(paidAmount), totalReceived: admin.firestore.FieldValue.increment(paidAmount), rewardPoints: admin.firestore.FieldValue.increment(pts), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
-    batch.set(db.collection('transactions').doc(ref), { uid: payment.userId, type: 'credit', amount: paidAmount, note: 'Added via Instamojo', cat: 'add_money', ref, status: 'success', paymentId: payment_id, rewardPoints: pts, createdAt: admin.firestore.FieldValue.serverTimestamp() });
+    batch.update(db.collection('users').doc(payment.userId), { balance: admin.firestore.FieldValue.increment(paidAmount), totalReceived: admin.firestore.FieldValue.increment(paidAmount), inrtBalance: admin.firestore.FieldValue.increment(pts), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+    batch.set(db.collection('transactions').doc(ref), { uid: payment.userId, type: 'credit', amount: paidAmount, note: 'Added via Instamojo', cat: 'add_money', ref, status: 'success', paymentId: payment_id, inrtBalance: pts, createdAt: admin.firestore.FieldValue.serverTimestamp() });
     batch.update(payDoc.ref, { status: 'success', paymentId: payment_id, paidAt: admin.firestore.FieldValue.serverTimestamp(), paidAmount });
     await batch.commit();
     console.log(`✅ Instamojo: ₹${paidAmount} credited to ${payment.userId}`);
@@ -850,9 +850,9 @@ app.post('/recharge/do', async (req, res) => {
       return res.status(400).json({ success: false, error: message||'Recharge failed. Balance refunded.' });
     }
     const txStatus = status === '1' ? 'success' : 'pending';
-    await db.collection('transactions').add({ uid: userId, type: 'debit', amount, note: `${operator} ${rechargeType==='D'?'DTH':rechargeType==='T'?'Postpaid':'Prepaid'} — ${mobile}`, cat: 'recharge', ref: orderId, status: txStatus, mobile, operator, ezytmTxnId: txnId, rewardPoints: status==='1'?pts:0, createdAt: admin.firestore.FieldValue.serverTimestamp() });
-    if (status === '1') await db.collection('users').doc(userId).update({ rewardPoints: admin.firestore.FieldValue.increment(pts), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
-    res.json({ success: status==='1', pending: status==='2', orderId, txnId, amount, mobile, operator, status: txStatus, rewardPoints: status==='1'?pts:0, message: status==='1'?`₹${amount} recharge done for ${mobile}`:status==='2'?'Processing…':message });
+    await db.collection('transactions').add({ uid: userId, type: 'debit', amount, note: `${operator} ${rechargeType==='D'?'DTH':rechargeType==='T'?'Postpaid':'Prepaid'} — ${mobile}`, cat: 'recharge', ref: orderId, status: txStatus, mobile, operator, ezytmTxnId: txnId, inrtBalance: status==='1'?pts:0, createdAt: admin.firestore.FieldValue.serverTimestamp() });
+    if (status === '1') await db.collection('users').doc(userId).update({ inrtBalance: admin.firestore.FieldValue.increment(pts), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+    res.json({ success: status==='1', pending: status==='2', orderId, txnId, amount, mobile, operator, status: txStatus, inrtBalance: status==='1'?pts:0, message: status==='1'?`₹${amount} recharge done for ${mobile}`:status==='2'?'Processing…':message });
   } catch (e) { console.error('/recharge/do:', e); res.status(500).json({ error: e.message||'Recharge failed' }); }
 });
 
@@ -871,7 +871,7 @@ app.get('/recharge/status/:orderId', async (req, res) => {
       if (!snap.empty && snap.docs[0].data().status !== 'success') {
         const tx = snap.docs[0].data();
         await snap.docs[0].ref.update({ status: 'success', ezytmTxnId: txnId, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
-        await db.collection('users').doc(tx.uid).update({ rewardPoints: admin.firestore.FieldValue.increment(Math.floor(tx.amount/10)), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+        await db.collection('users').doc(tx.uid).update({ inrtBalance: admin.firestore.FieldValue.increment(Math.floor(tx.amount/10)), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
       }
     }
     if (status === '3' && db) {
@@ -958,7 +958,7 @@ app.post('/kyc/didit-webhook', async (req, res) => {
       const kycRef = `KYC${Date.now()}${Math.random().toString(36).slice(2,5).toUpperCase()}`;
       const batch  = db.batch();
       batch.set(db.collection('kyc').doc(userId), { userId, kycRef, status:'verified', kycType:'didit_auto', autoApproved:true, diditSessionId:sessionId, submittedAt:admin.firestore.FieldValue.serverTimestamp(), reviewedAt:admin.firestore.FieldValue.serverTimestamp(), updatedAt:admin.firestore.FieldValue.serverTimestamp() }, { merge:true });
-      batch.update(db.collection('users').doc(userId), { kycStatus:'verified', kycRef, kycVerifiedAt:admin.firestore.FieldValue.serverTimestamp(), rewardPoints:admin.firestore.FieldValue.increment(500), dailyLimit:100000, updatedAt:admin.firestore.FieldValue.serverTimestamp() });
+      batch.update(db.collection('users').doc(userId), { kycStatus:'verified', kycRef, kycVerifiedAt:admin.firestore.FieldValue.serverTimestamp(), inrtBalance:admin.firestore.FieldValue.increment(500), dailyLimit:100000, updatedAt:admin.firestore.FieldValue.serverTimestamp() });
       batch.set(db.collection('transactions').doc(`KYC_BONUS_${kycRef}`), { uid:userId, type:'credit', amount:500, note:'KYC Verified — Welcome Bonus 🎉', cat:'rewards', ref:`KYC_BONUS_${kycRef}`, status:'success', createdAt:admin.firestore.FieldValue.serverTimestamp() });
       await batch.commit();
       console.log(`✅ AUTO-APPROVED: ${userId} | ${kycRef}`);
@@ -993,7 +993,7 @@ app.get('/kyc/didit-status/:userId', async (req, res) => {
               const kycRef = `KYC${Date.now()}${Math.random().toString(36).slice(2,5).toUpperCase()}`;
               const batch  = db.batch();
               batch.set(db.collection('kyc').doc(userId), { userId, kycRef, status:'verified', kycType:'didit_auto', autoApproved:true, diditSessionId:sessionId, submittedAt:admin.firestore.FieldValue.serverTimestamp(), reviewedAt:admin.firestore.FieldValue.serverTimestamp(), updatedAt:admin.firestore.FieldValue.serverTimestamp() }, { merge:true });
-              batch.update(db.collection('users').doc(userId), { kycStatus:'verified', kycRef, kycVerifiedAt:admin.firestore.FieldValue.serverTimestamp(), rewardPoints:admin.firestore.FieldValue.increment(500), dailyLimit:100000, updatedAt:admin.firestore.FieldValue.serverTimestamp() });
+              batch.update(db.collection('users').doc(userId), { kycStatus:'verified', kycRef, kycVerifiedAt:admin.firestore.FieldValue.serverTimestamp(), inrtBalance:admin.firestore.FieldValue.increment(500), dailyLimit:100000, updatedAt:admin.firestore.FieldValue.serverTimestamp() });
               await batch.commit();
               return res.json({ status:'verified', kycRef });
             }
@@ -1049,7 +1049,7 @@ app.get('/inrt/wallet/:userId', async (req, res) => {
       await db.collection('users').doc(req.params.userId).update({ inrtAddress });
       await db.collection('inrtAddressIndex').doc(inrtAddress).set({ userId:req.params.userId, createdAt:admin.firestore.FieldValue.serverTimestamp() });
     }
-    res.json({ success:true, inrtAddress, inrtBalance:user.rewardPoints||0, inrBalance:user.balance||0, name:user.name||'INRT User' });
+    res.json({ success:true, inrtAddress, inrtBalance:user.inrtBalance||0, inrBalance:user.balance||0, name:user.name||'INRT User' });
   } catch (e) { res.status(500).json({ error:e.message }); }
 });
 
@@ -1077,11 +1077,11 @@ app.post('/inrt/convert', async (req, res) => {
     const ref = genTxId('CNV');
     if (direction === 'inr_to_inrt') {
       if ((user.balance||0) < amt) return res.status(402).json({ error:'Insufficient ₹ balance' });
-      await db.collection('users').doc(userId).update({ balance:admin.firestore.FieldValue.increment(-amt), rewardPoints:admin.firestore.FieldValue.increment(amt), updatedAt:admin.firestore.FieldValue.serverTimestamp() });
+      await db.collection('users').doc(userId).update({ balance:admin.firestore.FieldValue.increment(-amt), inrtBalance:admin.firestore.FieldValue.increment(amt), updatedAt:admin.firestore.FieldValue.serverTimestamp() });
       await db.collection('transactions').add({ uid:userId, type:'convert', amount:amt, note:`Converted ₹${amt} → ${amt} INRT`, cat:'crypto', ref, status:'success', direction, createdAt:admin.firestore.FieldValue.serverTimestamp() });
     } else if (direction === 'inrt_to_inr') {
-      if ((user.rewardPoints||0) < amt) return res.status(402).json({ error:'Insufficient INRT balance' });
-      await db.collection('users').doc(userId).update({ balance:admin.firestore.FieldValue.increment(amt), rewardPoints:admin.firestore.FieldValue.increment(-amt), updatedAt:admin.firestore.FieldValue.serverTimestamp() });
+      if ((user.inrtBalance||0) < amt) return res.status(402).json({ error:'Insufficient INRT balance' });
+      await db.collection('users').doc(userId).update({ balance:admin.firestore.FieldValue.increment(amt), inrtBalance:admin.firestore.FieldValue.increment(-amt), updatedAt:admin.firestore.FieldValue.serverTimestamp() });
       await db.collection('transactions').add({ uid:userId, type:'convert', amount:amt, note:`Converted ${amt} INRT → ₹${amt}`, cat:'crypto', ref, status:'success', direction, createdAt:admin.firestore.FieldValue.serverTimestamp() });
     } else return res.status(400).json({ error:'Invalid direction' });
     res.json({ success:true, ref, amount:amt, direction });
@@ -1101,12 +1101,12 @@ app.post('/inrt/send', async (req, res) => {
     const fromSnap = await db.collection('users').doc(fromUserId).get();
     if (!fromSnap.exists) return res.status(404).json({ error:'Sender not found' });
     const fromUser = fromSnap.data();
-    if ((fromUser.rewardPoints||0) < amt) return res.status(402).json({ error:'Insufficient INRT balance' });
+    if ((fromUser.inrtBalance||0) < amt) return res.status(402).json({ error:'Insufficient INRT balance' });
     const toSnap = await db.collection('users').doc(toUserId).get();
     const toUser = toSnap.data();
     const ref = `INRTX${Date.now()}${Math.random().toString(36).slice(2,6).toUpperCase()}`;
     const startedAt = Date.now();
-    await db.collection('users').doc(fromUserId).update({ rewardPoints:admin.firestore.FieldValue.increment(-amt), updatedAt:admin.firestore.FieldValue.serverTimestamp() });
+    await db.collection('users').doc(fromUserId).update({ inrtBalance:admin.firestore.FieldValue.increment(-amt), updatedAt:admin.firestore.FieldValue.serverTimestamp() });
     await db.collection('inrtTransfers').doc(ref).set({ ref, fromUserId, toUserId, fromAddress:fromUser.inrtAddress||'', toAddress:cleanAddress, amount:amt, note:note||'', status:'processing', startedAt, createdAt:admin.firestore.FieldValue.serverTimestamp() });
     await db.collection('transactions').add({ uid:fromUserId, type:'debit', amount:amt, note:`INRT sent to ${toUser.name||cleanAddress}`, cat:'crypto', ref, status:'processing', toAddress:cleanAddress, createdAt:admin.firestore.FieldValue.serverTimestamp() });
     const processingTime = 1500 + Math.floor(Math.random()*2500);
@@ -1115,7 +1115,7 @@ app.post('/inrt/send', async (req, res) => {
         const completedAt = Date.now();
         const durationMs  = completedAt - startedAt;
         const batch = db.batch();
-        batch.update(db.collection('users').doc(toUserId), { rewardPoints:admin.firestore.FieldValue.increment(amt), totalReceived:admin.firestore.FieldValue.increment(amt), updatedAt:admin.firestore.FieldValue.serverTimestamp() });
+        batch.update(db.collection('users').doc(toUserId), { inrtBalance:admin.firestore.FieldValue.increment(amt), totalReceived:admin.firestore.FieldValue.increment(amt), updatedAt:admin.firestore.FieldValue.serverTimestamp() });
         batch.set(db.collection('transactions').doc(ref+'_RX'), { uid:toUserId, type:'credit', amount:amt, note:`INRT received from ${fromUser.name||'INRT User'}`, cat:'crypto', ref:ref+'_RX', status:'success', fromAddress:fromUser.inrtAddress||'', createdAt:admin.firestore.FieldValue.serverTimestamp() });
         batch.update(db.collection('inrtTransfers').doc(ref), { status:'completed', completedAt, durationMs });
         await batch.commit();
@@ -1162,7 +1162,7 @@ app.post('/checkout/verify-inrt-purchase', async (req, res) => {
     const amt = parseFloat(amount);
     const ref = `INRT_BUY_${razorpay_payment_id}`;
     const batch = db.batch();
-    batch.update(db.collection('users').doc(userId), { rewardPoints:admin.firestore.FieldValue.increment(amt), totalReceived:admin.firestore.FieldValue.increment(amt), updatedAt:admin.firestore.FieldValue.serverTimestamp() });
+    batch.update(db.collection('users').doc(userId), { inrtBalance:admin.firestore.FieldValue.increment(amt), totalReceived:admin.firestore.FieldValue.increment(amt), updatedAt:admin.firestore.FieldValue.serverTimestamp() });
     batch.set(db.collection('transactions').doc(ref), { uid:userId, type:'credit', amount:amt, note:`Bought ${amt.toLocaleString()} INRT via Razorpay`, cat:'crypto', ref, status:'success', method:'razorpay', razorpayOrderId:razorpay_order_id, razorpayPaymentId:razorpay_payment_id, createdAt:admin.firestore.FieldValue.serverTimestamp() });
     await batch.commit();
     console.log(`✅ INRT purchased: ${amt} → ${userId}`);

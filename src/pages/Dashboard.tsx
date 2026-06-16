@@ -58,8 +58,8 @@ export default function Dashboard() {
   }, [user?.uid]);
 
   const bal      = Number(profile?.balance      ?? 0);
-  const inrtBal  = Number(profile?.rewardPoints ?? 0);
-  const points   = Number(profile?.rewardPoints ?? 0);
+  const inrtBal  = Number(profile?.inrtBalance ?? 0);
+  const points   = Number(profile?.inrtBalance ?? 0);
   const name     = profile?.name     || user?.displayName || 'User';
   const phone    = profile?.phone    || '';
   const kyc      = profile?.kycStatus|| 'not_started';
@@ -203,9 +203,9 @@ export default function Dashboard() {
               <span style={{ fontSize:20 }}>🏆</span>
               <div>
                 <p style={{ fontWeight:800, fontSize:14, margin:0, color:T.text }}>
-                  INRT Rewards — {points>=5000?'Platinum':points>=1000?'Gold':'Silver'}
+                  INRT Level — {points>=5000?'Platinum':points>=1000?'Gold':'Silver'}
                 </p>
-                <p style={{ fontSize:12, color:T.muted, margin:0 }}>{points.toLocaleString()} INRT earned</p>
+                <p style={{ fontSize:12, color:T.muted, margin:0 }}>{points.toLocaleString()} INRT</p>
               </div>
             </div>
             <Chip color={T.gold} bg={T.gold+'18'}>+{Math.floor(points*0.1)} {month}</Chip>
