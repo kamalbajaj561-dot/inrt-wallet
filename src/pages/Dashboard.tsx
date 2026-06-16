@@ -136,29 +136,35 @@ export default function Dashboard() {
           </button>
         )}
 
-        {/* Balance cards */}
-        <div style={{ display:'flex', gap:10, position:'relative' }}>
-          <div style={{ flex:1, background:'rgba(255,255,255,0.1)', borderRadius:18, padding:'16px', backdropFilter:'blur(10px)', border:'1px solid rgba(255,255,255,0.15)' }}>
-            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:6 }}>
-              <p style={{ color:'rgba(255,255,255,0.6)', fontSize:11, margin:0, letterSpacing:0.5 }}>WALLET BALANCE</p>
-              <button onClick={()=>setBalVis(!balVis)} style={{ background:'none', border:'none', color:'rgba(255,255,255,0.5)', cursor:'pointer', fontSize:14 }}>
+        {/* Single INRT balance card */}
+        <div onClick={()=>navigate('/crypto')} style={{ background:'rgba(123,47,190,0.25)', borderRadius:20, padding:'20px', backdropFilter:'blur(10px)', border:'1px solid rgba(200,150,255,0.3)', cursor:'pointer', position:'relative' }}>
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:12 }}>
+            <div>
+              <p style={{ color:'rgba(224,176,255,0.6)', fontSize:11, margin:'0 0 4px', letterSpacing:1 }}>INRT BALANCE</p>
+              <p style={{ color:'#fff', fontSize:38, fontWeight:800, margin:0, fontFamily:"'Plus Jakarta Sans',sans-serif", lineHeight:1 }}>
+                {balVis ? inrtBal.toLocaleString('en-IN') : '••••••'}
+              </p>
+              <p style={{ color:'rgba(224,176,255,0.5)', fontSize:13, margin:'6px 0 0' }}>INRT · ≈ ₹{balVis ? inrtBal.toLocaleString('en-IN') : '••••'}</p>
+            </div>
+            <div style={{ display:'flex', flexDirection:'column' as const, alignItems:'flex-end', gap:8 }}>
+              <button onClick={e=>{e.stopPropagation();setBalVis(!balVis);}} style={{ background:'rgba(255,255,255,0.1)', border:'none', borderRadius:8, width:34, height:34, color:'#fff', cursor:'pointer', fontSize:14, display:'flex', alignItems:'center', justifyContent:'center' }}>
                 {balVis?'👁️':'🙈'}
               </button>
+              <div style={{ background:'rgba(0,229,204,0.15)', border:'1px solid rgba(0,229,204,0.3)', borderRadius:8, padding:'4px 10px' }}>
+                <p style={{ color:'#00e5cc', fontSize:10, fontWeight:700, margin:0, letterSpacing:0.5 }}>1 INRT = ₹1</p>
+              </div>
             </div>
-            <p style={{ color:'#fff', fontSize:24, fontWeight:800, margin:'0 0 2px', fontFamily:"'Plus Jakarta Sans',sans-serif" }}>
-              {balVis ? `₹${bal.toLocaleString('en-IN',{minimumFractionDigits:2})}` : '₹ ••••••'}
-            </p>
-            <p style={{ color:'rgba(255,255,255,0.45)', fontSize:11, margin:0 }}>
-              {phone ? `+91 ${phone}` : 'INRT Wallet'}
-            </p>
           </div>
-
-          <div onClick={()=>navigate('/crypto')} style={{ flex:1, background:'rgba(123,47,190,0.4)', borderRadius:18, padding:'16px', cursor:'pointer', border:'1px solid rgba(200,150,255,0.25)', backdropFilter:'blur(10px)' }}>
-            <p style={{ color:'rgba(224,176,255,0.7)', fontSize:11, margin:'0 0 6px', letterSpacing:0.5 }}>INRT BALANCE</p>
-            <p style={{ color:'#E0B0FF', fontSize:20, fontWeight:800, margin:'0 0 2px', fontFamily:"'Plus Jakarta Sans',sans-serif" }}>
-              {balVis ? inrtBal.toLocaleString('en-IN') : '••••'} INRT
-            </p>
-            <p style={{ color:'rgba(224,176,255,0.45)', fontSize:11, margin:0 }}>1 INRT = ₹1 · Tap to send →</p>
+          <div style={{ display:'flex', gap:8 }}>
+            <button onClick={e=>{e.stopPropagation();navigate('/send');}} style={{ flex:1, padding:'10px', borderRadius:10, border:'1px solid rgba(255,255,255,0.2)', background:'rgba(255,255,255,0.08)', color:'#fff', fontWeight:700, fontSize:12, cursor:'pointer', fontFamily:"'Plus Jakarta Sans',sans-serif" }}>
+              📤 Send
+            </button>
+            <button onClick={e=>{e.stopPropagation();navigate('/checkout');}} style={{ flex:1, padding:'10px', borderRadius:10, border:'none', background:'linear-gradient(135deg,#7B2FBE,#5B17A3)', color:'#fff', fontWeight:700, fontSize:12, cursor:'pointer', fontFamily:"'Plus Jakarta Sans',sans-serif" }}>
+              🪙 Buy INRT
+            </button>
+            <button onClick={e=>{e.stopPropagation();navigate('/crypto');}} style={{ flex:1, padding:'10px', borderRadius:10, border:'1px solid rgba(255,255,255,0.2)', background:'rgba(255,255,255,0.08)', color:'#fff', fontWeight:700, fontSize:12, cursor:'pointer', fontFamily:"'Plus Jakarta Sans',sans-serif" }}>
+              📊 Details
+            </button>
           </div>
         </div>
       </div>
