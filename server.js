@@ -41,7 +41,8 @@ const razorpay = new Razorpay({
   key_secret: process.env.RAZORPAY_KEY_SECRET || '',
 });
 
-// ── Cashfree config ───────────────────────────────────────────
+
+/* ═══ HIDDEN FOR LAUNCH — CASHFREE CONFIG & HELPERS — commented out pending payout approval ═══
 const CF_BASE = process.env.NODE_ENV === 'production'
   ? 'https://payout-api.cashfree.com'
   : 'https://payout-gamma.cashfree.com';
@@ -82,8 +83,10 @@ async function cfGet(endpoint) {
   });
   return r.json();
 }
+═══ END HIDDEN ═══ */
 
-// ── Instamojo ─────────────────────────────────────────────────
+
+/* ═══ HIDDEN FOR LAUNCH — INSTAMOJO CONFIG & HELPERS — commented out pending approval ═══
 const INSTAMOJO_BASE = process.env.NODE_ENV === 'production'
   ? 'https://www.instamojo.com/api/1.1'
   : 'https://test.instamojo.com/api/1.1';
@@ -112,6 +115,7 @@ async function instamojoGet(endpoint) {
   });
   return r.json();
 }
+═══ END HIDDEN ═══ */
 
 // ── Helpers ───────────────────────────────────────────────────
 const genTxId       = (p = 'TXN') => `${p}${Date.now()}${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
@@ -423,7 +427,8 @@ app.get('/admin/users', async (req, res) => {
 // ══════════════════════════════════════════════════════════════
 //  WALLET TRANSFER
 // ══════════════════════════════════════════════════════════════
-app.post('/payment/transfer', async (req, res) => {
+
+/* ═══ HIDDEN FOR LAUNCH — WALLET TRANSFER ROUTE — commented out pending payout approval ═══
   try {
     const { fromUid, toPhone, toUid: directToUid, amount, note } = req.body;
     if (!fromUid || !amount || amount < 1) return res.status(400).json({ error: 'fromUid and amount required' });
@@ -458,6 +463,7 @@ app.post('/payment/transfer', async (req, res) => {
 // ══════════════════════════════════════════════════════════════
 //  UPI QR
 // ══════════════════════════════════════════════════════════════
+═══ END HIDDEN ═══ */
 app.post('/payment/generate-upi-qr', async (req, res) => {
   try {
     const { userId, amount, note } = req.body;
@@ -566,7 +572,8 @@ app.get('/payment/earnings', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ══════════════════════════════════════════════════════════════
+
+/* ═══ HIDDEN FOR LAUNCH — CASHFREE PAYOUT ROUTES — commented out pending payout approval ═══
 //  CASHFREE PAYOUTS
 // ══════════════════════════════════════════════════════════════
 app.post('/payout/validate-upi', async (req, res) => {
@@ -672,8 +679,10 @@ app.post('/payout/withdraw', async (req, res) => {
     res.json({ success: true, transferId, amount });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
+═══ END HIDDEN ═══ */
 
-// ══════════════════════════════════════════════════════════════
+
+/* ═══ HIDDEN FOR LAUNCH — INSTAMOJO ROUTES — commented out pending approval ═══
 //  INSTAMOJO
 // ══════════════════════════════════════════════════════════════
 app.post('/instamojo/create-payment', async (req, res) => {
@@ -746,6 +755,7 @@ app.get('/instamojo/status/:requestId', async (req, res) => {
     res.json({ requestId: req.params.requestId, status: data.payment_request?.status, amount: data.payment_request?.amount, payments: data.payment_request?.payments||[] });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
+═══ END HIDDEN ═══ */
 
 // ══════════════════════════════════════════════════════════════
 //  EZYTM RECHARGE

@@ -75,16 +75,16 @@ export default function Dashboard() {
     return d.toLocaleDateString('en-IN',{day:'numeric',month:'short'});
   };
 
-  // ── Quick actions — 8 buttons including Checkout ─────────────
+  // ── Quick actions (LAUNCH VERSION — UPI/Bank hidden pending payout approval)
   const ACTIONS = [
-    { label:'Send',      icon:'📤', path:'/send',          color:T.accent  },
-    { label:'Request',   icon:'📥', path:'/request',       color:T.green   },
-    { label:'Recharge',  icon:'📱', path:'/recharge',      color:T.orange  },
-    { label:'Bills',     icon:'🧾', path:'/bill-payments', color:'#FF6B35' },
+    { label:'Send INRT', icon:'📤', path:'/send',          color:T.inrt    },
+    { label:'Receive',   icon:'📥', path:'/crypto',        color:T.green   },
     { label:'Buy INRT',  icon:'🪙', path:'/checkout',      color:T.inrt    },
+    { label:'Sell INRT', icon:'💸', path:'/checkout',      color:'#00897B' },
     { label:'Scan',      icon:'📷', path:'/scan',          color:T.navy    },
+    { label:'Recharge',  icon:'📱', path:'/recharge',      color:T.orange  },
     { label:'History',   icon:'📋', path:'/history',       color:T.muted   },
-    { label:'Add Money', icon:'+',  path:'/add-money',     color:T.teal    },
+    { label:'Rewards',   icon:'🏆', path:'/rewards',       color:T.gold    },
   ];
 
   const TX_ICON: Record<string,string> = {
