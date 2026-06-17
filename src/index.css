@@ -1,50 +1,101 @@
 /**
  * INRT WALLET — index.css
- * Minimal safe reset — does NOT squeeze content
+ * Full-screen fix for both desktop and mobile
  * Replace: src/index.css
  */
 
+/* ── Reset ─────────────────────────────────────────────────── */
 *, *::before, *::after {
   box-sizing: border-box;
   -webkit-tap-highlight-color: transparent;
 }
 
-html, body {
-  margin: 0;
-  padding: 0;
+html {
   width: 100%;
-  min-height: 100%;
+  height: 100%;
   -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
   overflow-x: hidden;
 }
 
 body {
-  font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
-  -webkit-font-smoothing: antialiased;
+  width: 100%;
+  min-height: 100vh;
+  min-height: 100dvh;
+  margin: 0;
+  padding: 0;
   background: #F6F8FA;
+  font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden;
 }
 
-/* Root fills full width — NO centering that causes squeeze */
 #root {
   width: 100%;
   min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;         /* center the 480px card on desktop */
+  background: #E8ECF0;         /* grey surround on desktop */
 }
 
-/* Prevent iOS font zoom on input focus */
-input, select, textarea {
-  font-size: 16px;
+/* ── Mobile: dark background on all screens ─────────────────── */
+@media (max-width: 480px) {
+  #root {
+    background: #F6F8FA;
+    align-items: stretch;
+  }
+}
+
+/* ── Desktop: show app as centered card with shadow ─────────── */
+@media (min-width: 481px) {
+  #root > * {
+    /* Each top-level page gets max-width + shadow on desktop */
+    box-shadow: 0 0 60px rgba(10, 37, 64, 0.15);
+  }
+
+  body {
+    background: #1a2035; /* dark navy surround — looks premium */
+  }
+
+  #root {
+    background: #1a2035;
+    justify-content: flex-start;
+    min-height: 100vh;
+  }
+}
+
+/* ── Base elements ──────────────────────────────────────────── */
+img, video, canvas, svg {
+  max-width: 100%;
+}
+
+/* Prevent iOS zoom on input focus */
+input, select, textarea, button {
   font-family: inherit;
+}
+
+input[type="text"],
+input[type="number"],
+input[type="email"],
+input[type="password"],
+input[type="tel"],
+select,
+textarea {
+  font-size: 16px !important; /* Prevents iOS auto-zoom */
 }
 
 button {
-  font-family: inherit;
   -webkit-appearance: none;
   appearance: none;
+  cursor: pointer;
 }
 
-img, video {
-  max-width: 100%;
-  display: block;
-}
-
+/* Hide scrollbars (keep scroll functionality) */
 ::-webkit-scrollbar { width: 0; height: 0; }
+
+/* Safe area for notched phones */
+.pb-safe { padding-bottom: env(safe-area-inset-bottom, 16px); }
+.pt-safe { padding-top:    env(safe-area-inset-top,    0px);   }

@@ -1,354 +1,328 @@
 /**
- * INRT WALLET — SendMoney.tsx
- *
- * LAUNCH VERSION:
- *  - INRT Global Transfer: ACTIVE ✅
- *  - UPI / Bank Transfer:  HIDDEN (coming soon — pending payout approval)
- *
- * To re-enable UPI/Bank: remove the HIDDEN comments below
+ * SendMoney.tsx — Cashfree Payouts
+ * Send to any UPI ID or bank account — NO popup, NO redirect
+ * 100% your own UI throughout
  */
 
-import { useState, useEffect } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
-import { useAuth }             from '../context/AuthContext';
-import { doc, onSnapshot }     from 'firebase/firestore';
-import { db as firestoreDb }   from '../lib/firebase';
+import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';
+import '../styles/theme.css';
 
 const API = import.meta.env.VITE_API_URL || '';
 
-const T = {
-  navy:'#0A2540', accent:'#0070F3', inrt:'#7B2FBE', inrtL:'#E0B0FF',
-  green:'#00C853', greenL:'#E8FAF0', teal:'#00e5cc',
-  border:'#E8ECF0', muted:'#6B7C93', light:'#F0F4F8',
-  text:'#0A2540', card:'#FFFFFF', red:'#FF3B30',
-};
-
-type Step = 'form' | 'review' | 'pin' | 'processing' | 'success' | 'failed';
-
-function PinPad({ onComplete, onCancel }: { onComplete:()=>void; onCancel:()=>void }) {
-  const [pin, setPin] = useState<string[]>([]);
-  const tap = (d: string) => {
-    if (pin.length >= 6) return;
-    const next = [...pin, d];
-    setPin(next);
-    if (next.length === 6) setTimeout(onComplete, 200);
-  };
-  return (
-    <div style={{ textAlign:'center' as const }}>
-      <p style={{ color:T.muted, fontSize:14, margin:'0 0 20px' }}>Enter your wallet PIN to confirm</p>
-      <div style={{ display:'flex', gap:12, justifyContent:'center', marginBottom:28 }}>
-        {Array.from({length:6},(_,i)=><div key={i} style={{ width:14, height:14, borderRadius:'50%', background:i<pin.length?T.inrt:T.border, transition:'background 0.15s' }}/>)}
-      </div>
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:10, maxWidth:240, margin:'0 auto 16px' }}>
-        {[1,2,3,4,5,6,7,8,9,'',0,'⌫'].map((k,i)=>(
-          <button key={i} onClick={()=>k==='⌫'?setPin(p=>p.slice(0,-1)):k!==''&&tap(String(k))}
-            style={{ height:56, borderRadius:14, border:`1.5px solid ${T.border}`, background:k===''?'transparent':T.card, fontSize:k==='⌫'?20:22, fontWeight:700, color:T.text, cursor:k===''?'default':'pointer', fontFamily:"'Plus Jakarta Sans',sans-serif" }}>
-            {k}
-          </button>
-        ))}
-      </div>
-      <button onClick={onCancel} style={{ background:'none', border:'none', color:T.muted, fontSize:13, cursor:'pointer' }}>Cancel</button>
-    </div>
-  );
-}
+type Mode = 'upi' | 'bank';
+type Step = 'form' | 'validate' | 'confirm' | 'success';
 
 export default function SendMoney() {
-  const { user }  = useAuth();
-  const navigate  = useNavigate();
-  const [searchParams] = useSearchParams();
+  const { user, userProfile, refreshProfile } = useAuth();
+  const navigate = useNavigate();
 
-  const [profile, setProfile] = useState<any>(null);
-  const [step, setStep]       = useState<Step>('form');
+  const [mode,      setMode]     = useState<Mode>('upi');
+  const [step,      setStep]     = useState<Step>('form');
+  const [loading,   setLoading]  = useState(false);
+  const [err,       setErr]      = useState('');
 
-  // INRT fields
-  const [toAddress,  setToAddress]  = useState('');
-  const [recipient,  setRecipient]  = useState<{name:string;verified:boolean}|null>(null);
-  const [lookupErr,  setLookupErr]  = useState('');
-  const [lookupLoad, setLookupLoad] = useState(false);
-  const [amount,     setAmount]     = useState('');
-  const [note,       setNote]       = useState('');
-  const [err,        setErr]        = useState('');
-  const [txRef,      setTxRef]      = useState('');
-  const [durationMs, setDurationMs] = useState(0);
-  const [elapsed,    setElapsed]    = useState(0);
+  // UPI fields
+  const [upiId,     setUpiId]    = useState('');
+  const [upiName,   setUpiName]  = useState('');  // from validation
+  const [upiBankName,setUpiBankName]=useState('');
 
-  useEffect(() => {
-    if (!user?.uid) return;
-    const unsub = onSnapshot(doc(firestoreDb,'users',user.uid), snap => {
-      if (snap.exists()) setProfile(snap.data());
-    });
-    return () => unsub();
-  }, [user?.uid]);
+  // Bank fields
+  const [accNo,     setAccNo]    = useState('');
+  const [ifsc,      setIfsc]     = useState('');
+  const [accName,   setAccName]  = useState('');
 
-  const inrtBal = Number(profile?.rewardPoints ?? 0);
-  const amt     = parseFloat(amount) || 0;
+  // Common
+  const [amount,    setAmount]   = useState('');
+  const [note,      setNote]     = useState('');
+  const [txResult,  setTxResult] = useState<any>(null);
 
-  // ── Lookup INRT address ───────────────────────────────────────
-  useEffect(() => {
-    const addr = toAddress.toUpperCase().trim();
-    if (addr.length < 15) { setRecipient(null); setLookupErr(''); return; }
-    setLookupLoad(true); setLookupErr(''); setRecipient(null);
-    const t = setTimeout(async () => {
-      try {
-        const r = await fetch(`${API}/inrt/lookup/${addr}`);
-        const d = await r.json();
-        if (d.success) setRecipient({ name:d.name, verified:d.verified });
-        else setLookupErr(d.error || 'Address not found');
-      } catch { setLookupErr('Lookup failed'); }
-      setLookupLoad(false);
-    }, 600);
-    return () => clearTimeout(t);
-  }, [toAddress]);
+  const bal   = userProfile?.balance || 0;
+  const QUICK = [100, 200, 500, 1000, 2000, 5000];
 
-  // ── Poll transfer ─────────────────────────────────────────────
-  const pollTransfer = (ref: string, start: number) => {
-    let elapsed = 0;
-    const timer = setInterval(() => { elapsed += 100; setElapsed(elapsed); }, 100);
-    const poll  = setInterval(async () => {
-      try {
-        const r = await fetch(`${API}/inrt/transfer/${ref}`);
-        const d = await r.json();
-        if (d.status === 'completed') {
-          clearInterval(timer); clearInterval(poll);
-          setDurationMs(d.durationMs);
-          setStep('success');
-        } else if (d.status === 'failed') {
-          clearInterval(timer); clearInterval(poll);
-          setStep('failed');
-        }
-      } catch {}
-    }, 300);
-  };
-
-  // ── Send ──────────────────────────────────────────────────────
-  const handleSend = async () => {
-    setErr('');
+  // ── Validate UPI ID (get account name) ───────────────────
+  const validateUPI = async () => {
+    if (!upiId.includes('@')) return setErr('Enter valid UPI ID (e.g. 9876543210@ybl)');
+    setLoading(true); setErr('');
     try {
-      const r = await fetch(`${API}/inrt/send`, {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ fromUserId:user!.uid, toAddress, amount:amt, note }),
+      const r = await fetch(`${API}/payout/validate-upi`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ upiId }),
       });
       const d = await r.json();
-      if (!r.ok) throw new Error(d.error || 'Send failed');
-      setTxRef(d.ref);
-      setStep('processing');
-      pollTransfer(d.ref, Date.now());
-    } catch (e: any) { setErr(e.message); setStep('review'); }
+      if (!r.ok) throw new Error(d.error || 'Invalid UPI ID');
+      setUpiName(d.name);
+      setUpiBankName(d.bankName || '');
+      setStep('confirm');
+    } catch (e: any) {
+      setErr(e.message || 'Could not validate UPI ID');
+    }
+    setLoading(false);
   };
 
-  const reset = () => { setStep('form'); setToAddress(''); setAmount(''); setNote(''); setRecipient(null); setTxRef(''); setErr(''); setElapsed(0); };
-  const fmtMs = (ms: number) => ms < 1000 ? `${ms}ms` : `${(ms/1000).toFixed(2)}s`;
+  // ── Validate bank (just check fields) ────────────────────
+  const validateBank = () => {
+    if (!accNo || accNo.length < 8)  return setErr('Enter valid account number');
+    if (!ifsc  || ifsc.length !== 11) return setErr('IFSC must be 11 characters');
+    if (!accName.trim())              return setErr('Enter account holder name');
+    setErr('');
+    setStep('confirm');
+  };
 
-  // ── SUCCESS ───────────────────────────────────────────────────
-  if (step === 'success') return (
-    <div style={S.page}>
-      <div style={{ padding:'60px 24px', textAlign:'center' as const }}>
-        <div style={{ width:84, height:84, borderRadius:'50%', background:'rgba(0,200,83,0.1)', border:`3px solid ${T.green}`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:40, margin:'0 auto 20px' }}>✅</div>
-        <h2 style={S.h2}>INRT Sent!</h2>
-        <p style={{ color:T.muted, fontSize:14, margin:'0 0 20px' }}>{amt.toLocaleString()} INRT delivered to {recipient?.name}</p>
-        {durationMs > 0 && (
-          <div style={{ background:'rgba(0,229,204,0.08)', border:`1px solid ${T.teal}30`, borderRadius:14, padding:'16px', marginBottom:20 }}>
-            <p style={{ color:T.muted, fontSize:11, margin:'0 0 4px', letterSpacing:1 }}>⚡ DELIVERED IN</p>
-            <p style={{ color:T.teal, fontSize:30, fontWeight:800, margin:0, fontFamily:'monospace' }}>{fmtMs(durationMs)}</p>
-          </div>
-        )}
-        <div style={{ background:T.light, borderRadius:14, padding:'14px 16px', marginBottom:20, textAlign:'left' as const }}>
-          {[['Reference', txRef],['To', toAddress],['Amount', `${amt.toLocaleString()} INRT`],['Status','✅ Delivered']].map(([k,v])=>(
-            <div key={k} style={{ display:'flex', justifyContent:'space-between', padding:'6px 0', borderBottom:`1px solid ${T.border}` }}>
-              <span style={{ color:T.muted, fontSize:12 }}>{k}</span>
-              <span style={{ color:T.text, fontWeight:700, fontSize:12, fontFamily:k==='Reference'||k==='To'?'monospace':'inherit', maxWidth:'60%', textAlign:'right' as const, wordBreak:'break-all' as const }}>{v}</span>
-            </div>
-          ))}
-        </div>
-        <button onClick={reset} style={S.btnPrimary}>Send More INRT</button>
-        <button onClick={()=>navigate('/dashboard')} style={{ ...S.btnOutline, marginTop:10 }}>Back to Home</button>
-      </div>
-    </div>
-  );
+  // ── Send via Cashfree ─────────────────────────────────────
+  const handleSend = async () => {
+    const amt = parseFloat(amount);
+    if (!amt || amt < 1) return setErr('Enter valid amount');
+    if (amt > bal)       return setErr(`Insufficient balance. You have ₹${bal.toLocaleString('en-IN')}`);
+    setLoading(true); setErr('');
+    try {
+      const endpoint = mode === 'upi' ? '/payout/send-upi' : '/payout/send-bank';
+      const body = mode === 'upi'
+        ? { fromUid: user!.uid, toUpiId: upiId, amount: amt, note, name: upiName }
+        : { fromUid: user!.uid, accountNo: accNo, ifsc: ifsc.toUpperCase(), accountName: accName, amount: amt, note };
 
-  // ── PROCESSING ────────────────────────────────────────────────
-  if (step === 'processing') return (
-    <div style={S.page}>
-      <div style={{ padding:'60px 24px', textAlign:'center' as const }}>
-        <div style={{ width:64, height:64, border:`4px solid rgba(123,47,190,0.15)`, borderTopColor:T.inrt, borderRadius:'50%', animation:'spin 0.8s linear infinite', margin:'0 auto 20px' }}/>
-        <h2 style={S.h2}>Sending INRT…</h2>
-        <p style={{ color:T.muted, fontSize:14, margin:'0 0 20px' }}>Delivering to {recipient?.name}</p>
-        <div style={{ background:'rgba(123,47,190,0.06)', border:`1px solid ${T.inrt}20`, borderRadius:14, padding:'16px' }}>
-          <p style={{ color:T.muted, fontSize:11, margin:'0 0 6px', letterSpacing:1 }}>ELAPSED</p>
-          <p style={{ color:T.inrt, fontSize:28, fontWeight:800, margin:0, fontFamily:'monospace' }}>{fmtMs(elapsed)}</p>
-        </div>
-        <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
-      </div>
-    </div>
-  );
+      const r = await fetch(`${API}${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || 'Transfer failed');
+      await refreshProfile();
+      setTxResult(d);
+      setStep('success');
+    } catch (e: any) {
+      setErr(e.message || 'Transfer failed');
+    }
+    setLoading(false);
+  };
 
-  // ── PIN ───────────────────────────────────────────────────────
-  if (step === 'pin') return (
-    <div style={S.page}>
-      <div style={{ padding:'24px' }}>
-        <button onClick={()=>setStep('review')} style={S.backLink}>← Back</button>
-        <div style={{ background:'rgba(123,47,190,0.06)', border:`1px solid ${T.inrt}20`, borderRadius:14, padding:'16px', marginBottom:24, textAlign:'center' as const }}>
-          <p style={{ color:T.muted, fontSize:12, margin:'0 0 4px' }}>Sending</p>
-          <p style={{ color:T.text, fontWeight:800, fontSize:28, margin:'0 0 2px', fontFamily:"'Plus Jakarta Sans',sans-serif" }}>{amt.toLocaleString()} INRT</p>
-          <p style={{ color:T.muted, fontSize:13, margin:0 }}>to {recipient?.name} · ≈ ₹{amt.toLocaleString()}</p>
-        </div>
-        <PinPad onComplete={handleSend} onCancel={()=>setStep('review')}/>
-        {err && <p style={{ color:T.red, fontSize:13, marginTop:12, textAlign:'center' as const }}>{err}</p>}
-      </div>
-      <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
-    </div>
-  );
+  const reset = () => {
+    setStep('form'); setUpiId(''); setUpiName(''); setUpiBankName('');
+    setAccNo(''); setIfsc(''); setAccName(''); setAmount(''); setNote('');
+    setTxResult(null); setErr('');
+  };
 
-  // ── REVIEW ────────────────────────────────────────────────────
-  if (step === 'review') return (
+  // ── SUCCESS ───────────────────────────────────────────────
+  if (step === 'success' && txResult) return (
     <div style={S.page}>
-      <div style={{ padding:'24px' }}>
-        <button onClick={()=>setStep('form')} style={S.backLink}>← Back</button>
-        <h2 style={{ ...S.h2, marginBottom:20 }}>Confirm Transfer</h2>
-        <div style={{ textAlign:'center' as const, marginBottom:20 }}>
-          <p style={{ color:T.text, fontSize:36, fontWeight:800, margin:0, fontFamily:"'Plus Jakarta Sans',sans-serif" }}>{amt.toLocaleString()} <span style={{ fontSize:18, color:T.inrt }}>INRT</span></p>
-          <p style={{ color:T.muted, fontSize:13, margin:'4px 0 0' }}>≈ ₹{amt.toLocaleString()} · 1 INRT = ₹1</p>
-        </div>
-        <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:16, padding:'14px 16px', marginBottom:16 }}>
+      <div style={{ display:'flex',flexDirection:'column',alignItems:'center',padding:'80px 24px',textAlign:'center' }}>
+        <div style={S.successIcon}>✅</div>
+        <h2 style={S.successTitle}>Money Sent!</h2>
+        <p style={{ color:'var(--t2)',fontSize:15,marginBottom:24 }}>
+          ₹{parseFloat(amount).toLocaleString('en-IN')} sent to {mode==='upi'?upiId:accName}
+        </p>
+        <div className="card" style={{ width:'100%',marginBottom:20,textAlign:'left' }}>
           {[
-            ['To', recipient?.name || ''],
-            ['INRT Address', toAddress],
-            ['Amount', `${amt.toLocaleString()} INRT`],
-            ['Network Fee', '₹0 (Free)'],
-            ['Est. Delivery', '2-4 seconds'],
-            ...(note ? [['Note', note]] : []),
-          ].map(([k,v])=>(
-            <div key={k} style={{ display:'flex', justifyContent:'space-between', padding:'8px 0', borderBottom:`1px solid ${T.border}` }}>
-              <span style={{ color:T.muted, fontSize:13 }}>{k}</span>
-              <span style={{ color:k==='Network Fee'?T.green:T.text, fontWeight:700, fontSize:13, fontFamily:k==='INRT Address'?'monospace':'inherit', maxWidth:'60%', textAlign:'right' as const, wordBreak:'break-all' as const }}>{v}</span>
+            ['Transfer ID',   txResult.transferId],
+            ['Amount',        `₹${parseFloat(amount).toLocaleString('en-IN')}`],
+            ['To',            mode==='upi' ? upiId : `${accName} (${accNo.slice(-4).padStart(accNo.length,'*')})`],
+            ['Method',        mode==='upi' ? 'UPI Transfer' : 'IMPS Bank Transfer'],
+            ['Points Earned', `+${Math.floor(parseFloat(amount)/10)} pts`],
+            ['Status',        '✅ Success'],
+          ].map(([k,v]) => (
+            <div key={k} style={{ display:'flex',justifyContent:'space-between',padding:'9px 0',borderBottom:'1px solid var(--b1)' }}>
+              <span style={{ color:'var(--t2)',fontSize:13 }}>{k}</span>
+              <span style={{ color:'var(--t1)',fontWeight:700,fontSize:13,maxWidth:'55%',textAlign:'right',wordBreak:'break-all' }}>{v}</span>
             </div>
           ))}
         </div>
-        {err && <p style={{ color:T.red, fontSize:13, marginBottom:12 }}>{err}</p>}
-        <button onClick={()=>setStep('pin')} style={S.btnInrt}>Confirm & Enter PIN →</button>
+        <button className="btn-primary" onClick={() => navigate('/dashboard')}>Back to Home</button>
+        <button className="btn-outline" style={{ marginTop:10 }} onClick={reset}>Send Again</button>
       </div>
     </div>
   );
 
-  // ── FAILED ────────────────────────────────────────────────────
-  if (step === 'failed') return (
-    <div style={S.page}>
-      <div style={{ padding:'60px 24px', textAlign:'center' as const }}>
-        <div style={{ width:84, height:84, borderRadius:'50%', background:'rgba(255,59,48,0.1)', border:`3px solid ${T.red}`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:40, margin:'0 auto 20px' }}>❌</div>
-        <h2 style={S.h2}>Transfer Failed</h2>
-        <p style={{ color:T.muted, fontSize:14, margin:'0 0 24px' }}>Your INRT has been refunded to your wallet.</p>
-        <button onClick={reset} style={S.btnPrimary}>Try Again</button>
-        <button onClick={()=>navigate('/dashboard')} style={{ ...S.btnOutline, marginTop:10 }}>Back to Home</button>
-      </div>
-      <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
-    </div>
-  );
-
-  // ── MAIN FORM ─────────────────────────────────────────────────
   return (
     <div style={S.page}>
-      <div style={{ padding:'52px 20px 24px' }}>
-        <button onClick={()=>navigate('/dashboard')} style={S.backLink}>← Back</button>
-        <h2 style={{ ...S.h2, marginBottom:4 }}>Send Money</h2>
-        <p style={{ color:T.muted, fontSize:13, margin:'0 0 20px' }}>Send INRT to anyone in the world instantly</p>
-
-        {/* ── COMING SOON BANNER for UPI/Bank ─────────────── */}
-        <div style={{ background:'rgba(255,149,0,0.06)', border:'1px solid rgba(255,149,0,0.2)', borderRadius:14, padding:'14px 16px', marginBottom:20 }}>
-          <p style={{ color:'#FF9500', fontWeight:700, fontSize:13, margin:'0 0 4px' }}>🏦 UPI & Bank Transfers — Coming Soon</p>
-          <p style={{ color:T.muted, fontSize:12, margin:0, lineHeight:1.6 }}>
-            Direct UPI and bank transfers are pending payment gateway approval. For now, use INRT for instant global transfers — same value, zero fees.
-          </p>
-        </div>
-
-        {/* ── INRT BALANCE ─────────────────────────────────── */}
-        <div style={{ background:'rgba(123,47,190,0.06)', border:`1px solid ${T.inrt}25`, borderRadius:14, padding:'14px 16px', marginBottom:20, display:'flex', justifyContent:'space-between', alignItems:'center' }}>
-          <div>
-            <p style={{ color:T.muted, fontSize:11, fontWeight:700, margin:'0 0 2px', letterSpacing:0.5 }}>YOUR INRT BALANCE</p>
-            <p style={{ color:T.inrt, fontSize:22, fontWeight:800, margin:0, fontFamily:"'Plus Jakarta Sans',sans-serif" }}>{inrtBal.toLocaleString()} INRT</p>
-          </div>
-          <div style={{ textAlign:'right' as const }}>
-            <p style={{ color:T.muted, fontSize:11, margin:'0 0 2px' }}>≈ ₹{inrtBal.toLocaleString()}</p>
-            <button onClick={()=>navigate('/checkout')} style={{ background:T.inrt, border:'none', borderRadius:8, padding:'6px 12px', color:'#fff', fontSize:11, fontWeight:700, cursor:'pointer' }}>Buy INRT +</button>
-          </div>
-        </div>
-
-        {/* ── RECIPIENT ADDRESS ─────────────────────────────── */}
-        <p style={S.label}>RECIPIENT INRT ADDRESS</p>
-        <input
-          value={toAddress} onChange={e=>setToAddress(e.target.value.toUpperCase())}
-          placeholder="INRT-XXXX-XXXX-XXXX" maxLength={20}
-          style={{ ...S.input, fontFamily:'monospace', letterSpacing:1 }}
-        />
-        {lookupLoad && <p style={{ color:T.muted, fontSize:12, margin:'-10px 0 12px' }}>🔍 Looking up address…</p>}
-        {lookupErr  && <p style={{ color:T.red,  fontSize:12, margin:'-10px 0 12px' }}>⚠️ {lookupErr}</p>}
-        {recipient  && (
-          <div style={{ background:T.greenL, border:`1px solid ${T.green}30`, borderRadius:10, padding:'10px 14px', marginBottom:16, display:'flex', gap:10, alignItems:'center' }}>
-            <span style={{ fontSize:18 }}>✅</span>
-            <div>
-              <p style={{ fontWeight:700, fontSize:13, color:T.text, margin:0 }}>{recipient.name}</p>
-              <p style={{ color:T.green, fontSize:11, margin:0 }}>{recipient.verified ? 'KYC Verified ✓' : 'Address confirmed'}</p>
-            </div>
-          </div>
-        )}
-
-        {/* ── AMOUNT ───────────────────────────────────────── */}
-        <p style={S.label}>AMOUNT (INRT)</p>
-        <div style={{ display:'flex', alignItems:'center', gap:8, background:T.light, borderRadius:14, padding:'14px 16px', border:`1.5px solid ${amount?T.inrt:T.border}`, marginBottom:8 }}>
-          <span style={{ fontSize:22 }}>🪙</span>
-          <input type="number" value={amount} onChange={e=>setAmount(e.target.value)} placeholder="0"
-            style={{ flex:1, background:'none', border:'none', outline:'none', fontFamily:"'Plus Jakarta Sans',sans-serif", fontWeight:800, fontSize:28, color:T.text }}/>
-        </div>
-        <p style={{ color:T.muted, fontSize:12, margin:'0 0 12px' }}>= ₹{amt ? amt.toLocaleString() : '0'} · No fees</p>
-
-        {/* Quick amounts */}
-        <div style={{ display:'flex', gap:8, marginBottom:16 }}>
-          {[10, 50, 100, 500].map(v=>(
-            <button key={v} onClick={()=>setAmount(String(v))}
-              style={{ flex:1, padding:'10px 0', borderRadius:10, border:`1px solid ${T.border}`, background:'transparent', cursor:'pointer', fontSize:13, fontWeight:700, color:T.inrt, fontFamily:"'Plus Jakarta Sans',sans-serif" }}>
-              {v}
-            </button>
-          ))}
-        </div>
-
-        {/* Note */}
-        <p style={S.label}>NOTE (OPTIONAL)</p>
-        <input value={note} onChange={e=>setNote(e.target.value)} placeholder="What's this for?"
-          style={{ ...S.input, marginBottom:20 }}/>
-
-        {amt > inrtBal && <p style={{ color:T.red, fontSize:12, marginBottom:12, textAlign:'center' as const }}>Insufficient INRT. <button onClick={()=>navigate('/checkout')} style={{ background:'none', border:'none', color:T.inrt, cursor:'pointer', fontWeight:700, fontSize:12 }}>Buy INRT →</button></p>}
-
+      {/* Header */}
+      <div style={S.header}>
         <button
-          disabled={!recipient || amt <= 0 || amt > inrtBal}
-          onClick={()=>setStep('review')}
-          style={{ ...S.btnInrt, opacity:(!recipient||amt<=0||amt>inrtBal)?0.5:1 }}>
-          Continue →
-        </button>
+          onClick={() => step==='form' ? navigate('/dashboard') : setStep('form')}
+          className="back-btn">←</button>
+        <h1 className="page-title">Send Money</h1>
+      </div>
 
-        {/* ── DON'T HAVE INRT? ─────────────────────────────── */}
-        <div onClick={()=>navigate('/checkout')} style={{ marginTop:16, background:'rgba(123,47,190,0.04)', border:`1px solid ${T.inrt}20`, borderRadius:14, padding:'14px 16px', cursor:'pointer', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
-          <div>
-            <p style={{ color:T.inrt, fontWeight:700, fontSize:13, margin:0 }}>🪙 Don't have INRT yet?</p>
-            <p style={{ color:T.muted, fontSize:12, margin:'2px 0 0' }}>Buy INRT with ₹ via Razorpay — instant</p>
-          </div>
-          <span style={{ color:T.inrt, fontSize:18 }}>→</span>
+      {/* Balance */}
+      <div style={{ padding:'0 16px 16px',background:'linear-gradient(160deg,#050914,#0a1428)' }}>
+        <div style={{ background:'rgba(255,255,255,0.03)',border:'1px solid var(--b1)',borderRadius:'var(--r2)',padding:'12px 16px',display:'flex',justifyContent:'space-between',alignItems:'center' }}>
+          <span style={{ color:'var(--t3)',fontSize:12 }}>Available balance</span>
+          <span style={{ fontFamily:'var(--f-display)',fontWeight:700,fontSize:18,color:'var(--t1)' }}>
+            ₹{bal.toLocaleString('en-IN')}
+          </span>
         </div>
       </div>
 
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap');
-        @keyframes spin{to{transform:rotate(360deg)}}
-      `}</style>
+      <div style={{ padding:'16px 16px 90px' }}>
+
+        {/* ── FORM STEP ── */}
+        {step === 'form' && (
+          <>
+            {/* Mode toggle */}
+            <div style={{ display:'flex',gap:8,marginBottom:16 }}>
+              {(['upi','bank'] as Mode[]).map(m => (
+                <button key={m} onClick={() => { setMode(m); setErr(''); }}
+                  style={{ flex:1,padding:'12px 0',borderRadius:'var(--r2)',fontSize:13,fontWeight:700,cursor:'pointer',
+                            background:mode===m?'var(--teal)':'var(--bg-card)',
+                            border:`1px solid ${mode===m?'var(--teal)':'var(--b1)'}`,
+                            color:mode===m?'#000':'var(--t2)' }}>
+                  {m==='upi'?'📱 UPI ID':'🏦 Bank Account'}
+                </button>
+              ))}
+            </div>
+
+            <div className="card" style={{ marginBottom:14 }}>
+              {mode === 'upi' ? (
+                <>
+                  <p className="s-label">UPI ID</p>
+                  <input className="inp" style={{ marginBottom:8 }}
+                    placeholder="e.g. 9876543210@ybl or name@okhdfcbank"
+                    value={upiId}
+                    onChange={e => { setUpiId(e.target.value.trim()); setErr(''); }} />
+                  <p style={{ color:'var(--t3)',fontSize:11,marginBottom:16 }}>
+                    Works with GPay, PhonePe, Paytm, BHIM, any UPI app
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p className="s-label">ACCOUNT HOLDER NAME</p>
+                  <input className="inp" style={{ marginBottom:14 }}
+                    placeholder="Full name as on bank account"
+                    value={accName} onChange={e => { setAccName(e.target.value); setErr(''); }} />
+                  <p className="s-label">ACCOUNT NUMBER</p>
+                  <input className="inp" style={{ marginBottom:14 }}
+                    type="tel" placeholder="Bank account number"
+                    value={accNo} onChange={e => { setAccNo(e.target.value.replace(/\D/g,'')); setErr(''); }} />
+                  <p className="s-label">IFSC CODE</p>
+                  <input className="inp" style={{ textTransform:'uppercase',marginBottom:8 }}
+                    maxLength={11} placeholder="e.g. HDFC0001234"
+                    value={ifsc} onChange={e => { setIfsc(e.target.value.toUpperCase().replace(/\s/g,'')); setErr(''); }} />
+                </>
+              )}
+
+              {err && <p className="err-box" style={{ marginBottom:12 }}>⚠️ {err}</p>}
+
+              <button className="btn-primary"
+                onClick={mode==='upi' ? validateUPI : validateBank}
+                disabled={loading || (mode==='upi' ? !upiId.includes('@') : !accNo||!ifsc||!accName)}
+                style={{ opacity:loading||(mode==='upi'?!upiId.includes('@'):!accNo||!ifsc||!accName)?0.5:1 }}>
+                {loading ? '⏳ Validating…' : 'Validate & Continue →'}
+              </button>
+            </div>
+
+            {/* Info box */}
+            <div style={{ background:'rgba(0,229,204,0.04)',border:'1px solid rgba(0,229,204,0.12)',borderRadius:'var(--r2)',padding:'14px 16px' }}>
+              <p style={{ color:'var(--teal)',fontWeight:700,fontSize:13,marginBottom:8 }}>
+                ⚡ No Popup. No Redirect. Ever.
+              </p>
+              <p style={{ color:'var(--t2)',fontSize:12,lineHeight:1.6 }}>
+                Money goes directly from your INRT wallet to their UPI ID or bank account.
+                Everything happens silently in the background.
+                You never leave this app.
+              </p>
+            </div>
+          </>
+        )}
+
+        {/* ── CONFIRM STEP ── */}
+        {step === 'confirm' && (
+          <>
+            {/* Recipient card */}
+            {mode === 'upi' && upiName && (
+              <div className="card" style={{ display:'flex',alignItems:'center',gap:14,marginBottom:14 }}>
+                <div style={{ width:52,height:52,borderRadius:'50%',background:'var(--teal-dim)',border:'1px solid var(--teal)',display:'flex',alignItems:'center',justifyContent:'center',fontFamily:'var(--f-display)',fontWeight:700,fontSize:20,color:'var(--teal)',flexShrink:0 }}>
+                  {upiName.charAt(0).toUpperCase()}
+                </div>
+                <div style={{ flex:1 }}>
+                  <p style={{ color:'var(--t1)',fontWeight:700,fontSize:16 }}>{upiName}</p>
+                  <p style={{ color:'var(--teal)',fontSize:13,marginTop:2 }}>{upiId}</p>
+                  {upiBankName && <p style={{ color:'var(--t3)',fontSize:11,marginTop:2 }}>{upiBankName}</p>}
+                </div>
+                <span className="badge-green">✓ Valid UPI</span>
+              </div>
+            )}
+
+            {mode === 'bank' && (
+              <div className="card" style={{ marginBottom:14 }}>
+                <p style={{ color:'var(--t1)',fontWeight:700,fontSize:15,marginBottom:10 }}>{accName}</p>
+                <p style={{ color:'var(--t2)',fontSize:13 }}>A/C: {'*'.repeat(accNo.length-4)}{accNo.slice(-4)}</p>
+                <p style={{ color:'var(--t2)',fontSize:13,marginTop:4 }}>IFSC: {ifsc}</p>
+                <span className="badge-teal" style={{ marginTop:10,display:'inline-block' }}>IMPS Transfer</span>
+              </div>
+            )}
+
+            {/* Amount */}
+            <div className="card" style={{ marginBottom:14 }}>
+              <p className="s-label">AMOUNT</p>
+              <div className="amount-box" style={{ marginBottom:12 }}>
+                <span style={{ color:'var(--teal)',fontSize:22,fontWeight:700 }}>₹</span>
+                <input className="amount-input" type="number"
+                  placeholder="0" value={amount}
+                  onChange={e => { setAmount(e.target.value); setErr(''); }} />
+              </div>
+              <div style={{ display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:8,marginBottom:14 }}>
+                {QUICK.map(a => (
+                  <button key={a} onClick={() => setAmount(String(a))}
+                    style={{ padding:'10px 0',borderRadius:'var(--r1)',fontSize:13,fontWeight:700,cursor:'pointer',
+                              background:amount===String(a)?'var(--teal-dim)':'var(--bg-elevated)',
+                              border:`1px solid ${amount===String(a)?'var(--teal)':'var(--b1)'}`,
+                              color:amount===String(a)?'var(--teal)':'var(--t2)' }}>
+                    ₹{a}
+                  </button>
+                ))}
+              </div>
+              <p className="s-label">NOTE (OPTIONAL)</p>
+              <input className="inp" placeholder="What's this for?"
+                value={note} onChange={e => setNote(e.target.value)} />
+            </div>
+
+            {/* Balance row */}
+            <div style={{ display:'flex',justifyContent:'space-between',padding:'10px 14px',background:'var(--bg-card)',border:'1px solid var(--b1)',borderRadius:'var(--r1)',marginBottom:14 }}>
+              <span style={{ color:'var(--t2)',fontSize:13 }}>Wallet balance</span>
+              <span style={{ color:parseFloat(amount)>bal?'var(--red)':'var(--green)',fontWeight:700,fontSize:13 }}>
+                ₹{bal.toLocaleString('en-IN')}
+              </span>
+            </div>
+
+            {amount && parseFloat(amount) > 0 && (
+              <div style={{ background:'rgba(0,229,204,0.06)',border:'1px solid rgba(0,229,204,0.15)',borderRadius:'var(--r1)',padding:'10px 14px',marginBottom:14 }}>
+                <p style={{ color:'var(--teal)',fontSize:13,fontWeight:600 }}>
+                  🎁 You earn +{Math.floor(parseFloat(amount)/10)} reward points for this transfer
+                </p>
+              </div>
+            )}
+
+            {err && <p className="err-box" style={{ marginBottom:14 }}>⚠️ {err}</p>}
+
+            <button className="btn-primary"
+              onClick={handleSend}
+              disabled={loading||!amount||parseFloat(amount)<1||parseFloat(amount)>bal}
+              style={{ opacity:loading||!amount||parseFloat(amount)<1||parseFloat(amount)>bal?0.5:1 }}>
+              {loading
+                ? <span style={{ display:'flex',alignItems:'center',justifyContent:'center',gap:10 }}>
+                    <span style={{ width:18,height:18,border:'2px solid #000',borderTopColor:'transparent',borderRadius:'50%',display:'inline-block',animation:'spin 0.7s linear infinite' }}/>
+                    Sending silently…
+                  </span>
+                : `Send ₹${parseFloat(amount||'0').toLocaleString('en-IN')} →`
+              }
+            </button>
+            <p style={{ textAlign:'center',color:'var(--t3)',fontSize:11,marginTop:10 }}>
+              No popup · Powered by Cashfree Payouts · Instant IMPS/UPI
+            </p>
+          </>
+        )}
+      </div>
+
+      <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
     </div>
   );
 }
 
-const S: Record<string,any> = {
-  page:    { maxWidth:480, margin:'0 auto', minHeight:'100vh', background:'#fff', fontFamily:"'Plus Jakarta Sans',sans-serif" },
-  backLink:{ background:'none', border:'none', color:'#0070F3', cursor:'pointer', fontSize:14, fontWeight:700, padding:'0 0 16px', display:'block' },
-  h2:      { fontFamily:"'Plus Jakarta Sans',sans-serif", fontWeight:800, fontSize:24, color:'#0A2540', margin:0 },
-  label:   { fontSize:11, color:'#6B7C93', fontWeight:700, letterSpacing:0.5, margin:'0 0 8px' },
-  input:   { width:'100%', padding:'13px 14px', borderRadius:12, border:'1.5px solid #E8ECF0', fontSize:15, outline:'none', boxSizing:'border-box' as const, fontFamily:"'Plus Jakarta Sans',sans-serif", marginBottom:16, color:'#0A2540' },
-  btnPrimary:{ width:'100%', padding:'16px', borderRadius:14, border:'none', background:'#0A2540', color:'#fff', fontWeight:700, fontSize:15, cursor:'pointer', fontFamily:"'Plus Jakarta Sans',sans-serif" },
-  btnInrt:   { width:'100%', padding:'16px', borderRadius:14, border:'none', background:'linear-gradient(135deg,#7B2FBE,#5B17A3)', color:'#fff', fontWeight:700, fontSize:15, cursor:'pointer', fontFamily:"'Plus Jakarta Sans',sans-serif" },
-  btnOutline:{ width:'100%', padding:'14px', borderRadius:14, border:'1.5px solid #E8ECF0', background:'transparent', color:'#6B7C93', fontWeight:700, fontSize:14, cursor:'pointer', fontFamily:"'Plus Jakarta Sans',sans-serif" },
+const S: Record<string,React.CSSProperties> = {
+  page:        { maxWidth:480,margin:'0 auto',minHeight:'100vh',background:'var(--bg)',fontFamily:'var(--f-body)' },
+  header:      { background:'linear-gradient(160deg,#050914,#0a1428)',padding:'52px 20px 16px',display:'flex',alignItems:'center',gap:14 },
+  successIcon: { width:84,height:84,borderRadius:'50%',background:'rgba(0,214,143,0.1)',border:'2px solid var(--green)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:40,marginBottom:20 },
+  successTitle:{ fontFamily:'var(--f-display)',fontWeight:700,fontSize:26,color:'var(--t1)',marginBottom:8 },
 };
