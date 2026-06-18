@@ -1,857 +1,501 @@
 /**
- * INRT WALLET — PRODUCTION KYC PAGE
+ * INRT WALLET — KYCPage.tsx (PAN Only, Manual Review)
+ * Replace: src/pages/KYCPage.tsx
  *
- * Real verification flow:
- *   Step 1: Personal info + age validation
- *   Step 2: Aadhaar OTP verification via Surepass API (real Aadhaar validation)
- *   Step 3: PAN verification via Surepass API (real PAN validation)
- *   Step 4: Selfie + liveness (camera capture)
- *   Step 5: Submit → Firebase Storage → Firestore → Admin review
- *
- * APIs used:
- *   Surepass (surepass.io) — Aadhaar + PAN verification
- *   Firebase Storage        — document storage
- *   Firebase Firestore       — KYC status tracking
- *
- * All API calls go through YOUR backend (Railway) — never expose
- * Surepass token directly in frontend.
+ * Flow:
+ *   Step 1: Personal info + PAN number
+ *   Step 2: PAN card photo upload
+ *   Step 3: Selfie
+ *   Step 4: Submitted — shows real-time status
  */
 
-import { useState, useRef, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { useAuth } from '../context/AuthContext';
-import {
-  doc, setDoc, updateDoc, getDoc, serverTimestamp
-} from 'firebase/firestore';
-import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
-import { db, storage } from '../lib/firebase';
-import '../styles/theme.css';
+import { useState, useEffect, useRef } from 'react';
+import { useNavigate }                  from 'react-router-dom';
+import { useAuth }                      from '../context/AuthContext';
 
-// ── Backend URL (your Railway server) ─────────────────────────
 const API = import.meta.env.VITE_API_URL || '';
 
-// ── Indian states ──────────────────────────────────────────────
-const STATES = [
-  'Andhra Pradesh','Arunachal Pradesh','Assam','Bihar','Chhattisgarh',
-  'Goa','Gujarat','Haryana','Himachal Pradesh','Jharkhand','Karnataka',
-  'Kerala','Madhya Pradesh','Maharashtra','Manipur','Meghalaya','Mizoram',
-  'Nagaland','Odisha','Punjab','Rajasthan','Sikkim','Tamil Nadu',
-  'Telangana','Tripura','Uttar Pradesh','Uttarakhand','West Bengal',
-  'Delhi','Jammu & Kashmir','Ladakh','Puducherry','Chandigarh',
-];
+type Step = 1 | 2 | 3 | 'submitted' | 'success' | 'rejected';
 
-type Step = 1 | 2 | 3 | 4 | 5;
+async function compressImage(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      const canvas  = document.createElement('canvas');
+      const ratio   = Math.min(800 / img.width, 800 / img.height, 1);
+      canvas.width  = img.width  * ratio;
+      canvas.height = img.height * ratio;
+      canvas.getContext('2d')!.drawImage(img, 0, 0, canvas.width, canvas.height);
+      URL.revokeObjectURL(url);
+      resolve(canvas.toDataURL('image/jpeg', 0.75).split(',')[1]);
+    };
+    img.onerror = reject;
+    img.src     = url;
+  });
+}
 
-// ══════════════════════════════════════════════════════════════
 export default function KYCPage() {
   const { user, userProfile, refreshProfile } = useAuth();
   const navigate = useNavigate();
 
-  const [step,       setStep]      = useState<Step>(1);
-  const [loading,    setLoading]   = useState(false);
-  const [toast,      setToast]     = useState('');
-  const [toastType,  setToastType] = useState<'ok'|'err'>('ok');
-  const [errs,       setErrs]      = useState<Record<string,string>>({});
+  const [step,     setStep]     = useState<Step>(1);
+  const [loading,  setLoading]  = useState(false);
+  const [err,      setErr]      = useState('');
 
-  // Step 1 — Personal
-  const [fullName,   setFullName]  = useState(userProfile?.name || '');
-  const [dob,        setDob]       = useState('');
-  const [gender,     setGender]    = useState('');
+  // Step 1 fields
+  const [fullName, setFullName] = useState(userProfile?.name || '');
+  const [dob,      setDob]      = useState('');
+  const [pan,      setPan]      = useState('');
 
-  // Step 2 — Aadhaar
-  const [aadhaar,    setAadhaar]   = useState('');
-  const [aadhaarOTP, setAadhaarOTP]= useState('');
-  const [aadhaarRef, setAadhaarRef]= useState(''); // ref_id from Surepass
-  const [aadhaarSent,setAadhaarSent]=useState(false);
-  const [aadhaarData,setAadhaarData]=useState<any>(null); // verified aadhaar data
+  // Step 2 — PAN photo
+  const [panPhoto,   setPanPhoto]   = useState<string | null>(null);
+  const [panPreview, setPanPreview] = useState<string | null>(null);
 
-  // Step 3 — PAN
-  const [pan,        setPan]       = useState('');
-  const [panData,    setPanData]   = useState<any>(null); // verified PAN data
-
-  // Step 4 — Selfie
-  const [selfieFile, setSelfieFile]= useState<File|null>(null);
-  const [selfieURL,  setSelfieURL] = useState('');
-  const videoRef    = useRef<HTMLVideoElement>(null);
-  const canvasRef   = useRef<HTMLCanvasElement>(null);
-  const [camActive, setCamActive]  = useState(false);
-  const [stream,    setStream]     = useState<MediaStream|null>(null);
+  // Step 3 — Selfie
+  const [selfie,        setSelfie]        = useState<string | null>(null);
+  const [selfiePreview, setSelfiePreview] = useState<string | null>(null);
+  const videoRef  = useRef<HTMLVideoElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const [camOn,   setCamOn]   = useState(false);
+  const pollRef   = useRef<any>(null);
 
   const kycStatus = userProfile?.kycStatus || 'not_started';
 
-  const showToast = (msg: string, type: 'ok'|'err' = 'ok') => {
-    setToast(msg); setToastType(type);
-    setTimeout(() => setToast(''), 4000);
-  };
-
-  // Cleanup camera on unmount
+  // ── Sync step with kycStatus ─────────────────────────────────
   useEffect(() => {
-    return () => { stream?.getTracks().forEach(t => t.stop()); };
-  }, [stream]);
-
-  // ── STEP 1 VALIDATION ──────────────────────────────────────
-  const validateStep1 = () => {
-    const e: Record<string,string> = {};
-    if (!fullName.trim() || fullName.length < 3) e.fullName = 'Enter full name (min 3 chars)';
-    if (!dob) {
-      e.dob = 'Date of birth required';
-    } else {
-      const birth = new Date(dob);
-      const today = new Date();
-      let age = today.getFullYear() - birth.getFullYear();
-      const m = today.getMonth() - birth.getMonth();
-      if (m < 0 || (m === 0 && today.getDate() < birth.getDate())) age--;
-      if (age < 18) e.dob = `You must be 18+. You are ${age}.`;
+    if (kycStatus === 'verified') setStep('success');
+    if (kycStatus === 'rejected') setStep('rejected');
+    if (kycStatus === 'pending' && step === 1) {
+      setStep('submitted');
+      startPolling();
     }
-    if (!gender) e.gender = 'Select gender';
-    setErrs(e);
-    return Object.keys(e).length === 0;
+    return () => {
+      clearInterval(pollRef.current);
+      streamRef.current?.getTracks().forEach(t => t.stop());
+    };
+  }, [kycStatus]);
+
+  // ── Poll every 15 seconds when pending ───────────────────────
+  const startPolling = () => {
+    clearInterval(pollRef.current);
+    pollRef.current = setInterval(async () => {
+      try {
+        const r = await fetch(`${API}/kyc/status/${user!.uid}`);
+        const d = await r.json();
+        if (d.status === 'verified') {
+          clearInterval(pollRef.current);
+          await refreshProfile();
+          setStep('success');
+        } else if (d.status === 'rejected') {
+          clearInterval(pollRef.current);
+          await refreshProfile();
+          setStep('rejected');
+        }
+      } catch { /* keep polling */ }
+    }, 15000);
   };
 
-  // ── STEP 2 — Send Aadhaar OTP (via your backend → Surepass) ─
-  const sendAadhaarOTP = async () => {
-    const clean = aadhaar.replace(/\s/g, '');
-    if (clean.length !== 12) return setErrs({ aadhaar: 'Aadhaar must be 12 digits' });
-    if (/^(\d)\1{11}$/.test(clean)) return setErrs({ aadhaar: 'Invalid Aadhaar number' });
-
-    setLoading(true); setErrs({});
+  // ── Handle file upload ────────────────────────────────────────
+  const handleFile = async (
+    e: React.ChangeEvent<HTMLInputElement>,
+    setB64: (v: string) => void,
+    setPreview: (v: string) => void,
+  ) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 15 * 1024 * 1024) return setErr('File too large. Max 15MB.');
+    setErr('');
     try {
-      const res = await fetch(`${API}/kyc/aadhaar-send-otp`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ aadhaarNumber: clean, userId: user!.uid }),
-      });
-      const data = await res.json();
-
-      if (!res.ok) throw new Error(data.error || 'Failed to send OTP');
-
-      // Surepass returns a ref_id needed for verification
-      setAadhaarRef(data.ref_id || data.referenceId);
-      setAadhaarSent(true);
-      showToast('OTP sent to your Aadhaar-linked mobile!');
-    } catch (e: any) {
-      // If backend/API not available, show informative error
-      if (e.message.includes('fetch') || e.message.includes('network')) {
-        showToast('Backend server not reachable. Check VITE_API_URL in .env', 'err');
-      } else {
-        showToast(e.message || 'Failed to send OTP', 'err');
-      }
-    }
-    setLoading(false);
+      const b64     = await compressImage(file);
+      const preview = URL.createObjectURL(file);
+      setB64(b64);
+      setPreview(preview);
+    } catch { setErr('Failed to process image. Try again.'); }
   };
 
-  // ── STEP 2 — Verify Aadhaar OTP ───────────────────────────
-  const verifyAadhaarOTP = async () => {
-    if (!aadhaarOTP || aadhaarOTP.length !== 6)
-      return setErrs({ otp: 'Enter 6-digit OTP' });
-
-    setLoading(true); setErrs({});
+  // ── Camera ────────────────────────────────────────────────────
+  const startCamera = async () => {
     try {
-      const res = await fetch(`${API}/kyc/aadhaar-verify-otp`, {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } });
+      streamRef.current = stream;
+      if (videoRef.current) videoRef.current.srcObject = stream;
+      setCamOn(true);
+    } catch { setErr('Camera access denied. Please upload a selfie instead.'); }
+  };
+
+  const stopCamera = () => {
+    streamRef.current?.getTracks().forEach(t => t.stop());
+    streamRef.current = null;
+    setCamOn(false);
+  };
+
+  const captureSelfie = () => {
+    if (!videoRef.current) return;
+    const canvas  = document.createElement('canvas');
+    canvas.width  = videoRef.current.videoWidth;
+    canvas.height = videoRef.current.videoHeight;
+    canvas.getContext('2d')!.drawImage(videoRef.current, 0, 0);
+    setSelfie(canvas.toDataURL('image/jpeg', 0.8).split(',')[1]);
+    setSelfiePreview(canvas.toDataURL('image/jpeg', 0.8));
+    stopCamera();
+  };
+
+  // ── Submit ────────────────────────────────────────────────────
+  const handleSubmit = async () => {
+    if (!selfie) return setErr('Please take a selfie or upload a photo');
+    setLoading(true); setErr('');
+    try {
+      const r = await fetch(`${API}/kyc/submit`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          otp:     aadhaarOTP,
-          ref_id:  aadhaarRef,
-          userId:  user!.uid,
+          userId:         user!.uid,
+          fullName,
+          dob,
+          pan:            pan.toUpperCase().trim(),
+          panPhotoBase64: panPhoto,
+          selfieBase64:   selfie,
         }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'OTP verification failed');
-
-      // Store verified Aadhaar data (Surepass returns name, DOB, address, photo)
-      setAadhaarData(data.aadhaarData || data);
-      showToast('✅ Aadhaar verified successfully!');
-      setStep(3);
-    } catch (e: any) {
-      showToast(e.message || 'OTP verification failed', 'err');
-    }
-    setLoading(false);
-  };
-
-  // ── STEP 3 — Verify PAN ────────────────────────────────────
-  const verifyPAN = async () => {
-    const cleanPAN = pan.toUpperCase().trim();
-    if (!/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(cleanPAN))
-      return setErrs({ pan: 'PAN format must be ABCDE1234F' });
-
-    setLoading(true); setErrs({});
-    try {
-      const res = await fetch(`${API}/kyc/verify-pan`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ panNumber: cleanPAN, userId: user!.uid }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'PAN verification failed');
-
-      // Surepass returns name, DOB, PAN status
-      setPanData(data.panData || data);
-      showToast('✅ PAN verified successfully!');
-      setStep(4);
-    } catch (e: any) {
-      showToast(e.message || 'PAN verification failed', 'err');
-    }
-    setLoading(false);
-  };
-
-  // ── STEP 4 — Camera for selfie ────────────────────────────
-  const startCamera = async () => {
-    try {
-      const s = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'user', width: 480, height: 480 }
-      });
-      if (videoRef.current) videoRef.current.srcObject = s;
-      setStream(s); setCamActive(true);
-    } catch (e) {
-      showToast('Camera access denied. Please allow camera in browser settings.', 'err');
-    }
-  };
-
-  const capturePhoto = () => {
-    if (!videoRef.current || !canvasRef.current) return;
-    const canvas = canvasRef.current;
-    const video  = videoRef.current;
-    canvas.width  = video.videoWidth;
-    canvas.height = video.videoHeight;
-    canvas.getContext('2d')!.drawImage(video, 0, 0);
-    canvas.toBlob(blob => {
-      if (!blob) return;
-      const file = new File([blob], 'selfie.jpg', { type: 'image/jpeg' });
-      setSelfieFile(file);
-      setSelfieURL(URL.createObjectURL(blob));
-      stream?.getTracks().forEach(t => t.stop());
-      setCamActive(false);
-    }, 'image/jpeg', 0.9);
-  };
-
-  const retakePhoto = async () => {
-    setSelfieFile(null); setSelfieURL('');
-    await startCamera();
-  };
-
-  // ── STEP 5 — Final submit ──────────────────────────────────
-  const handleSubmit = async () => {
-    if (!selfieFile) return showToast('Please capture your selfie', 'err');
-    if (!user) return;
-
-    setLoading(true); showToast('Uploading and submitting KYC…');
-    try {
-      // Upload selfie to Firebase Storage
-      const selfieRef  = ref(storage, `kyc/${user.uid}/selfie.jpg`);
-      const selfieSnap = await uploadBytes(selfieRef, selfieFile);
-      const selfieDownloadURL = await getDownloadURL(selfieSnap.ref);
-
-      // Build KYC record
-      const kycRef = `KYC${Date.now()}${Math.random().toString(36).slice(2,4).toUpperCase()}`;
-      const kycData = {
-        userId:      user.uid,
-        kycRef,
-        status:      'pending',
-        step:        5,
-        personalInfo: {
-          fullName: fullName.trim(),
-          dob,
-          gender,
-        },
-        aadhaar: {
-          last4:      aadhaar.replace(/\s/g,'').slice(-4),
-          verified:   true,
-          verifiedAt: new Date().toISOString(),
-          // Store masked — never store full Aadhaar
-          masked:     `XXXX-XXXX-${aadhaar.replace(/\s/g,'').slice(-4)}`,
-          // Surepass verified data (name, address from Aadhaar)
-          aadhaarName:  aadhaarData?.name        || fullName,
-          aadhaarDob:   aadhaarData?.dob         || dob,
-          aadhaarAddr:  aadhaarData?.address      || '',
-          aadhaarState: aadhaarData?.state        || '',
-          aadhaarPincode: aadhaarData?.zip_code   || '',
-        },
-        pan: {
-          masked:     pan.slice(0,2) + 'XXX' + pan.slice(5,9) + pan.slice(-1),
-          verified:   true,
-          verifiedAt: new Date().toISOString(),
-          panName:    panData?.name || fullName,
-          panDob:     panData?.dob  || dob,
-          panStatus:  panData?.status || 'VALID',
-        },
-        selfie:       selfieDownloadURL,
-        submittedAt:  serverTimestamp(),
-        updatedAt:    serverTimestamp(),
-        reviewedAt:   null,
-        rejectionReason: null,
-      };
-
-      // Save to Firestore
-      await setDoc(doc(db, 'kyc', user.uid), kycData);
-
-      // Update user document
-      await updateDoc(doc(db, 'users', user.uid), {
-        kycStatus:       'pending',
-        kycRef,
-        kycSubmittedAt:  serverTimestamp(),
-        updatedAt:       serverTimestamp(),
-      });
-
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || 'Submission failed');
       await refreshProfile();
-      showToast('✅ KYC submitted! Review takes 24-48 hours.');
-      setStep(5);
+      setStep('submitted');
+      startPolling();
     } catch (e: any) {
-      showToast(e.message || 'Submission failed. Try again.', 'err');
+      setErr(e.message || 'Submission failed. Please try again.');
     }
     setLoading(false);
   };
 
-  // ── STATUS SCREENS ──────────────────────────────────────────
-  if (kycStatus === 'verified') return (
-    <StatusScreen
-      icon="✅" color="#00d68f" title="KYC Verified!"
-      desc="Your identity is fully verified. You have access to all INRT Wallet features."
-      perks={['Limit: ₹1 Lakh/day transfers','International transfers enabled','Instant loan eligibility','500 bonus reward points credited']}
-      btn="Back to Dashboard" onBtn={() => navigate('/dashboard')}
-    />
+  const STEP_LABELS = ['Personal Info', 'PAN Card', 'Selfie'];
+
+  // ══════════════════════════════════════════════════════════════
+  //  SUCCESS SCREEN
+  // ══════════════════════════════════════════════════════════════
+  if (step === 'success') return (
+    <div style={S.page}>
+      <div style={S.centered}>
+        <div style={S.icon('#00C853')}>✅</div>
+        <h2 style={S.h2}>KYC Verified!</h2>
+        <p style={S.sub}>Your PAN card has been verified. Daily limit is now ₹1,00,000.</p>
+        <div style={{ display:'flex', gap:10, width:'100%', marginBottom:24 }}>
+          {[['Daily Limit','₹1,00,000'],['Reward','+500 INRT'],['Status','Verified ✓']].map(([k,v])=>(
+            <div key={k} style={S.statBox}>
+              <p style={{ color:'rgba(255,255,255,0.4)', fontSize:10, fontWeight:600, margin:'0 0 4px' }}>{k}</p>
+              <p style={{ color:'#00e5cc', fontSize:12, fontWeight:700, margin:0 }}>{v}</p>
+            </div>
+          ))}
+        </div>
+        <button style={{ ...S.btnTeal, width:'100%' }} onClick={()=>navigate('/dashboard')}>
+          Back to Home →
+        </button>
+      </div>
+    </div>
   );
 
-  if (kycStatus === 'pending') return (
-    <StatusScreen
-      icon="⏳" color="#f4b942" title="Under Review"
-      desc="Your documents have been submitted. Verification typically takes 24–48 hours."
-      perks={['Our team is reviewing your documents','Identity checked against government records','You will be notified via the app','Higher limits unlock automatically on approval']}
-      btn="Back to Dashboard" onBtn={() => navigate('/dashboard')}
-    />
+  // ══════════════════════════════════════════════════════════════
+  //  SUBMITTED / PENDING SCREEN — real time status
+  // ══════════════════════════════════════════════════════════════
+  if (step === 'submitted') return (
+    <div style={S.page}>
+      <div style={S.centered}>
+        {/* Animated pending icon */}
+        <div style={{ position:'relative', marginBottom:24 }}>
+          <div style={{ width:84, height:84, borderRadius:'50%', background:'rgba(255,149,0,0.1)', border:'2px solid #FF9500', display:'flex', alignItems:'center', justifyContent:'center', fontSize:36 }}>⏳</div>
+          <div style={{ position:'absolute', top:-4, right:-4, width:24, height:24, borderRadius:'50%', background:'rgba(0,229,204,0.15)', border:'1px solid #00e5cc', display:'flex', alignItems:'center', justifyContent:'center' }}>
+            <div style={{ width:10, height:10, borderRadius:'50%', background:'#00e5cc', animation:'pulse 1.5s infinite' }}/>
+          </div>
+        </div>
+
+        <h2 style={S.h2}>Documents Under Review</h2>
+        <p style={S.sub}>Your PAN card and selfie have been submitted. Our team will verify within 24 hours.</p>
+
+        {/* Status timeline */}
+        <div style={{ width:'100%', marginBottom:20 }}>
+          {[
+            { label:'Documents submitted',     done:true,  active:false, icon:'✅' },
+            { label:'Under review by our team', done:false, active:true,  icon:'🔍' },
+            { label:'KYC approved',             done:false, active:false, icon:'🎉' },
+          ].map((s,i)=>(
+            <div key={i} style={{ display:'flex', alignItems:'center', gap:14, padding:'12px 0', borderBottom: i<2?'1px solid rgba(255,255,255,0.05)':'none' }}>
+              <div style={{ width:36, height:36, borderRadius:'50%', background:s.done?'rgba(0,200,83,0.15)':s.active?'rgba(255,149,0,0.15)':'rgba(255,255,255,0.04)', border:`1px solid ${s.done?'#00C853':s.active?'#FF9500':'rgba(255,255,255,0.1)'}`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:16, flexShrink:0 }}>
+                {s.icon}
+              </div>
+              <div style={{ flex:1, textAlign:'left' as const }}>
+                <p style={{ fontWeight:700, fontSize:14, color:s.done?'#fff':s.active?'#FF9500':'rgba(255,255,255,0.3)', margin:0 }}>{s.label}</p>
+                {s.active && <p style={{ fontSize:11, color:'rgba(255,255,255,0.3)', margin:'2px 0 0' }}>Checking every 15 seconds…</p>}
+              </div>
+              {s.active && <div style={{ width:16, height:16, border:'2px solid rgba(255,149,0,0.3)', borderTopColor:'#FF9500', borderRadius:'50%', animation:'spin 0.8s linear infinite', flexShrink:0 }}/>}
+            </div>
+          ))}
+        </div>
+
+        {/* Info boxes */}
+        <div style={{ background:'rgba(0,229,204,0.04)', border:'1px solid rgba(0,229,204,0.1)', borderRadius:14, padding:'14px 16px', width:'100%', marginBottom:12 }}>
+          <p style={{ color:'#00e5cc', fontWeight:700, fontSize:13, margin:'0 0 6px' }}>📱 Auto-notification</p>
+          <p style={{ color:'rgba(255,255,255,0.4)', fontSize:12, margin:0, lineHeight:1.6 }}>
+            You will be automatically notified when your KYC is approved. No need to keep this page open.
+          </p>
+        </div>
+
+        <div style={{ background:'rgba(255,255,255,0.02)', border:'1px solid rgba(255,255,255,0.06)', borderRadius:14, padding:'14px 16px', width:'100%', marginBottom:24 }}>
+          <p style={{ color:'rgba(255,255,255,0.5)', fontWeight:600, fontSize:13, margin:'0 0 6px' }}>⏱️ Typical review times</p>
+          {[['Business hours (10am-6pm)','Within 2 hours'],['After hours','By 10am next day'],['Weekends','By Monday 10am']].map(([k,v])=>(
+            <div key={k} style={{ display:'flex', justifyContent:'space-between', padding:'4px 0', borderBottom:'1px solid rgba(255,255,255,0.04)' }}>
+              <span style={{ color:'rgba(255,255,255,0.3)', fontSize:12 }}>{k}</span>
+              <span style={{ color:'#00e5cc', fontSize:12, fontWeight:600 }}>{v}</span>
+            </div>
+          ))}
+        </div>
+
+        <button style={{ ...S.btnTeal, width:'100%', marginBottom:10 }} onClick={()=>navigate('/dashboard')}>
+          Back to Home
+        </button>
+        <button style={S.btnOutline} onClick={async ()=>{ await refreshProfile(); }}>
+          🔄 Refresh Status
+        </button>
+      </div>
+      <style>{`@keyframes spin{to{transform:rotate(360deg)}} @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.3}}`}</style>
+    </div>
   );
 
-  if (kycStatus === 'rejected') return (
-    <StatusScreen
-      icon="❌" color="#ff4d6a" title="Verification Failed"
-      desc={userProfile?.kycRejectionReason || 'Documents could not be verified. Please resubmit with clear, valid documents.'}
-      btn="Resubmit KYC" onBtn={() => setStep(1)}
-    />
+  // ══════════════════════════════════════════════════════════════
+  //  REJECTED SCREEN
+  // ══════════════════════════════════════════════════════════════
+  if (step === 'rejected') return (
+    <div style={S.page}>
+      <div style={S.centered}>
+        <div style={S.icon('#FF3B30')}>❌</div>
+        <h2 style={S.h2}>KYC Rejected</h2>
+        <p style={S.sub}>{userProfile?.kycRejectionReason || 'Your documents could not be verified.'}</p>
+        <div style={{ background:'rgba(255,59,48,0.06)', border:'1px solid rgba(255,59,48,0.15)', borderRadius:14, padding:'16px', width:'100%', marginBottom:24 }}>
+          <p style={{ color:'#FF3B30', fontWeight:700, fontSize:13, margin:'0 0 8px' }}>Please fix and resubmit:</p>
+          {['Ensure PAN card photo is clear and readable','All text on PAN must be visible','Selfie must clearly show your face','PAN name must match your registered name'].map(t=>(
+            <p key={t} style={{ color:'rgba(255,255,255,0.5)', fontSize:12, margin:'4px 0' }}>• {t}</p>
+          ))}
+        </div>
+        <button style={{ ...S.btnTeal, width:'100%', marginBottom:10 }}
+          onClick={()=>{ setPanPhoto(null); setPanPreview(null); setSelfie(null); setSelfiePreview(null); setErr(''); setStep(1); }}>
+          🔄 Resubmit Documents
+        </button>
+        <button style={S.btnOutline} onClick={()=>navigate('/dashboard')}>Back to Home</button>
+      </div>
+    </div>
   );
 
-  // ── STEP LABELS ────────────────────────────────────────────
-  const STEPS = ['Personal','Aadhaar','PAN','Selfie','Submit'];
-
+  // ══════════════════════════════════════════════════════════════
+  //  MAIN FORM
+  // ══════════════════════════════════════════════════════════════
   return (
     <div style={S.page}>
-      {/* Toast */}
-      {toast && (
-        <div style={{
-          ...S.toast,
-          background: toastType==='ok'?'rgba(0,214,143,0.12)':'rgba(255,77,106,0.12)',
-          borderColor: toastType==='ok'?'#00d68f':'#ff4d6a',
-          color:       toastType==='ok'?'#00d68f':'#ff4d6a',
-        }}>
-          {toastType==='ok'?'✅':'⚠️'} {toast}
-        </div>
-      )}
-
       {/* Header */}
       <div style={S.header}>
-        <button
-          onClick={() => step > 1 ? setStep((step-1) as Step) : navigate('/dashboard')}
-          className="back-btn">←</button>
-        <h1 className="page-title">KYC Verification</h1>
-        <span className="badge-teal">OFFICIAL</span>
+        <button onClick={()=>step===1?navigate('/dashboard'):setStep(s=>(typeof s==='number'?s-1 as Step:1))} style={S.backBtn}>←</button>
+        <h1 style={S.title}>KYC Verification</h1>
       </div>
 
-      {/* Progress stepper */}
-      <div style={{ background:'linear-gradient(160deg,#050914,#0a0a14)',padding:'0 20px 20px' }}>
-        <div style={{ display:'flex',alignItems:'center' }}>
-          {STEPS.map((label, i) => (
-            <div key={label} style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center' }}>
-              <div style={{ display:'flex', alignItems:'center', width:'100%' }}>
-                {i > 0 && (
-                  <div style={{ flex:1, height:2,
-                    background: step > i ? 'var(--teal)' : 'var(--b1)',
-                    transition: 'background 0.4s' }} />
-                )}
-                <div style={{
-                  width: 28, height: 28, borderRadius: '50%', flexShrink: 0,
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  fontWeight: 700, fontSize: 11, transition: 'all 0.4s',
-                  background: step > i+1 ? 'var(--teal)' : step === i+1 ? 'var(--bg-elevated)' : 'var(--bg)',
-                  border: `2px solid ${step >= i+1 ? 'var(--teal)' : 'var(--b1)'}`,
-                  color:  step > i+1 ? '#000' : step === i+1 ? 'var(--teal)' : 'var(--t3)',
-                }}>
-                  {step > i+1 ? '✓' : i+1}
-                </div>
-                {i < STEPS.length-1 && (
-                  <div style={{ flex:1, height:2,
-                    background: step > i+1 ? 'var(--teal)' : 'var(--b1)',
-                    transition: 'background 0.4s' }} />
-                )}
-              </div>
-              <span style={{
-                fontSize: 9, marginTop: 5, fontWeight: 600,
-                color: step === i+1 ? 'var(--teal)' : 'var(--t3)',
-              }}>
-                {label}
-              </span>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <div style={{ padding: '20px 16px 100px' }}>
-
-        {/* ═══════════════════════════════════════════
-            STEP 1 — Personal Information
-        ═══════════════════════════════════════════ */}
-        {step === 1 && (
-          <div className="card">
-            <p style={S.cardTitle}>👤 Personal Information</p>
-            <p style={S.cardSubtitle}>
-              Enter your details exactly as they appear on your Aadhaar card.
-            </p>
-
-            <Field label="FULL NAME" error={errs.fullName}>
-              <input className="inp" placeholder="As on Aadhaar card"
-                value={fullName}
-                onChange={e => { setFullName(e.target.value); setErrs(x=>({...x,fullName:''})); }} />
-            </Field>
-
-            <Field label="DATE OF BIRTH" error={errs.dob}>
-              <input className="inp" type="date"
-                max={new Date(Date.now() - 18*365.25*24*3600*1000).toISOString().split('T')[0]}
-                value={dob}
-                onChange={e => { setDob(e.target.value); setErrs(x=>({...x,dob:''})); }} />
-            </Field>
-
-            <Field label="GENDER" error={errs.gender}>
-              <div style={{ display:'flex', gap:10 }}>
-                {['Male','Female','Other'].map(g => (
-                  <button key={g} onClick={() => { setGender(g); setErrs(x=>({...x,gender:''})); }}
-                    style={{
-                      flex:1, padding:'12px 0', borderRadius:'var(--r1)',
-                      border:`2px solid ${gender===g?'var(--teal)':'var(--b1)'}`,
-                      background: gender===g?'var(--teal-dim)':'var(--bg-elevated)',
-                      color: gender===g?'var(--teal)':'var(--t2)',
-                      fontWeight:700, fontSize:13, cursor:'pointer',
-                    }}>
-                    {g}
-                  </button>
-                ))}
-              </div>
-            </Field>
-
-            <div style={S.infoBox}>
-              🔐 Your data is encrypted with 256-bit SSL and stored securely. We never share your information.
-            </div>
-
-            <button className="btn-primary" style={{ marginTop:16 }}
-              onClick={() => { if(validateStep1()) setStep(2); }}>
-              Continue →
-            </button>
+      {/* Progress bar */}
+      {typeof step === 'number' && (
+        <div style={{ padding:'14px 16px 0', background:'#050914' }}>
+          <div style={{ display:'flex', gap:6, marginBottom:6 }}>
+            {STEP_LABELS.map((_,i)=>(
+              <div key={i} style={{ flex:1, height:4, borderRadius:4, background:i<(step as number)?'#00e5cc':'rgba(255,255,255,0.08)', transition:'background 0.3s' }}/>
+            ))}
           </div>
-        )}
-
-        {/* ═══════════════════════════════════════════
-            STEP 2 — Aadhaar OTP Verification (REAL)
-        ═══════════════════════════════════════════ */}
-        {step === 2 && (
-          <div className="card">
-            <p style={S.cardTitle}>🪪 Aadhaar Verification</p>
-            <p style={S.cardSubtitle}>
-              We verify your Aadhaar using a real-time OTP sent to your
-              Aadhaar-linked mobile number via UIDAI.
-            </p>
-
-            {!aadhaarSent ? (
-              <>
-                <Field label="AADHAAR NUMBER (12 DIGITS)" error={errs.aadhaar}>
-                  <input className="inp"
-                    type="tel" maxLength={14}
-                    placeholder="XXXX XXXX XXXX"
-                    value={aadhaar.replace(/(\d{4})(?=\d)/g,'$1 ').trim()}
-                    onChange={e => {
-                      setAadhaar(e.target.value.replace(/\s/g,'').replace(/\D/g,''));
-                      setErrs(x=>({...x,aadhaar:''}));
-                    }} />
-                  {aadhaar.replace(/\s/g,'').length === 12 && (
-                    <p style={{ color:'var(--green)',fontSize:12,marginTop:6,fontWeight:600 }}>✓ Valid format</p>
-                  )}
-                </Field>
-
-                <div style={{ ...S.infoBox, marginBottom:16 }}>
-                  📱 An OTP will be sent to the mobile number registered with your Aadhaar by UIDAI.
-                  Make sure you have access to that number.
-                </div>
-
-                <button className="btn-primary"
-                  onClick={sendAadhaarOTP}
-                  disabled={loading || aadhaar.replace(/\s/g,'').length !== 12}
-                  style={{ opacity:loading||aadhaar.replace(/\s/g,'').length!==12?0.5:1 }}>
-                  {loading ? '⏳ Sending OTP…' : 'Send OTP to Aadhaar Mobile →'}
-                </button>
-              </>
-            ) : (
-              <>
-                <div style={{ background:'rgba(0,229,204,0.06)',border:'1px solid rgba(0,229,204,0.2)',
-                               borderRadius:'var(--r2)',padding:'14px 16px',marginBottom:16 }}>
-                  <p style={{ color:'var(--teal)',fontWeight:600,fontSize:14 }}>OTP Sent!</p>
-                  <p style={{ color:'var(--t2)',fontSize:13,marginTop:4 }}>
-                    Enter the 6-digit OTP sent to your Aadhaar-linked mobile.
-                    Valid for 10 minutes.
-                  </p>
-                </div>
-
-                <Field label="6-DIGIT OTP" error={errs.otp}>
-                  <input className="inp"
-                    type="tel" maxLength={6}
-                    placeholder="______"
-                    style={{ letterSpacing:10, fontSize:22, fontWeight:800,
-                             textAlign:'center', fontFamily:'Space Grotesk,sans-serif' }}
-                    value={aadhaarOTP}
-                    onChange={e => { setAadhaarOTP(e.target.value.replace(/\D/g,'')); setErrs(x=>({...x,otp:''})); }}
-                    onKeyDown={e => e.key==='Enter' && verifyAadhaarOTP()} />
-                </Field>
-
-                <button className="btn-primary"
-                  onClick={verifyAadhaarOTP}
-                  disabled={loading || aadhaarOTP.length !== 6}
-                  style={{ opacity:loading||aadhaarOTP.length!==6?0.5:1, marginBottom:12 }}>
-                  {loading ? '⏳ Verifying…' : 'Verify OTP →'}
-                </button>
-
-                <button
-                  onClick={() => { setAadhaarSent(false); setAadhaarOTP(''); }}
-                  style={{ width:'100%',background:'none',border:'none',color:'var(--teal)',
-                            fontWeight:600,fontSize:14,cursor:'pointer',padding:'8px 0' }}>
-                  ← Change Aadhaar Number
-                </button>
-
-                <button
-                  onClick={sendAadhaarOTP}
-                  disabled={loading}
-                  style={{ width:'100%',background:'none',border:'none',color:'var(--t2)',
-                            fontWeight:500,fontSize:13,cursor:'pointer',padding:'4px 0' }}>
-                  Resend OTP
-                </button>
-              </>
-            )}
-          </div>
-        )}
-
-        {/* ═══════════════════════════════════════════
-            STEP 3 — PAN Verification (REAL)
-        ═══════════════════════════════════════════ */}
-        {step === 3 && (
-          <div className="card">
-            <p style={S.cardTitle}>💳 PAN Verification</p>
-            <p style={S.cardSubtitle}>
-              Your PAN is verified against the Income Tax Department
-              database in real-time.
-            </p>
-
-            {aadhaarData && (
-              <div style={{ background:'rgba(0,214,143,0.06)',border:'1px solid rgba(0,214,143,0.2)',
-                             borderRadius:'var(--r2)',padding:'14px',marginBottom:16 }}>
-                <p style={{ color:'var(--green)',fontWeight:600,fontSize:13,marginBottom:6 }}>
-                  ✅ Aadhaar Verified
-                </p>
-                <p style={{ color:'var(--t2)',fontSize:12 }}>
-                  Name: {aadhaarData.name || fullName}
-                </p>
-                {aadhaarData.dob && (
-                  <p style={{ color:'var(--t2)',fontSize:12,marginTop:2 }}>
-                    DOB: {aadhaarData.dob}
-                  </p>
-                )}
-              </div>
-            )}
-
-            <Field label="PAN NUMBER" error={errs.pan}>
-              <input className="inp"
-                maxLength={10}
-                placeholder="ABCDE1234F"
-                style={{ textTransform:'uppercase', letterSpacing:3,
-                          fontFamily:'Space Grotesk,sans-serif',fontWeight:600,fontSize:16 }}
-                value={pan}
-                onChange={e => {
-                  setPan(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g,''));
-                  setErrs(x=>({...x,pan:''}));
-                }} />
-              {/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(pan) && (
-                <p style={{ color:'var(--green)',fontSize:12,marginTop:6,fontWeight:600 }}>✓ Valid PAN format</p>
-              )}
-            </Field>
-
-            <div style={S.infoBox}>
-              📋 Your PAN will be verified against the Income Tax database.
-              Name on PAN must match your Aadhaar name.
-            </div>
-
-            <button className="btn-primary"
-              onClick={verifyPAN}
-              disabled={loading || !/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(pan)}
-              style={{ marginTop:16, opacity:loading||!/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(pan)?0.5:1 }}>
-              {loading ? '⏳ Verifying PAN…' : 'Verify PAN →'}
-            </button>
-          </div>
-        )}
-
-        {/* ═══════════════════════════════════════════
-            STEP 4 — Selfie / Liveness
-        ═══════════════════════════════════════════ */}
-        {step === 4 && (
-          <div className="card">
-            <p style={S.cardTitle}>🤳 Selfie Verification</p>
-            <p style={S.cardSubtitle}>
-              Take a clear selfie. Look straight at the camera in good lighting.
-              This photo is used for face match verification.
-            </p>
-
-            {panData && (
-              <div style={{ background:'rgba(0,214,143,0.06)',border:'1px solid rgba(0,214,143,0.2)',
-                             borderRadius:'var(--r2)',padding:'12px 14px',marginBottom:16 }}>
-                <p style={{ color:'var(--green)',fontWeight:600,fontSize:13 }}>
-                  ✅ PAN Verified — {panData.name || fullName}
-                </p>
-              </div>
-            )}
-
-            {/* Camera / Photo area */}
-            <div style={{ marginBottom:16 }}>
-              {!selfieURL && !camActive && (
-                <button
-                  onClick={startCamera}
-                  style={{ width:'100%',background:'rgba(0,229,204,0.04)',
-                            border:'2px dashed rgba(0,229,204,0.25)',borderRadius:'var(--r3)',
-                            padding:'40px 0',display:'flex',flexDirection:'column',
-                            alignItems:'center',gap:10,cursor:'pointer' }}>
-                  <span style={{ fontSize:48 }}>📸</span>
-                  <span style={{ color:'var(--teal)',fontWeight:700,fontSize:15 }}>
-                    Open Camera for Selfie
-                  </span>
-                  <span style={{ color:'var(--t3)',fontSize:12 }}>
-                    Requires camera permission
-                  </span>
-                </button>
-              )}
-
-              {camActive && (
-                <div style={{ position:'relative',borderRadius:'var(--r3)',overflow:'hidden' }}>
-                  <video
-                    ref={videoRef}
-                    autoPlay playsInline muted
-                    style={{ width:'100%',borderRadius:'var(--r3)',
-                              border:'2px solid var(--teal)',display:'block' }} />
-                  {/* Oval face guide overlay */}
-                  <div style={{ position:'absolute',top:'50%',left:'50%',
-                                  transform:'translate(-50%,-55%)',
-                                  width:'60%',height:'70%',
-                                  border:'3px solid rgba(0,229,204,0.7)',
-                                  borderRadius:'50%',pointerEvents:'none' }} />
-                  <p style={{ position:'absolute',bottom:12,left:0,right:0,
-                                textAlign:'center',color:'rgba(255,255,255,0.8)',
-                                fontSize:12,fontWeight:600 }}>
-                    Align face inside the oval
-                  </p>
-                  <button
-                    onClick={capturePhoto}
-                    style={{ position:'absolute',bottom:48,left:'50%',
-                              transform:'translateX(-50%)',
-                              width:64,height:64,borderRadius:'50%',
-                              background:'var(--teal)',border:'4px solid #fff',
-                              cursor:'pointer',fontSize:24 }}>
-                    📷
-                  </button>
-                </div>
-              )}
-
-              {selfieURL && (
-                <div style={{ position:'relative' }}>
-                  <img src={selfieURL} alt="selfie"
-                    style={{ width:'100%',borderRadius:'var(--r3)',
-                              border:'3px solid var(--green)',display:'block',
-                              maxHeight:360,objectFit:'cover' }} />
-                  <div style={{ position:'absolute',top:12,right:12,
-                                  background:'var(--green)',borderRadius:'50%',
-                                  width:32,height:32,display:'flex',
-                                  alignItems:'center',justifyContent:'center',
-                                  color:'#000',fontSize:16,fontWeight:700 }}>✓</div>
-                  <button onClick={retakePhoto}
-                    style={{ position:'absolute',bottom:12,left:'50%',
-                              transform:'translateX(-50%)',
-                              background:'rgba(0,0,0,0.7)',border:'1px solid rgba(255,255,255,0.2)',
-                              borderRadius:'var(--r1)',padding:'8px 20px',
-                              color:'#fff',fontWeight:600,fontSize:13,cursor:'pointer' }}>
-                    🔄 Retake
-                  </button>
-                </div>
-              )}
-            </div>
-
-            <canvas ref={canvasRef} style={{ display:'none' }} />
-
-            {/* Tips */}
-            <div style={S.infoBox}>
-              <p style={{ color:'var(--teal)',fontWeight:600,marginBottom:6 }}>📋 Tips for a good selfie:</p>
-              {[
-                'Remove glasses and face mask',
-                'Ensure good front lighting',
-                'Look straight at the camera',
-                'Keep face centred in the oval',
-                'Neutral expression, eyes open',
-              ].map(t => (
-                <p key={t} style={{ color:'var(--t2)',fontSize:12,padding:'3px 0' }}>✓ {t}</p>
-              ))}
-            </div>
-
-            <button className="btn-primary"
-              onClick={() => setStep(5)}
-              disabled={!selfieFile}
-              style={{ marginTop:16, opacity:!selfieFile?0.4:1 }}>
-              Continue →
-            </button>
-          </div>
-        )}
-
-        {/* ═══════════════════════════════════════════
-            STEP 5 — Review & Submit
-        ═══════════════════════════════════════════ */}
-        {step === 5 && (
-          <div>
-            {/* Verification summary */}
-            <div className="card" style={{ marginBottom:16 }}>
-              <p style={S.cardTitle}>📋 Verification Summary</p>
-
-              {[
-                { label:'Full Name',  value:fullName,           verified:true },
-                { label:'Date of Birth',value:dob,             verified:true },
-                { label:'Gender',     value:gender,             verified:true },
-                { label:'Aadhaar',    value:`XXXX-XXXX-${aadhaar.replace(/\s/g,'').slice(-4)}`, verified:true },
-                { label:'PAN',        value:pan.slice(0,2)+'XXX'+pan.slice(5), verified:true },
-                { label:'Selfie',     value:'Captured',         verified:true },
-              ].map(row => (
-                <div key={row.label}
-                  style={{ display:'flex',justifyContent:'space-between',alignItems:'center',
-                             padding:'11px 0',borderBottom:'1px solid var(--b1)' }}>
-                  <span style={{ color:'var(--t2)',fontSize:13 }}>{row.label}</span>
-                  <div style={{ display:'flex',alignItems:'center',gap:8 }}>
-                    <span style={{ color:'var(--t1)',fontWeight:600,fontSize:13 }}>{row.value}</span>
-                    {row.verified && <span style={{ color:'var(--green)',fontSize:12 }}>✓</span>}
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {/* Consent */}
-            <div style={{ background:'rgba(244,185,66,0.06)',border:'1px solid rgba(244,185,66,0.2)',
-                           borderRadius:'var(--r2)',padding:'16px',marginBottom:16 }}>
-              <p style={{ color:'var(--gold)',fontWeight:600,fontSize:14,marginBottom:8 }}>
-                📜 Declaration
-              </p>
-              <p style={{ color:'var(--t2)',fontSize:12,lineHeight:1.7 }}>
-                I hereby declare that the information provided is accurate and
-                I consent to INRT Wallet verifying my identity documents with
-                government authorities (UIDAI and Income Tax Department) as
-                required under RBI KYC guidelines and Prevention of Money
-                Laundering Act (PMLA) 2002.
-              </p>
-            </div>
-
-            {/* What happens next */}
-            <div className="card" style={{ marginBottom:16 }}>
-              <p style={{ color:'var(--t1)',fontWeight:600,fontSize:14,marginBottom:12 }}>
-                ⏱ What happens after submission?
-              </p>
-              {[
-                { step:'1', text:'Documents submitted to our verification team' },
-                { step:'2', text:'Identity checked against UIDAI and IT database' },
-                { step:'3', text:'Decision in 24-48 hours' },
-                { step:'4', text:'You get notified + limits upgraded automatically' },
-              ].map(s => (
-                <div key={s.step} style={{ display:'flex',gap:12,padding:'8px 0' }}>
-                  <div style={{ width:24,height:24,borderRadius:'50%',background:'var(--teal-dim)',
-                                  border:'1px solid var(--teal)',display:'flex',alignItems:'center',
-                                  justifyContent:'center',color:'var(--teal)',fontSize:11,
-                                  fontWeight:700,flexShrink:0 }}>
-                    {s.step}
-                  </div>
-                  <p style={{ color:'var(--t2)',fontSize:13,flex:1 }}>{s.text}</p>
-                </div>
-              ))}
-            </div>
-
-            <button className="btn-primary"
-              onClick={handleSubmit}
-              disabled={loading}
-              style={{ opacity:loading?0.6:1 }}>
-              {loading ? '⏳ Submitting KYC…' : '✓ Submit KYC for Verification'}
-            </button>
-            <p style={{ textAlign:'center',color:'var(--t3)',fontSize:11,marginTop:10 }}>
-              🔒 End-to-end encrypted · RBI compliant · PMLA 2002
-            </p>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ── Shared sub-components ─────────────────────────────────────
-function Field({
-  label, error, children
-}: { label: string; error?: string; children: React.ReactNode }) {
-  return (
-    <div style={{ marginBottom:18 }}>
-      <p className="s-label">{label}</p>
-      {children}
-      {error && <p className="err-box" style={{ marginTop:6 }}>⚠️ {error}</p>}
-    </div>
-  );
-}
-
-function StatusScreen({
-  icon, color, title, desc, perks, btn, onBtn
-}: {
-  icon:string; color:string; title:string; desc:string;
-  perks?:string[]; btn:string; onBtn:()=>void;
-}) {
-  return (
-    <div style={{ maxWidth:480,margin:'0 auto',minHeight:'100vh',
-                   background:'var(--bg)',fontFamily:'var(--f-body)',
-                   display:'flex',flexDirection:'column',alignItems:'center',
-                   padding:'80px 24px',textAlign:'center' }}>
-      <div style={{ width:80,height:80,borderRadius:'50%',
-                     background:`${color}15`,border:`2px solid ${color}`,
-                     display:'flex',alignItems:'center',justifyContent:'center',
-                     fontSize:36,marginBottom:20 }}>
-        {icon}
-      </div>
-      <h2 style={{ fontFamily:'var(--f-display)',fontWeight:700,fontSize:24,
-                    color:'var(--t1)',marginBottom:10 }}>
-        {title}
-      </h2>
-      <p style={{ color:'var(--t2)',fontSize:14,lineHeight:1.7,
-                   marginBottom:24,maxWidth:320 }}>
-        {desc}
-      </p>
-      {perks && (
-        <div style={{ background:`${color}08`,border:`1px solid ${color}25`,
-                       borderRadius:'var(--r2)',padding:'16px',
-                       width:'100%',marginBottom:24,textAlign:'left' }}>
-          {perks.map(p => (
-            <p key={p} style={{ color:color,fontSize:13,padding:'6px 0',
-                                  borderBottom:`1px solid ${color}10`,fontWeight:500 }}>
-              ✓ {p}
-            </p>
-          ))}
+          <p style={{ color:'rgba(255,255,255,0.3)', fontSize:12, margin:0 }}>
+            Step {step} of 3 — {STEP_LABELS[(step as number)-1]}
+          </p>
         </div>
       )}
-      <button className="btn-primary" onClick={onBtn}>{btn}</button>
+
+      <div style={{ padding:'16px 16px 90px' }}>
+
+        {/* ── STEP 1: Personal Info ── */}
+        {step===1&&(
+          <div>
+            <div style={S.infoCard}>
+              <p style={{ color:'#00e5cc', fontWeight:700, fontSize:13, margin:'0 0 4px' }}>📋 What you need</p>
+              <p style={{ color:'rgba(255,255,255,0.4)', fontSize:12, margin:0, lineHeight:1.6 }}>
+                PAN card · A selfie photo · Takes 3 minutes
+              </p>
+            </div>
+
+            <div style={S.card}>
+              <p style={S.label}>FULL NAME (as on PAN card)</p>
+              <input value={fullName} onChange={e=>{setFullName(e.target.value);setErr('');}}
+                placeholder="Your full legal name" style={S.input}/>
+
+              <p style={S.label}>DATE OF BIRTH</p>
+              <input type="date" value={dob} onChange={e=>{setDob(e.target.value);setErr('');}}
+                max={new Date(Date.now()-18*365*24*60*60*1000).toISOString().split('T')[0]}
+                style={S.input}/>
+
+              <p style={S.label}>PAN NUMBER</p>
+              <input value={pan} onChange={e=>{setPan(e.target.value.toUpperCase().replace(/\s/g,''));setErr('');}}
+                placeholder="e.g. ABCDE1234F" maxLength={10}
+                style={{ ...S.input, textTransform:'uppercase' as const, letterSpacing:2, fontFamily:'monospace', fontSize:18 }}/>
+
+              <div style={{ background:'rgba(0,112,243,0.06)', border:'1px solid rgba(0,112,243,0.1)', borderRadius:10, padding:'10px 12px', marginBottom:16 }}>
+                <p style={{ color:'rgba(255,255,255,0.4)', fontSize:11, margin:0, lineHeight:1.6 }}>
+                  🔒 Your PAN is securely stored and used only for identity verification. We never share it with third parties except as required by law.
+                </p>
+              </div>
+
+              {err&&<p style={S.err}>{err}</p>}
+
+              <button style={{ ...S.btnTeal, width:'100%', opacity:(!fullName||!dob||pan.length!==10)?0.5:1 }}
+                onClick={()=>{
+                  if (!fullName.trim())                            return setErr('Enter your full name');
+                  if (!dob)                                        return setErr('Select date of birth');
+                  if (!/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(pan))      return setErr('Invalid PAN. Example: ABCDE1234F');
+                  setErr(''); setStep(2);
+                }}
+                disabled={!fullName||!dob||pan.length!==10}>
+                Continue →
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* ── STEP 2: PAN Photo ── */}
+        {step===2&&(
+          <div>
+            <div style={S.card}>
+              <p style={S.cardTitle}>📸 PAN Card Photo</p>
+              <p style={{ color:'rgba(255,255,255,0.4)', fontSize:12, margin:'0 0 16px', lineHeight:1.6 }}>
+                Upload a clear photo of your PAN card. All text must be readable.
+              </p>
+
+              {panPreview ? (
+                <div style={{ marginBottom:16 }}>
+                  <img src={panPreview} alt="PAN" style={{ width:'100%', borderRadius:12, maxHeight:220, objectFit:'cover' as const, border:'1px solid rgba(0,229,204,0.2)' }}/>
+                  <button onClick={()=>{setPanPhoto(null);setPanPreview(null);}}
+                    style={S.removeBtn}>✕ Remove — Retake</button>
+                </div>
+              ) : (
+                <label style={S.uploadBox}>
+                  <span style={{ fontSize:44, marginBottom:10, display:'block' }}>🪪</span>
+                  <span style={{ color:'#00e5cc', fontWeight:700, fontSize:14, display:'block' }}>Tap to upload PAN card</span>
+                  <span style={{ color:'rgba(255,255,255,0.3)', fontSize:12, marginTop:6, display:'block' }}>JPG / PNG · Max 15MB</span>
+                  <input type="file" accept="image/*" onChange={e=>handleFile(e, setPanPhoto!, setPanPreview!)} style={{ display:'none' }}/>
+                </label>
+              )}
+
+              <div style={S.tipCard}>
+                <p style={{ color:'#FFD60A', fontWeight:700, fontSize:12, margin:'0 0 6px' }}>💡 Tips</p>
+                {['All 4 corners of PAN must be visible','PAN number must be clearly readable','Good lighting, no shadows or glare','Keep card flat on a surface'].map(t=>(
+                  <p key={t} style={{ color:'rgba(255,255,255,0.4)', fontSize:11, margin:'3px 0' }}>• {t}</p>
+                ))}
+              </div>
+
+              {err&&<p style={S.err}>{err}</p>}
+
+              <button style={{ ...S.btnTeal, width:'100%', opacity:!panPhoto?0.5:1 }}
+                onClick={()=>panPhoto&&setStep(3)} disabled={!panPhoto}>
+                Continue →
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* ── STEP 3: Selfie ── */}
+        {step===3&&(
+          <div>
+            <div style={S.card}>
+              <p style={S.cardTitle}>🤳 Take a Selfie</p>
+              <p style={{ color:'rgba(255,255,255,0.4)', fontSize:12, margin:'0 0 16px', lineHeight:1.6 }}>
+                We need a selfie to confirm you are the PAN card holder.
+              </p>
+
+              {selfiePreview ? (
+                <div style={{ marginBottom:16, textAlign:'center' as const }}>
+                  <img src={selfiePreview} alt="Selfie" style={{ width:190, height:190, borderRadius:'50%', objectFit:'cover' as const, border:'3px solid #00e5cc', display:'block', margin:'0 auto 12px' }}/>
+                  <button onClick={()=>{setSelfie(null);setSelfiePreview(null);stopCamera();}}
+                    style={S.removeBtn}>✕ Retake Selfie</button>
+                </div>
+              ) : camOn ? (
+                <div style={{ marginBottom:16 }}>
+                  <video ref={videoRef} autoPlay playsInline muted
+                    style={{ width:'100%', borderRadius:16, maxHeight:280, background:'#000', display:'block', border:'1px solid rgba(0,229,204,0.2)' }}/>
+                  <div style={{ display:'flex', gap:10, marginTop:10 }}>
+                    <button onClick={stopCamera} style={{ flex:1, padding:'12px', borderRadius:12, border:'1px solid rgba(255,255,255,0.1)', background:'transparent', color:'rgba(255,255,255,0.5)', cursor:'pointer', fontSize:13, fontFamily:"'Plus Jakarta Sans',sans-serif" }}>Cancel</button>
+                    <button onClick={captureSelfie} style={{ ...S.btnTeal, flex:2, padding:'12px' }}>📸 Capture</button>
+                  </div>
+                </div>
+              ) : (
+                <div>
+                  <button onClick={startCamera} style={{ ...S.uploadBox, width:'100%', cursor:'pointer', display:'flex', flexDirection:'column' as const, alignItems:'center' }}>
+                    <span style={{ fontSize:48, display:'block', marginBottom:10 }}>📸</span>
+                    <span style={{ color:'#00e5cc', fontWeight:700, fontSize:14, display:'block' }}>Open Camera</span>
+                    <span style={{ color:'rgba(255,255,255,0.3)', fontSize:12, marginTop:4, display:'block' }}>Take a live selfie</span>
+                  </button>
+                  <div style={{ textAlign:'center' as const, margin:'12px 0', color:'rgba(255,255,255,0.2)', fontSize:12 }}>— OR —</div>
+                  <label style={S.uploadBox}>
+                    <span style={{ fontSize:36, marginBottom:8, display:'block' }}>🖼️</span>
+                    <span style={{ color:'#00e5cc', fontWeight:700, fontSize:14 }}>Upload from gallery</span>
+                    <input type="file" accept="image/*" capture="user"
+                      onChange={e=>handleFile(e, setSelfie!, setSelfiePreview!)} style={{ display:'none' }}/>
+                  </label>
+                </div>
+              )}
+
+              <div style={S.tipCard}>
+                <p style={{ color:'#FFD60A', fontWeight:700, fontSize:12, margin:'0 0 6px' }}>💡 Selfie tips</p>
+                {['Face must be clearly visible','Good lighting — no backlight','No sunglasses or hat','Look directly at camera'].map(t=>(
+                  <p key={t} style={{ color:'rgba(255,255,255,0.4)', fontSize:11, margin:'3px 0' }}>• {t}</p>
+                ))}
+              </div>
+
+              {err&&<p style={S.err}>{err}</p>}
+
+              <button style={{ ...S.btnPrimary, width:'100%', opacity:loading||!selfie?0.5:1 }}
+                onClick={handleSubmit} disabled={loading||!selfie}>
+                {loading
+                  ?<span style={{ display:'flex', alignItems:'center', justifyContent:'center', gap:10 }}>
+                     <span style={{ width:18, height:18, border:'2px solid #fff', borderTopColor:'transparent', borderRadius:'50%', display:'inline-block', animation:'spin 0.7s linear infinite' }}/>
+                     Uploading…
+                   </span>
+                  :'🚀 Submit for Verification'
+                }
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap');
+        @keyframes spin{to{transform:rotate(360deg)}}
+        @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.3}}
+        *{-webkit-tap-highlight-color:transparent}
+        input[type="date"]::-webkit-calendar-picker-indicator{filter:invert(0.4)}
+      `}</style>
     </div>
   );
 }
 
-// ── Styles ─────────────────────────────────────────────────────
-const S: Record<string,React.CSSProperties> = {
-  page:        { maxWidth:480,margin:'0 auto',minHeight:'100vh',background:'var(--bg)',fontFamily:'var(--f-body)' },
-  header:      { background:'linear-gradient(160deg,#050914,#0a0a14)',padding:'52px 20px 16px',display:'flex',alignItems:'center',gap:14,borderBottom:'1px solid var(--b1)' },
-  cardTitle:   { fontFamily:'var(--f-display)',fontWeight:700,fontSize:18,color:'var(--t1)',marginBottom:6 },
-  cardSubtitle:{ color:'var(--t2)',fontSize:13,lineHeight:1.6,marginBottom:20 },
-  infoBox:     { background:'rgba(0,229,204,0.04)',border:'1px solid rgba(0,229,204,0.12)',borderRadius:'var(--r1)',padding:'12px 14px',fontSize:12,color:'var(--t2)',lineHeight:1.6 },
-  toast:       { position:'fixed',top:20,left:'50%',transform:'translateX(-50%)',border:'1px solid',borderRadius:'var(--r2)',padding:'12px 22px',fontSize:14,fontWeight:600,zIndex:9999,boxShadow:'var(--s2)',maxWidth:380,textAlign:'center',backdropFilter:'blur(12px)' },
+const S: Record<string,any> = {
+  page:      { maxWidth:480, margin:'0 auto', minHeight:'100vh', background:'#050914', fontFamily:"'Plus Jakarta Sans',sans-serif" },
+  header:    { background:'linear-gradient(160deg,#050914,#0a1428)', padding:'52px 20px 16px', display:'flex', alignItems:'center', gap:14, borderBottom:'1px solid rgba(255,255,255,0.06)' },
+  backBtn:   { background:'none', border:'none', color:'#00e5cc', fontSize:22, cursor:'pointer', lineHeight:1, flexShrink:0 },
+  title:     { fontFamily:"'Plus Jakarta Sans',sans-serif", fontWeight:800, fontSize:20, color:'#fff', margin:0 },
+  centered:  { display:'flex', flexDirection:'column', alignItems:'center', padding:'60px 24px', textAlign:'center' },
+  card:      { background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.07)', borderRadius:18, padding:'18px 16px', marginBottom:14 },
+  cardTitle: { fontFamily:"'Plus Jakarta Sans',sans-serif", fontWeight:800, fontSize:15, color:'#fff', margin:'0 0 12px' },
+  infoCard:  { background:'rgba(0,229,204,0.04)', border:'1px solid rgba(0,229,204,0.1)', borderRadius:14, padding:'14px 16px', marginBottom:14 },
+  tipCard:   { background:'rgba(255,214,10,0.03)', border:'1px solid rgba(255,214,10,0.08)', borderRadius:12, padding:'12px 14px', marginBottom:16 },
+  label:     { color:'rgba(255,255,255,0.4)', fontSize:11, fontWeight:700, letterSpacing:0.8, margin:'0 0 8px' },
+  input:     { width:'100%', background:'rgba(255,255,255,0.05)', border:'1.5px solid rgba(255,255,255,0.08)', borderRadius:12, padding:'13px 14px', color:'#fff', fontSize:15, outline:'none', fontFamily:"'Plus Jakarta Sans',sans-serif", marginBottom:16, boxSizing:'border-box' as const },
+  uploadBox: { display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', background:'rgba(0,229,204,0.04)', border:'2px dashed rgba(0,229,204,0.2)', borderRadius:16, padding:'28px 20px', marginBottom:16, cursor:'pointer', textAlign:'center' as const },
+  removeBtn: { width:'100%', marginTop:8, background:'rgba(255,59,48,0.08)', border:'1px solid rgba(255,59,48,0.2)', color:'#FF3B30', borderRadius:10, padding:'10px 16px', cursor:'pointer', fontSize:13, fontWeight:600, fontFamily:"'Plus Jakarta Sans',sans-serif" },
+  err:       { color:'#FF3B30', fontSize:13, margin:'0 0 12px', fontWeight:600 },
+  btnTeal:   { background:'linear-gradient(135deg,#00e5cc,#00b4a0)', color:'#000', border:'none', borderRadius:14, padding:'16px 24px', fontSize:15, fontWeight:700, cursor:'pointer', fontFamily:"'Plus Jakarta Sans',sans-serif", boxShadow:'0 4px 16px rgba(0,229,204,0.3)' },
+  btnPrimary:{ background:'#0A2540', color:'#fff', border:'none', borderRadius:14, padding:'16px 24px', fontSize:15, fontWeight:700, cursor:'pointer', fontFamily:"'Plus Jakarta Sans',sans-serif" },
+  btnOutline:{ background:'transparent', color:'#00e5cc', border:'1px solid rgba(0,229,204,0.3)', borderRadius:14, padding:'14px 20px', fontSize:14, fontWeight:700, cursor:'pointer', fontFamily:"'Plus Jakarta Sans',sans-serif", width:'100%', marginTop:8 },
+  statBox:   { flex:1, background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.07)', borderRadius:12, padding:'12px 8px', textAlign:'center' },
+  icon:      (c:string) => ({ width:84, height:84, borderRadius:'50%', background:`${c}18`, border:`2px solid ${c}`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:40, marginBottom:20 }),
+  h2:        { fontFamily:"'Plus Jakarta Sans',sans-serif", fontWeight:800, fontSize:26, color:'#fff', margin:'0 0 8px' },
+  sub:       { color:'rgba(255,255,255,0.5)', fontSize:14, marginBottom:24, lineHeight:1.7, maxWidth:320 },
 };

@@ -1,634 +1,551 @@
-import { useState, useEffect, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { useAuth } from '../context/AuthContext';
-import {
-  doc, updateDoc, increment, serverTimestamp,
-  collection, addDoc, getDoc
-} from 'firebase/firestore';
-import { db } from '../lib/firebase';
+/**
+ * INRT WALLET — CryptoPage.tsx
+ * Reads inrtBalance directly from Firestore onSnapshot
+ * Replace: src/pages/CryptoPage.tsx
+ */
 
-// ── API CONFIG ─────────────────────────────────────────────────
-const AV_KEY    = import.meta.env.VITE_ALPHA_VANTAGE_KEY || 'demo';
-const BINANCE   = 'https://api.binance.com/api/v3';
-const AV_BASE   = 'https://www.alphavantage.co/query';
+import { useState, useEffect, useRef } from 'react';
+import { useNavigate }                  from 'react-router-dom';
+import { useAuth }                      from '../context/AuthContext';
+import { doc, onSnapshot }              from 'firebase/firestore';
+import { db as firestoreDb }            from '../lib/firebase';
 
-// ── COIN CATALOGUE ─────────────────────────────────────────────
-const COINS = [
-  { id:'BTC',  name:'Bitcoin',       binance:'BTCUSDT',  av:'BTCUSD',  icon:'₿',  color:'#f7931a' },
-  { id:'ETH',  name:'Ethereum',      binance:'ETHUSDT',  av:'ETHUSD',  icon:'Ξ',  color:'#627eea' },
-  { id:'BNB',  name:'BNB',           binance:'BNBUSDT',  av:'BNBUSD',  icon:'B',  color:'#f3ba2f' },
-  { id:'SOL',  name:'Solana',        binance:'SOLUSDT',  av:'SOLUSD',  icon:'◎',  color:'#9945ff' },
-  { id:'XRP',  name:'XRP',           binance:'XRPUSDT',  av:'XRPUSD',  icon:'✕',  color:'#346aa9' },
-  { id:'DOGE', name:'Dogecoin',      binance:'DOGEUSDT', av:'DOGEUSD', icon:'Ð',  color:'#c2a633' },
-  { id:'ADA',  name:'Cardano',       binance:'ADAUSDT',  av:'ADAUSD',  icon:'₳',  color:'#0d1e2d' },
-  { id:'MATIC',name:'Polygon',       binance:'MATICUSDT',av:'MATICUSD',icon:'⬡',  color:'#8247e5' },
-  { id:'AVAX', name:'Avalanche',     binance:'AVAXUSDT', av:'AVAXUSD', icon:'▲',  color:'#e84142' },
-  { id:'DOT',  name:'Polkadot',      binance:'DOTUSDT',  av:'DOTUSD',  icon:'●',  color:'#e6007a' },
-  { id:'LTC',  name:'Litecoin',      binance:'LTCUSDT',  av:'LTCUSD',  icon:'Ł',  color:'#bfbbbb' },
-  { id:'LINK', name:'Chainlink',     binance:'LINKUSDT', av:'LINKUSD', icon:'⬡',  color:'#2a5ada' },
-];
+const API = import.meta.env.VITE_API_URL || '';
 
-interface PriceData {
-  price: number;
-  change: number;
-  changePct: number;
-  high: number;
-  low: number;
-  volume: number;
-  lastUpdated: number;
-}
+type Tab = 'overview' | 'convert' | 'send' | 'receive' | 'history';
 
-interface Holding {
-  coinId: string;
-  amount: number;
-  avgBuyPrice: number;
-  totalInvested: number;
-}
+const T = {
+  bg:'#050914', card:'rgba(255,255,255,0.04)', border:'rgba(255,255,255,0.08)',
+  text:'#fff', muted:'rgba(255,255,255,0.45)', dim:'rgba(255,255,255,0.2)',
+  inrt:'#7B2FBE', inrtL:'#E0B0FF', teal:'#00e5cc',
+  green:'#00C853', orange:'#FF9500', red:'#FF3B30',
+};
 
-// ── FETCH via Binance (primary, free) ──────────────────────────
-async function fetchBinancePrice(symbol: string): Promise<PriceData | null> {
-  try {
-    const r = await fetch(`${BINANCE}/ticker/24hr?symbol=${symbol}`, {
-      signal: AbortSignal.timeout(6000)
-    });
-    const d = await r.json();
-    if (d.code) return null;
-    return {
-      price:      parseFloat(d.lastPrice),
-      change:     parseFloat(d.priceChange),
-      changePct:  parseFloat(d.priceChangePercent),
-      high:       parseFloat(d.highPrice),
-      low:        parseFloat(d.lowPrice),
-      volume:     parseFloat(d.quoteVolume),
-      lastUpdated: Date.now(),
-    };
-  } catch { return null; }
-}
-
-// ── FETCH via Alpha Vantage (fallback / extra data) ────────────
-async function fetchAVPrice(symbol: string): Promise<PriceData | null> {
-  if (AV_KEY === 'demo') return null;
-  try {
-    const url = `${AV_BASE}?function=CURRENCY_EXCHANGE_RATE&from_currency=${symbol.replace('USD','')}&to_currency=USD&apikey=${AV_KEY}`;
-    const r   = await fetch(url, { signal: AbortSignal.timeout(8000) });
-    const d   = await r.json();
-    const rate = d['Realtime Currency Exchange Rate'];
-    if (!rate) return null;
-    const price = parseFloat(rate['5. Exchange Rate']);
-    return { price, change:0, changePct:0, high:0, low:0, volume:0, lastUpdated:Date.now() };
-  } catch { return null; }
-}
-
-// ══════════════════════════════════════════════════════════════
-export default function CryptoPage() {
-  const { user, userProfile, refreshProfile } = useAuth();
-  const navigate = useNavigate();
-
-  const [tab,       setTab]       = useState<'market'|'buy'|'sell'|'portfolio'>('market');
-  const [prices,    setPrices]    = useState<Record<string, PriceData>>({});
-  const [loading,   setLoading]   = useState(true);
-  const [search,    setSearch]    = useState('');
-  const [selected,  setSelected]  = useState(COINS[0]);
-  const [buyAmount, setBuyAmount] = useState('');  // in INR
-  const [sellCoins, setSellCoins] = useState('');  // in crypto
-  const [holdings,  setHoldings]  = useState<Record<string, Holding>>({});
-  const [txLoading, setTxLoading] = useState(false);
-  const [toast,     setToast]     = useState('');
-  const [usdToInr,  setUsdToInr]  = useState(83.5); // fallback rate
-
-  const bal = userProfile?.balance || 0;
-
-  // ── Load USD→INR rate ────────────────────────────────────────
-  useEffect(() => {
-    const oerKey = import.meta.env.VITE_OER_KEY;
-    if (oerKey) {
-      fetch(`https://openexchangerates.org/api/latest.json?app_id=${oerKey}&symbols=INR`)
-        .then(r => r.json())
-        .then(d => { if (d.rates?.INR) setUsdToInr(d.rates.INR); })
-        .catch(() => {});
-    }
-  }, []);
-
-  // ── Load holdings from Firebase ─────────────────────────────
-  useEffect(() => {
-    if (!user) return;
-    getDoc(doc(db, 'users', user.uid)).then(snap => {
-      if (snap.exists()) {
-        setHoldings(snap.data()?.cryptoHoldings || {});
-      }
-    });
-  }, [user]);
-
-  // ── Load prices ──────────────────────────────────────────────
-  const loadPrices = useCallback(async () => {
-    const results: Record<string, PriceData> = {};
-    await Promise.all(
-      COINS.map(async coin => {
-        const p = await fetchBinancePrice(coin.binance);
-        if (p) results[coin.id] = p;
-      })
-    );
-    setPrices(results);
-    setLoading(false);
-  }, []);
-
-  useEffect(() => {
-    loadPrices();
-    const t = setInterval(loadPrices, 30000); // refresh every 30s
-    return () => clearInterval(t);
-  }, [loadPrices]);
-
-  const showToast = (msg: string) => {
-    setToast(msg); setTimeout(() => setToast(''), 3000);
+function PinPad({ onComplete, onCancel }: { onComplete:()=>void; onCancel:()=>void }) {
+  const [pin, setPin] = useState<string[]>([]);
+  const tap = (d: string) => {
+    if (pin.length >= 6) return;
+    const next = [...pin, d];
+    setPin(next);
+    if (next.length === 6) setTimeout(onComplete, 200);
   };
-
-  // ── Format helpers ───────────────────────────────────────────
-  const fmtUSD  = (n: number) => n < 0.01 ? `$${n.toFixed(6)}` : n < 1 ? `$${n.toFixed(4)}` : `$${n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}`;
-  const fmtINR  = (n: number) => `₹${(n * usdToInr).toLocaleString('en-IN',{maximumFractionDigits:0})}`;
-  const fmtPct  = (n: number) => `${n >= 0 ? '+' : ''}${n.toFixed(2)}%`;
-  const clr     = (n: number) => n >= 0 ? '#10b981' : '#ef4444';
-
-  // ── BUY ──────────────────────────────────────────────────────
-  const handleBuy = async () => {
-    const inrAmount = parseFloat(buyAmount);
-    if (!inrAmount || inrAmount < 10) return showToast('Minimum ₹10');
-    if (inrAmount > bal) return showToast(`Insufficient balance. You have ₹${bal}`);
-
-    const p = prices[selected.id];
-    if (!p) return showToast('Price data unavailable');
-
-    const priceInINR   = p.price * usdToInr;
-    const coinsToGet   = inrAmount / priceInINR;
-    const existing     = holdings[selected.id];
-    const newTotal     = (existing?.amount || 0) + coinsToGet;
-    const newInvested  = (existing?.totalInvested || 0) + inrAmount;
-    const newAvgPrice  = newInvested / newTotal;
-
-    setTxLoading(true);
-    try {
-      const newHoldings = {
-        ...holdings,
-        [selected.id]: {
-          coinId:        selected.id,
-          amount:        newTotal,
-          avgBuyPrice:   newAvgPrice,
-          totalInvested: newInvested,
-        },
-      };
-
-      await updateDoc(doc(db, 'users', user!.uid), {
-        balance:         increment(-inrAmount),
-        cryptoHoldings:  newHoldings,
-        updatedAt:       serverTimestamp(),
-      });
-      await addDoc(collection(db, 'transactions'), {
-        uid: user!.uid, type: 'debit',
-        amount: inrAmount, cat: 'crypto',
-        note: `Bought ${coinsToGet.toFixed(6)} ${selected.id}`,
-        status: 'success', createdAt: serverTimestamp(),
-      });
-
-      setHoldings(newHoldings);
-      await refreshProfile();
-      showToast(`✅ Bought ${coinsToGet.toFixed(6)} ${selected.id} for ₹${inrAmount}`);
-      setBuyAmount('');
-    } catch (e: any) {
-      showToast(e.message || 'Purchase failed');
-    }
-    setTxLoading(false);
-  };
-
-  // ── SELL ──────────────────────────────────────────────────────
-  const handleSell = async () => {
-    const coinAmount = parseFloat(sellCoins);
-    const holding    = holdings[selected.id];
-    if (!coinAmount || coinAmount <= 0) return showToast('Enter amount to sell');
-    if (!holding || coinAmount > holding.amount)
-      return showToast(`You only have ${holding?.amount?.toFixed(6) || 0} ${selected.id}`);
-
-    const p          = prices[selected.id];
-    if (!p)          return showToast('Price data unavailable');
-    const priceInINR = p.price * usdToInr;
-    const inrReceive = Math.floor(coinAmount * priceInINR * 0.99); // 1% spread
-
-    setTxLoading(true);
-    try {
-      const newAmount   = holding.amount - coinAmount;
-      const newInvested = newAmount > 0
-        ? holding.totalInvested * (newAmount / holding.amount)
-        : 0;
-
-      const newHoldings = { ...holdings };
-      if (newAmount < 0.000001) delete newHoldings[selected.id];
-      else newHoldings[selected.id] = { ...holding, amount: newAmount, totalInvested: newInvested };
-
-      await updateDoc(doc(db, 'users', user!.uid), {
-        balance:        increment(inrReceive),
-        cryptoHoldings: newHoldings,
-        updatedAt:      serverTimestamp(),
-      });
-      await addDoc(collection(db, 'transactions'), {
-        uid: user!.uid, type: 'credit',
-        amount: inrReceive, cat: 'crypto',
-        note: `Sold ${coinAmount} ${selected.id}`,
-        status: 'success', createdAt: serverTimestamp(),
-      });
-
-      setHoldings(newHoldings);
-      await refreshProfile();
-      showToast(`✅ Sold ${coinAmount} ${selected.id} for ₹${inrReceive.toLocaleString('en-IN')}`);
-      setSellCoins('');
-    } catch (e: any) {
-      showToast(e.message || 'Sale failed');
-    }
-    setTxLoading(false);
-  };
-
-  // ── Portfolio totals ─────────────────────────────────────────
-  const portfolioStats = Object.entries(holdings).reduce((acc, [coinId, h]) => {
-    const p = prices[coinId];
-    if (!p) return acc;
-    const currentVal = h.amount * p.price * usdToInr;
-    acc.currentValue  += currentVal;
-    acc.totalInvested += h.totalInvested;
-    return acc;
-  }, { currentValue: 0, totalInvested: 0 });
-
-  const portfolioPnL    = portfolioStats.currentValue - portfolioStats.totalInvested;
-  const portfolioPnLPct = portfolioStats.totalInvested > 0
-    ? (portfolioPnL / portfolioStats.totalInvested) * 100 : 0;
-
-  const filtered = COINS.filter(c =>
-    !search ||
-    c.name.toLowerCase().includes(search.toLowerCase()) ||
-    c.id.toLowerCase().includes(search.toLowerCase())
-  );
-
   return (
-    <div style={S.page}>
-      {toast && <div style={S.toast}>{toast}</div>}
-
-      {/* Header */}
-      <div style={S.header}>
-        <button onClick={() => navigate('/dashboard')} style={S.back}>←</button>
-        <div style={{ flex:1 }}>
-          <h1 style={S.title}>Crypto</h1>
-          <p style={{ color:'rgba(255,255,255,0.4)',fontSize:11,marginTop:1 }}>
-            Live prices · Binance + Alpha Vantage · 1$ = ₹{usdToInr.toFixed(1)}
-          </p>
-        </div>
-        <div style={S.liveBadge}>● LIVE</div>
+    <div style={{ textAlign:'center' as const }}>
+      <p style={{ color:T.muted, fontSize:14, margin:'0 0 20px' }}>Enter your PIN to confirm</p>
+      <div style={{ display:'flex', gap:12, justifyContent:'center', marginBottom:28 }}>
+        {Array.from({length:6},(_,i)=>(
+          <div key={i} style={{ width:14, height:14, borderRadius:'50%', background:i<pin.length?T.inrt:'rgba(255,255,255,0.1)', transition:'background 0.15s' }}/>
+        ))}
       </div>
-
-      {/* Portfolio Mini Banner */}
-      {portfolioStats.currentValue > 0 && (
-        <div style={S.portfolioBanner} onClick={() => setTab('portfolio')}>
-          <div>
-            <p style={{ color:'rgba(255,255,255,0.5)',fontSize:10,fontWeight:700,letterSpacing:1 }}>PORTFOLIO VALUE</p>
-            <p style={{ color:'#f0b429',fontWeight:900,fontSize:20,fontFamily:"'Syne',sans-serif" }}>
-              ₹{portfolioStats.currentValue.toLocaleString('en-IN',{maximumFractionDigits:0})}
-            </p>
-          </div>
-          <div style={{ textAlign:'right' }}>
-            <p style={{ color:clr(portfolioPnLPct),fontWeight:700,fontSize:14 }}>
-              {portfolioPnL >= 0 ? '+' : ''}₹{portfolioPnL.toLocaleString('en-IN',{maximumFractionDigits:0})}
-            </p>
-            <p style={{ color:clr(portfolioPnLPct),fontSize:12 }}>{fmtPct(portfolioPnLPct)}</p>
-          </div>
-        </div>
-      )}
-
-      {/* Tabs */}
-      <div style={S.tabs}>
-        {(['market','buy','sell','portfolio'] as const).map(t => (
-          <button key={t} onClick={() => setTab(t)}
-            style={{ ...S.tab, ...(tab===t ? S.tabOn : {}) }}>
-            {t==='market'?'📊':t==='buy'?'🟢':t==='sell'?'🔴':'💼'} {t.charAt(0).toUpperCase()+t.slice(1)}
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:10, maxWidth:240, margin:'0 auto 16px' }}>
+        {[1,2,3,4,5,6,7,8,9,'',0,'⌫'].map((k,i)=>(
+          <button key={i} onClick={()=>k==='⌫'?setPin(p=>p.slice(0,-1)):k!==''&&tap(String(k))}
+            style={{ height:56, borderRadius:14, border:`1px solid ${T.border}`, background:k===''?'transparent':'rgba(255,255,255,0.05)', fontSize:k==='⌫'?20:22, fontWeight:700, color:T.text, cursor:k===''?'default':'pointer', fontFamily:"'Plus Jakarta Sans',sans-serif" }}>
+            {k}
           </button>
         ))}
       </div>
-
-      <div style={{ padding:'0 16px 90px' }}>
-
-        {/* ── MARKET TAB ── */}
-        {tab === 'market' && (
-          <>
-            <input value={search} onChange={e => setSearch(e.target.value)}
-              placeholder="🔍 Search coins..."
-              style={S.searchInput} />
-            {loading ? (
-              [1,2,3,4,5,6].map(i => (
-                <div key={i} style={{ ...S.coinRow, opacity:0.4 }}>
-                  <div style={{ width:42,height:42,borderRadius:12,background:'#1e1e2a' }} />
-                  <div style={{ flex:1 }}>
-                    <div style={{ height:14,width:80,background:'#1e1e2a',borderRadius:4,marginBottom:6 }} />
-                    <div style={{ height:10,width:50,background:'#16161f',borderRadius:4 }} />
-                  </div>
-                </div>
-              ))
-            ) : (
-              filtered.map(coin => {
-                const p = prices[coin.id];
-                const inPortfolio = !!holdings[coin.id];
-                return (
-                  <div key={coin.id}
-                    onClick={() => { setSelected(coin); setTab('buy'); }}
-                    style={{ ...S.coinRow, cursor:'pointer',
-                      background: inPortfolio ? 'rgba(240,180,41,0.06)' : '#16161f',
-                      border: inPortfolio ? '1px solid rgba(240,180,41,0.2)' : '1px solid rgba(255,255,255,0.06)' }}>
-                    <div style={{ ...S.coinIcon, background:`${coin.color}22`, color:coin.color }}>
-                      {coin.icon}
-                    </div>
-                    <div style={{ flex:1 }}>
-                      <div style={{ display:'flex',justifyContent:'space-between',alignItems:'flex-start' }}>
-                        <div>
-                          <p style={{ color:'#f0f0f8',fontWeight:700,fontSize:14 }}>{coin.name}</p>
-                          <p style={{ color:'#555570',fontSize:11,marginTop:2 }}>
-                            {coin.id} {inPortfolio && <span style={{ color:'#f0b429',fontSize:10 }}>· In portfolio</span>}
-                          </p>
-                        </div>
-                        {p ? (
-                          <div style={{ textAlign:'right' }}>
-                            <p style={{ color:'#f0f0f8',fontWeight:800,fontSize:14 }}>{fmtUSD(p.price)}</p>
-                            <p style={{ color:clr(p.changePct),fontSize:12,fontWeight:600,marginTop:2 }}>
-                              {fmtPct(p.changePct)}
-                            </p>
-                          </div>
-                        ) : (
-                          <p style={{ color:'#555570',fontSize:12 }}>Loading...</p>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                );
-              })
-            )}
-          </>
-        )}
-
-        {/* ── BUY TAB ── */}
-        {tab === 'buy' && (
-          <div>
-            {/* Coin selector */}
-            <div style={S.card}>
-              <p style={S.cardLabel}>SELECT COIN</p>
-              <div style={{ display:'flex',gap:8,flexWrap:'wrap' as const,marginBottom:16 }}>
-                {COINS.slice(0,6).map(c => (
-                  <button key={c.id} onClick={() => setSelected(c)}
-                    style={{ padding:'7px 12px',borderRadius:10,fontSize:12,fontWeight:700,
-                             cursor:'pointer',
-                             background:selected.id===c.id?`${c.color}22`:'#1e1e2a',
-                             border:`1px solid ${selected.id===c.id?c.color:'rgba(255,255,255,0.07)'}`,
-                             color:selected.id===c.id?c.color:'#8888a8' }}>
-                    {c.id}
-                  </button>
-                ))}
-              </div>
-
-              {/* Selected coin price */}
-              {prices[selected.id] && (
-                <div style={{ background:'#1e1e2a',borderRadius:12,padding:'12px 14px',marginBottom:16 }}>
-                  <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center' }}>
-                    <div>
-                      <p style={{ color:'#8888a8',fontSize:11 }}>{selected.name} price</p>
-                      <p style={{ color:'#f0f0f8',fontWeight:800,fontSize:18,marginTop:2 }}>
-                        {fmtUSD(prices[selected.id].price)}
-                        <span style={{ color:'#8888a8',fontSize:12,fontWeight:400,marginLeft:6 }}>
-                          ≈ {fmtINR(prices[selected.id].price)}
-                        </span>
-                      </p>
-                    </div>
-                    <span style={{ color:clr(prices[selected.id].changePct),fontWeight:700 }}>
-                      {fmtPct(prices[selected.id].changePct)}
-                    </span>
-                  </div>
-                </div>
-              )}
-
-              <p style={S.cardLabel}>AMOUNT IN ₹</p>
-              <div style={S.amtRow}>
-                <span style={{ color:'#f0b429',fontSize:20,fontWeight:800 }}>₹</span>
-                <input type="number" value={buyAmount}
-                  onChange={e => setBuyAmount(e.target.value)}
-                  placeholder="0"
-                  style={{ flex:1,background:'none',border:'none',outline:'none',
-                           fontFamily:"'Syne',sans-serif",fontWeight:800,fontSize:28,color:'#f0f0f8' }} />
-              </div>
-
-              {/* Quick amounts */}
-              <div style={{ display:'flex',gap:8,marginBottom:14,flexWrap:'wrap' as const }}>
-                {[100,500,1000,5000].map(a => (
-                  <button key={a} onClick={() => setBuyAmount(String(a))}
-                    style={{ padding:'7px 12px',borderRadius:10,fontSize:12,fontWeight:700,
-                             cursor:'pointer',
-                             background:buyAmount===String(a)?'rgba(240,180,41,0.15)':'#1e1e2a',
-                             border:`1px solid ${buyAmount===String(a)?'#f0b429':'rgba(255,255,255,0.07)'}`,
-                             color:buyAmount===String(a)?'#f0b429':'#8888a8' }}>
-                    ₹{a}
-                  </button>
-                ))}
-              </div>
-
-              {buyAmount && prices[selected.id] && (
-                <div style={{ background:'rgba(16,185,129,0.08)',borderRadius:10,
-                               padding:'10px 14px',marginBottom:14 }}>
-                  <p style={{ color:'#10b981',fontSize:13 }}>
-                    You get ≈ {(parseFloat(buyAmount) / (prices[selected.id].price * usdToInr)).toFixed(6)} {selected.id}
-                  </p>
-                </div>
-              )}
-
-              <div style={{ display:'flex',justifyContent:'space-between',
-                             padding:'8px 0',borderTop:'1px solid rgba(255,255,255,0.06)',marginBottom:14 }}>
-                <span style={{ color:'#555570',fontSize:12 }}>Wallet balance</span>
-                <span style={{ color:parseFloat(buyAmount)>bal?'#ef4444':'#10b981',fontWeight:700,fontSize:12 }}>
-                  ₹{bal.toLocaleString('en-IN')}
-                </span>
-              </div>
-
-              <button onClick={handleBuy} disabled={txLoading||!buyAmount}
-                style={{ ...S.buyBtn, opacity:txLoading||!buyAmount?0.5:1 }}>
-                {txLoading ? '⏳ Processing...' : `Buy ${selected.id} →`}
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* ── SELL TAB ── */}
-        {tab === 'sell' && (
-          <div>
-            <div style={S.card}>
-              <p style={S.cardLabel}>SELECT COIN TO SELL</p>
-              <div style={{ display:'flex',gap:8,flexWrap:'wrap' as const,marginBottom:16 }}>
-                {COINS.filter(c => holdings[c.id]).map(c => (
-                  <button key={c.id} onClick={() => setSelected(c)}
-                    style={{ padding:'7px 12px',borderRadius:10,fontSize:12,fontWeight:700,
-                             cursor:'pointer',
-                             background:selected.id===c.id?`${c.color}22`:'#1e1e2a',
-                             border:`1px solid ${selected.id===c.id?c.color:'rgba(255,255,255,0.07)'}`,
-                             color:selected.id===c.id?c.color:'#8888a8' }}>
-                    {c.id}
-                  </button>
-                ))}
-                {Object.keys(holdings).length === 0 && (
-                  <p style={{ color:'#555570',fontSize:13 }}>No holdings to sell. Buy some crypto first!</p>
-                )}
-              </div>
-
-              {holdings[selected.id] && (
-                <>
-                  <div style={{ background:'#1e1e2a',borderRadius:12,padding:'12px 14px',marginBottom:16 }}>
-                    <p style={{ color:'#8888a8',fontSize:11,marginBottom:4 }}>Your holdings</p>
-                    <p style={{ color:'#f0f0f8',fontWeight:800,fontSize:16 }}>
-                      {holdings[selected.id].amount.toFixed(6)} {selected.id}
-                    </p>
-                    <p style={{ color:'#555570',fontSize:11,marginTop:2 }}>
-                      Avg buy price: {fmtUSD(holdings[selected.id].avgBuyPrice / usdToInr)}
-                    </p>
-                  </div>
-
-                  <p style={S.cardLabel}>AMOUNT TO SELL ({selected.id})</p>
-                  <div style={S.amtRow}>
-                    <input type="number" value={sellCoins}
-                      onChange={e => setSellCoins(e.target.value)}
-                      placeholder="0.000000"
-                      style={{ flex:1,background:'none',border:'none',outline:'none',
-                               fontFamily:"'Syne',sans-serif",fontWeight:800,fontSize:24,color:'#f0f0f8' }} />
-                    <button onClick={() => setSellCoins(holdings[selected.id].amount.toFixed(6))}
-                      style={{ background:'rgba(239,68,68,0.15)',border:'1px solid rgba(239,68,68,0.3)',
-                               borderRadius:8,padding:'6px 10px',color:'#ef4444',
-                               fontSize:11,fontWeight:700,cursor:'pointer' }}>
-                      MAX
-                    </button>
-                  </div>
-
-                  {sellCoins && prices[selected.id] && (
-                    <div style={{ background:'rgba(239,68,68,0.08)',borderRadius:10,
-                                   padding:'10px 14px',marginBottom:14,marginTop:10 }}>
-                      <p style={{ color:'#ef4444',fontSize:13 }}>
-                        You receive ≈ ₹{(parseFloat(sellCoins) * prices[selected.id].price * usdToInr * 0.99).toLocaleString('en-IN',{maximumFractionDigits:0})}
-                        <span style={{ color:'#555570',fontSize:11 }}> (after 1% spread)</span>
-                      </p>
-                    </div>
-                  )}
-
-                  <button onClick={handleSell} disabled={txLoading||!sellCoins}
-                    style={{ ...S.sellBtn, opacity:txLoading||!sellCoins?0.5:1 }}>
-                    {txLoading ? '⏳ Processing...' : `Sell ${selected.id} →`}
-                  </button>
-                </>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* ── PORTFOLIO TAB ── */}
-        {tab === 'portfolio' && (
-          <div>
-            {/* Summary */}
-            <div style={{ ...S.card,marginBottom:14,
-                           background:'linear-gradient(135deg,rgba(240,180,41,0.08),rgba(240,180,41,0.03))',
-                           border:'1px solid rgba(240,180,41,0.2)' }}>
-              <p style={{ color:'rgba(240,180,41,0.7)',fontSize:10,fontWeight:700,letterSpacing:1 }}>
-                TOTAL PORTFOLIO VALUE
-              </p>
-              <p style={{ fontFamily:"'Syne',sans-serif",fontWeight:900,fontSize:32,
-                           color:'#f0b429',marginTop:6 }}>
-                ₹{portfolioStats.currentValue.toLocaleString('en-IN',{maximumFractionDigits:0})}
-              </p>
-              <div style={{ display:'flex',gap:16,marginTop:12,paddingTop:12,
-                             borderTop:'1px solid rgba(240,180,41,0.15)' }}>
-                <div>
-                  <p style={{ color:'#555570',fontSize:10 }}>INVESTED</p>
-                  <p style={{ color:'#f0f0f8',fontWeight:700,fontSize:14,marginTop:2 }}>
-                    ₹{portfolioStats.totalInvested.toLocaleString('en-IN',{maximumFractionDigits:0})}
-                  </p>
-                </div>
-                <div>
-                  <p style={{ color:'#555570',fontSize:10 }}>P&L</p>
-                  <p style={{ color:clr(portfolioPnL),fontWeight:700,fontSize:14,marginTop:2 }}>
-                    {portfolioPnL>=0?'+':''}₹{portfolioPnL.toLocaleString('en-IN',{maximumFractionDigits:0})}
-                  </p>
-                </div>
-                <div>
-                  <p style={{ color:'#555570',fontSize:10 }}>RETURN</p>
-                  <p style={{ color:clr(portfolioPnLPct),fontWeight:700,fontSize:14,marginTop:2 }}>
-                    {fmtPct(portfolioPnLPct)}
-                  </p>
-                </div>
-              </div>
-            </div>
-
-            {/* Holdings list */}
-            {Object.keys(holdings).length === 0 ? (
-              <div style={{ textAlign:'center',padding:'60px 0',color:'#555570' }}>
-                <p style={{ fontSize:48,marginBottom:12 }}>💼</p>
-                <p style={{ color:'#8888a8',fontWeight:600,fontSize:16 }}>Empty Portfolio</p>
-                <p style={{ fontSize:13,marginTop:6 }}>Go to the Buy tab to get started</p>
-                <button onClick={() => setTab('buy')}
-                  style={{ ...S.buyBtn,marginTop:20,width:'auto',padding:'12px 24px' }}>
-                  Buy Crypto →
-                </button>
-              </div>
-            ) : (
-              COINS.filter(c => holdings[c.id]).map(coin => {
-                const h = holdings[coin.id];
-                const p = prices[coin.id];
-                if (!p) return null;
-                const currentVal = h.amount * p.price * usdToInr;
-                const pnl        = currentVal - h.totalInvested;
-                const pnlPct     = h.totalInvested > 0 ? (pnl/h.totalInvested)*100 : 0;
-                return (
-                  <div key={coin.id} style={S.coinRow}>
-                    <div style={{ ...S.coinIcon, background:`${coin.color}22`, color:coin.color }}>
-                      {coin.icon}
-                    </div>
-                    <div style={{ flex:1 }}>
-                      <div style={{ display:'flex',justifyContent:'space-between' }}>
-                        <div>
-                          <p style={{ color:'#f0f0f8',fontWeight:700,fontSize:14 }}>{coin.name}</p>
-                          <p style={{ color:'#555570',fontSize:11,marginTop:2 }}>
-                            {h.amount.toFixed(6)} {coin.id}
-                          </p>
-                        </div>
-                        <div style={{ textAlign:'right' }}>
-                          <p style={{ color:'#f0f0f8',fontWeight:800,fontSize:14 }}>
-                            ₹{currentVal.toLocaleString('en-IN',{maximumFractionDigits:0})}
-                          </p>
-                          <p style={{ color:clr(pnlPct),fontSize:12,fontWeight:600,marginTop:2 }}>
-                            {pnl>=0?'+':''}₹{pnl.toLocaleString('en-IN',{maximumFractionDigits:0})} ({fmtPct(pnlPct)})
-                          </p>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })
-            )}
-          </div>
-        )}
-      </div>
+      <button onClick={onCancel} style={{ background:'none', border:'none', color:T.muted, fontSize:13, cursor:'pointer', fontFamily:"'Plus Jakarta Sans',sans-serif" }}>Cancel</button>
     </div>
   );
 }
 
-const S: Record<string, React.CSSProperties> = {
-  page:          { maxWidth:480,margin:'0 auto',minHeight:'100vh',background:'#0a0a0f',fontFamily:"'DM Sans',sans-serif" },
-  header:        { display:'flex',alignItems:'center',gap:14,padding:'52px 16px 12px',background:'linear-gradient(160deg,#0f0f1a,#0a0a0f)' },
-  back:          { background:'rgba(255,255,255,0.06)',border:'1px solid rgba(255,255,255,0.07)',borderRadius:12,width:40,height:40,fontSize:18,cursor:'pointer',color:'#f0f0f8',flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center' },
-  title:         { fontFamily:"'Syne',sans-serif",fontWeight:800,fontSize:20,color:'#f0f0f8' },
-  liveBadge:     { background:'rgba(16,185,129,0.12)',border:'1px solid rgba(16,185,129,0.3)',borderRadius:8,padding:'4px 10px',color:'#10b981',fontSize:10,fontWeight:700 },
-  portfolioBanner:{ background:'rgba(240,180,41,0.06)',borderTop:'1px solid rgba(240,180,41,0.12)',padding:'12px 20px',display:'flex',justifyContent:'space-between',alignItems:'center',cursor:'pointer' },
-  tabs:          { display:'flex',gap:6,padding:'10px 16px',background:'#0a0a0f',position:'sticky' as const,top:0,zIndex:10 },
-  tab:           { flex:1,padding:'8px 0',borderRadius:10,fontSize:11,fontWeight:600,cursor:'pointer',background:'#16161f',border:'1px solid rgba(255,255,255,0.06)',color:'#555570',whiteSpace:'nowrap' as const },
-  tabOn:         { background:'#f0b429',border:'1px solid #f0b429',color:'#000' },
-  searchInput:   { width:'100%',background:'#1e1e2a',border:'1px solid rgba(255,255,255,0.07)',borderRadius:12,padding:'12px 14px',fontSize:14,color:'#f0f0f8',outline:'none',marginBottom:12,fontFamily:'inherit',boxSizing:'border-box' as const },
-  coinRow:       { background:'#16161f',border:'1px solid rgba(255,255,255,0.06)',borderRadius:14,padding:'14px',display:'flex',alignItems:'center',gap:12,marginBottom:10 },
-  coinIcon:      { width:44,height:44,borderRadius:12,display:'flex',alignItems:'center',justifyContent:'center',fontWeight:800,fontSize:18,flexShrink:0 },
-  card:          { background:'#16161f',border:'1px solid rgba(255,255,255,0.07)',borderRadius:18,padding:20,marginBottom:14 },
-  cardLabel:     { color:'#555570',fontSize:10,fontWeight:700,letterSpacing:1,marginBottom:10 },
-  amtRow:        { display:'flex',alignItems:'center',gap:8,background:'#1e1e2a',borderRadius:14,padding:'12px 16px',marginBottom:12,border:'1px solid rgba(255,255,255,0.07)' },
-  buyBtn:        { width:'100%',padding:'15px',background:'linear-gradient(135deg,#10b981,#059669)',border:'none',borderRadius:14,color:'#fff',fontWeight:700,fontSize:16,cursor:'pointer',fontFamily:'inherit' },
-  sellBtn:       { width:'100%',padding:'15px',background:'linear-gradient(135deg,#ef4444,#dc2626)',border:'none',borderRadius:14,color:'#fff',fontWeight:700,fontSize:16,cursor:'pointer',fontFamily:'inherit' },
-  toast:         { position:'fixed',top:20,left:'50%',transform:'translateX(-50%)',background:'#1e1e2a',border:'1px solid rgba(255,255,255,0.14)',borderRadius:14,padding:'12px 20px',fontSize:14,fontWeight:600,color:'#f0f0f8',zIndex:999,whiteSpace:'nowrap' as const },
-};
+export default function CryptoPage() {
+  const { user } = useAuth();
+  const navigate = useNavigate();
+
+  // ── Direct Firestore subscription — never stale ───────────────
+  const [profile, setProfile] = useState<any>(null);
+  const [ready,   setReady]   = useState(false);
+  const [tab,     setTab]     = useState<Tab>('overview');
+  const [wallet,  setWallet]  = useState<{inrtAddress:string;name:string}|null>(null);
+
+  useEffect(() => {
+    if (!user?.uid) return;
+    const unsub = onSnapshot(doc(firestoreDb,'users',user.uid), snap => {
+      if (snap.exists()) {
+        const data = snap.data();
+        setProfile(data);
+        setReady(true);
+        if (data.inrtAddress) setWallet({ inrtAddress:data.inrtAddress, name:data.name||'INRT User' });
+      }
+    });
+    return () => unsub();
+  }, [user?.uid]);
+
+  // Load wallet address if not in profile
+  useEffect(() => {
+    if (!user?.uid || wallet) return;
+    fetch(`${API}/inrt/wallet/${user.uid}`)
+      .then(r=>r.json())
+      .then(d=>{ if (d.success) setWallet({ inrtAddress:d.inrtAddress, name:d.name }); })
+      .catch(()=>{});
+  }, [user?.uid, wallet]);
+
+  // ── Read inrtBalance directly from Firestore snapshot ─────────
+  const inrtBal = Number(profile?.inrtBalance ?? 0);
+  const inrBal  = Number(profile?.balance ?? 0);
+
+  // ── Convert state ─────────────────────────────────────────────
+  const [convDir,     setConvDir]     = useState<'inr_to_inrt'|'inrt_to_inr'>('inr_to_inrt');
+  const [convAmt,     setConvAmt]     = useState('');
+  const [convLoading, setConvLoading] = useState(false);
+  const [convDone,    setConvDone]    = useState(false);
+  const [convErr,     setConvErr]     = useState('');
+
+  // ── Send state ────────────────────────────────────────────────
+  type SendStep = 'form'|'review'|'pin'|'processing'|'done'|'failed';
+  const [sendStep,  setSendStep]  = useState<SendStep>('form');
+  const [toAddress, setToAddress] = useState('');
+  const [recipient, setRecipient] = useState<{name:string;verified:boolean}|null>(null);
+  const [lookupErr, setLookupErr] = useState('');
+  const [lookupLoading, setLookupLoading] = useState(false);
+  const [sendAmt,   setSendAmt]   = useState('');
+  const [sendNote,  setSendNote]  = useState('');
+  const [sendErr,   setSendErr]   = useState('');
+  const [txRef,     setTxRef]     = useState('');
+  const [elapsed,   setElapsed]   = useState(0);
+  const [durationMs,setDurationMs]= useState(0);
+  const pollRef  = useRef<any>(null);
+  const timerRef = useRef<any>(null);
+
+  // ── History state ─────────────────────────────────────────────
+  const [history,        setHistory]        = useState<any[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+
+  useEffect(() => {
+    if (tab !== 'history' || !user?.uid) return;
+    setHistoryLoading(true);
+    fetch(`${API}/inrt/history/${user.uid}`)
+      .then(r=>r.json()).then(d=>setHistory(d.transactions||[]))
+      .catch(()=>{}).finally(()=>setHistoryLoading(false));
+  }, [tab, user?.uid]);
+
+  useEffect(() => () => { clearInterval(pollRef.current); clearInterval(timerRef.current); }, []);
+
+  // ── Lookup INRT address ───────────────────────────────────────
+  useEffect(() => {
+    const addr = toAddress.toUpperCase().trim();
+    if (addr.length < 15) { setRecipient(null); setLookupErr(''); return; }
+    setLookupLoading(true); setLookupErr(''); setRecipient(null);
+    const t = setTimeout(() => {
+      fetch(`${API}/inrt/lookup/${addr}`)
+        .then(r=>r.json())
+        .then(d=>{ if (d.success) setRecipient({name:d.name,verified:d.verified}); else setLookupErr(d.error||'Not found'); })
+        .catch(()=>setLookupErr('Lookup failed'))
+        .finally(()=>setLookupLoading(false));
+    }, 500);
+    return () => clearTimeout(t);
+  }, [toAddress]);
+
+  // ── Convert ───────────────────────────────────────────────────
+  const handleConvert = async () => {
+    const amt = parseFloat(convAmt);
+    if (!amt || amt <= 0) return;
+    setConvLoading(true); setConvErr('');
+    try {
+      const r = await fetch(`${API}/inrt/convert`, {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ userId:user!.uid, direction:convDir, amount:amt }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error||'Failed');
+      setConvDone(true); setConvAmt('');
+      setTimeout(()=>setConvDone(false), 3000);
+    } catch (e:any) { setConvErr(e.message); }
+    setConvLoading(false);
+  };
+
+  // ── Send ──────────────────────────────────────────────────────
+  const startSendPolling = (ref: string) => {
+    setElapsed(0);
+    timerRef.current = setInterval(()=>setElapsed(e=>e+100), 100);
+    pollRef.current  = setInterval(async () => {
+      try {
+        const r = await fetch(`${API}/inrt/transfer/${ref}`);
+        const d = await r.json();
+        if (d.status==='completed') {
+          clearInterval(pollRef.current); clearInterval(timerRef.current);
+          setDurationMs(d.durationMs); setSendStep('done');
+        } else if (d.status==='failed') {
+          clearInterval(pollRef.current); clearInterval(timerRef.current);
+          setSendStep('failed');
+        }
+      } catch {}
+    }, 300);
+  };
+
+  const handleSend = async () => {
+    setSendErr('');
+    try {
+      const r = await fetch(`${API}/inrt/send`, {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ fromUserId:user!.uid, toAddress, amount:parseFloat(sendAmt), note:sendNote }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error||'Failed');
+      setTxRef(d.ref); setSendStep('processing'); startSendPolling(d.ref);
+    } catch (e:any) { setSendErr(e.message); setSendStep('review'); }
+  };
+
+  const resetSend = () => {
+    setSendStep('form'); setToAddress(''); setSendAmt(''); setSendNote('');
+    setRecipient(null); setTxRef(''); setSendErr(''); setElapsed(0); setDurationMs(0);
+    clearInterval(pollRef.current); clearInterval(timerRef.current);
+  };
+
+  const fmtMs = (ms:number) => ms < 1000 ? `${ms}ms` : `${(ms/1000).toFixed(2)}s`;
+
+  if (!ready) return (
+    <div style={{ minHeight:'100vh', background:T.bg, display:'flex', alignItems:'center', justifyContent:'center' }}>
+      <div style={{ width:40, height:40, border:`3px solid rgba(123,47,190,0.2)`, borderTopColor:T.inrt, borderRadius:'50%', animation:'spin 0.8s linear infinite' }}/>
+      <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
+    </div>
+  );
+
+  return (
+    <div style={{ maxWidth:480, margin:'0 auto', minHeight:'100vh', background:T.bg, fontFamily:"'Plus Jakarta Sans',sans-serif", paddingBottom:40 }}>
+
+      {/* ── HEADER ──────────────────────────────────────────── */}
+      <div style={{ background:`linear-gradient(160deg,${T.inrt} 0%,#3D0D7B 55%,${T.bg} 100%)`, padding:'52px 20px 28px', position:'relative', overflow:'hidden' }}>
+        <div style={{ position:'absolute', top:-40, right:-40, width:180, height:180, borderRadius:'50%', background:'rgba(255,255,255,0.04)' }}/>
+        <div style={{ display:'flex', alignItems:'center', gap:14, marginBottom:20 }}>
+          <button onClick={()=>navigate('/dashboard')} style={{ background:'rgba(255,255,255,0.1)', border:'none', borderRadius:10, width:38, height:38, color:'#fff', cursor:'pointer', fontSize:18 }}>←</button>
+          <div>
+            <p style={{ color:'rgba(255,255,255,0.5)', fontSize:12, margin:0 }}>INRT Pay</p>
+            <h1 style={{ color:'#fff', fontSize:18, fontWeight:800, margin:0, fontFamily:"'Plus Jakarta Sans',sans-serif" }}>Global Stablecoin Wallet</h1>
+          </div>
+        </div>
+
+        {/* Single big balance */}
+        <div style={{ textAlign:'center', marginBottom:16 }}>
+          <p style={{ color:'rgba(224,176,255,0.5)', fontSize:11, margin:'0 0 6px', letterSpacing:1 }}>INRT BALANCE</p>
+          <p style={{ color:'#fff', fontSize:46, fontWeight:800, margin:'0 0 4px', fontFamily:"'Plus Jakarta Sans',sans-serif", lineHeight:1 }}>
+            {inrtBal.toLocaleString('en-IN')}
+          </p>
+          <p style={{ color:'rgba(224,176,255,0.5)', fontSize:14, margin:0 }}>INRT · ≈ ₹{inrtBal.toLocaleString('en-IN')} · 1 INRT = ₹1 🔒</p>
+        </div>
+
+        {/* Quick action row */}
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:8 }}>
+          {[{t:'send' as Tab,icon:'📤',l:'Send'},{t:'convert' as Tab,icon:'🔁',l:'Convert'},{t:'receive' as Tab,icon:'📥',l:'Receive'}].map(b=>(
+            <button key={b.t} onClick={()=>{setTab(b.t);if(b.t==='send')resetSend();}}
+              style={{ background:'rgba(255,255,255,0.1)', border:'none', borderRadius:12, padding:'10px 0', cursor:'pointer', color:'#fff', fontSize:12, fontWeight:700, fontFamily:"'Plus Jakarta Sans',sans-serif" }}>
+              {b.icon} {b.l}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* ── TAB BAR ─────────────────────────────────────────── */}
+      <div style={{ display:'flex', gap:6, padding:'12px 16px 0', overflowX:'auto' as const, background:T.bg }}>
+        {(['overview','convert','send','receive','history'] as Tab[]).map(t=>(
+          <button key={t} onClick={()=>{setTab(t);if(t==='send')resetSend();}}
+            style={{ padding:'8px 16px', borderRadius:20, border:`1.5px solid ${tab===t?T.inrt:T.border}`, background:tab===t?T.inrt:'transparent', color:tab===t?'#fff':T.muted, fontWeight:700, fontSize:12, cursor:'pointer', whiteSpace:'nowrap' as const, fontFamily:"'Plus Jakarta Sans',sans-serif", flexShrink:0 }}>
+            {t.charAt(0).toUpperCase()+t.slice(1)}
+          </button>
+        ))}
+      </div>
+
+      <div style={{ padding:'14px 16px' }}>
+
+        {/* ══════════ OVERVIEW ══════════ */}
+        {tab==='overview'&&(
+          <div>
+            {/* Address card */}
+            <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:16, padding:'14px 16px', marginBottom:12, cursor:'pointer' }} onClick={()=>setTab('receive')}>
+              <p style={{ color:T.muted, fontSize:10, fontWeight:700, margin:'0 0 4px', letterSpacing:0.5 }}>YOUR INRT ADDRESS</p>
+              <p style={{ color:'#fff', fontSize:14, fontWeight:700, margin:0, fontFamily:'monospace' }}>{wallet?.inrtAddress||'Generating…'}</p>
+              <p style={{ color:T.teal, fontSize:11, margin:'4px 0 0' }}>Tap to share or show QR →</p>
+            </div>
+
+            {/* Buy more INRT */}
+            <div onClick={()=>navigate('/checkout')} style={{ background:`linear-gradient(135deg,${T.inrt}20,rgba(0,229,204,0.08))`, border:`1px solid ${T.inrt}30`, borderRadius:16, padding:'16px', marginBottom:12, cursor:'pointer', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+              <div>
+                <p style={{ color:'#fff', fontWeight:800, fontSize:15, margin:'0 0 4px', fontFamily:"'Plus Jakarta Sans',sans-serif" }}>🪙 Buy or Sell INRT</p>
+                <p style={{ color:T.muted, fontSize:12, margin:0 }}>Convert ₹ to INRT · Pay with UPI or Card</p>
+              </div>
+              <span style={{ color:T.inrtL, fontSize:22 }}>→</span>
+            </div>
+
+            {/* What is INRT */}
+            <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:16, padding:'16px', marginBottom:12 }}>
+              <p style={{ color:'#fff', fontWeight:800, fontSize:14, margin:'0 0 10px', fontFamily:"'Plus Jakarta Sans',sans-serif" }}>🪙 What is INRT?</p>
+              <p style={{ color:T.muted, fontSize:13, margin:'0 0 12px', lineHeight:1.7 }}>
+                INRT is a Rupee-pegged digital currency. 1 INRT = ₹1 always. Send INRT to anyone in the world instantly with zero forex fees. Blockchain listing on Polygon coming Q3 2026.
+              </p>
+              <div style={{ display:'flex', flexWrap:'wrap' as const, gap:8 }}>
+                {['1 INRT = ₹1 Always','Zero Forex Fees','Global Transfers','2-4 sec Delivery'].map(t=>(
+                  <span key={t} style={{ background:`rgba(0,229,204,0.08)`, border:`1px solid ${T.teal}30`, borderRadius:20, padding:'4px 12px', color:T.teal, fontSize:11, fontWeight:700 }}>{t}</span>
+                ))}
+              </div>
+            </div>
+
+            {/* How it works */}
+            <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:16, padding:'16px' }}>
+              <p style={{ color:'#fff', fontWeight:800, fontSize:14, margin:'0 0 12px', fontFamily:"'Plus Jakarta Sans',sans-serif" }}>⚡ How to send INRT globally</p>
+              {[
+                ['1','Tap Send above — enter recipient\'s INRT address'],
+                ['2','Enter amount — 1 INRT = ₹1, no fees'],
+                ['3','Confirm with PIN — transaction broadcasts'],
+                ['4','Live timer shows delivery time (~2-4 seconds)'],
+                ['5','Recipient sees INRT in their wallet instantly'],
+              ].map(([n,t])=>(
+                <div key={n} style={{ display:'flex', gap:12, padding:'7px 0', borderBottom:'1px solid rgba(255,255,255,0.04)' }}>
+                  <div style={{ width:22, height:22, borderRadius:'50%', background:`rgba(123,47,190,0.2)`, border:`1px solid ${T.inrt}`, display:'flex', alignItems:'center', justifyContent:'center', color:T.inrtL, fontSize:11, fontWeight:800, flexShrink:0 }}>{n}</div>
+                  <p style={{ color:T.muted, fontSize:12, margin:0, lineHeight:1.6 }}>{t}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* ══════════ CONVERT ══════════ */}
+        {tab==='convert'&&(
+          <div>
+            <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:18, padding:'18px 16px', marginBottom:12 }}>
+              <p style={{ color:'#fff', fontWeight:800, fontSize:15, margin:'0 0 16px', fontFamily:"'Plus Jakarta Sans',sans-serif" }}>🔁 Convert — Always 1:1, No Fees</p>
+
+              {/* From */}
+              <p style={{ color:T.muted, fontSize:11, fontWeight:700, letterSpacing:0.5, margin:'0 0 6px' }}>FROM</p>
+              <div style={{ background:'rgba(255,255,255,0.04)', border:`1px solid ${T.border}`, borderRadius:12, padding:'12px 14px', marginBottom:6, display:'flex', justifyContent:'space-between' }}>
+                <span style={{ color:'#fff', fontWeight:700 }}>{convDir==='inr_to_inrt'?'₹ INR Wallet':'🪙 INRT'}</span>
+                <span style={{ color:T.muted, fontSize:12 }}>Balance: {convDir==='inr_to_inrt'?`₹${inrBal.toLocaleString()}`:`${inrtBal.toLocaleString()} INRT`}</span>
+              </div>
+
+              <div style={{ textAlign:'center', padding:'6px 0' }}>
+                <button onClick={()=>{ setConvDir(d=>d==='inr_to_inrt'?'inrt_to_inr':'inr_to_inrt'); setConvAmt(''); setConvErr(''); }}
+                  style={{ background:`rgba(123,47,190,0.15)`, border:`1px solid ${T.inrt}40`, borderRadius:'50%', width:38, height:38, cursor:'pointer', fontSize:18, color:T.inrtL }}>
+                  ⇅
+                </button>
+              </div>
+
+              {/* To */}
+              <p style={{ color:T.muted, fontSize:11, fontWeight:700, letterSpacing:0.5, margin:'6px 0 6px' }}>TO</p>
+              <div style={{ background:'rgba(255,255,255,0.04)', border:`1px solid ${T.border}`, borderRadius:12, padding:'12px 14px', marginBottom:14, display:'flex', justifyContent:'space-between' }}>
+                <span style={{ color:'#fff', fontWeight:700 }}>{convDir==='inr_to_inrt'?'🪙 INRT':'₹ INR Wallet'}</span>
+                <span style={{ color:T.muted, fontSize:12 }}>Balance: {convDir==='inr_to_inrt'?`${inrtBal.toLocaleString()} INRT`:`₹${inrBal.toLocaleString()}`}</span>
+              </div>
+
+              {/* Amount */}
+              <div style={{ display:'flex', alignItems:'center', gap:8, background:'rgba(255,255,255,0.04)', borderRadius:14, padding:'14px 16px', border:`1.5px solid ${convAmt?T.inrt:T.border}`, marginBottom:6 }}>
+                <span style={{ color:T.inrtL, fontSize:22, fontWeight:800 }}>{convDir==='inr_to_inrt'?'₹':'🪙'}</span>
+                <input type="number" value={convAmt} onChange={e=>setConvAmt(e.target.value)} placeholder="0"
+                  style={{ flex:1, background:'none', border:'none', outline:'none', fontFamily:"'Plus Jakarta Sans',sans-serif", fontWeight:800, fontSize:28, color:'#fff' }}/>
+              </div>
+              {convAmt&&parseFloat(convAmt)>0&&<p style={{ color:T.teal, fontSize:13, margin:'0 0 10px' }}>= {convDir==='inr_to_inrt'?`${parseFloat(convAmt).toLocaleString()} INRT`:`₹${parseFloat(convAmt).toLocaleString()}`} · No fees</p>}
+
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:8, marginBottom:14 }}>
+                {[100,500,1000,'Max'].map(a=>(
+                  <button key={a} onClick={()=>setConvAmt(a==='Max'?String(convDir==='inr_to_inrt'?inrBal:inrtBal):String(a))}
+                    style={{ padding:'9px 0', borderRadius:10, border:`1px solid ${T.border}`, background:'transparent', cursor:'pointer', fontSize:13, fontWeight:700, color:T.inrtL, fontFamily:"'Plus Jakarta Sans',sans-serif" }}>
+                    {a==='Max'?'Max':`${convDir==='inr_to_inrt'?'₹':''}${a}`}
+                  </button>
+                ))}
+              </div>
+
+              {convErr&&<p style={{ color:T.red, fontSize:13, marginBottom:10 }}>{convErr}</p>}
+
+              {convDone ? (
+                <div style={{ background:'rgba(0,200,83,0.1)', border:`1px solid ${T.green}40`, borderRadius:12, padding:'14px', textAlign:'center' as const }}>
+                  <p style={{ color:T.green, fontWeight:700, fontSize:15, margin:0 }}>✅ Converted successfully!</p>
+                </div>
+              ) : (
+                <button onClick={handleConvert} disabled={convLoading||!convAmt||parseFloat(convAmt)<=0}
+                  style={{ width:'100%', padding:'16px', borderRadius:14, border:'none', background:`linear-gradient(135deg,${T.inrt},#5B17A3)`, color:'#fff', fontWeight:700, fontSize:15, cursor:'pointer', fontFamily:"'Plus Jakarta Sans',sans-serif", opacity:(!convAmt||parseFloat(convAmt)<=0)?0.5:1 }}>
+                  {convLoading?'Converting…':'Convert Now — Instant'}
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ══════════ SEND ══════════ */}
+        {tab==='send'&&(
+          <div>
+            {sendStep==='form'&&(
+              <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:18, padding:'18px 16px' }}>
+                <p style={{ color:'#fff', fontWeight:800, fontSize:15, margin:'0 0 6px', fontFamily:"'Plus Jakarta Sans',sans-serif" }}>📤 Send INRT Globally</p>
+                <p style={{ color:T.muted, fontSize:12, margin:'0 0 16px' }}>Balance: {inrtBal.toLocaleString()} INRT</p>
+
+                <p style={{ color:T.muted, fontSize:11, fontWeight:700, letterSpacing:0.5, margin:'0 0 8px' }}>RECIPIENT INRT ADDRESS</p>
+                <input value={toAddress} onChange={e=>setToAddress(e.target.value.toUpperCase())} placeholder="INRT-XXXX-XXXX-XXXX" maxLength={20}
+                  style={{ width:'100%', background:'rgba(255,255,255,0.04)', border:`1.5px solid ${T.border}`, borderRadius:12, padding:'13px 14px', color:'#fff', fontSize:15, fontFamily:'monospace', outline:'none', boxSizing:'border-box' as const, marginBottom:8, letterSpacing:1 }}/>
+                {lookupLoading&&<p style={{ color:T.muted, fontSize:12, margin:'0 0 10px' }}>🔍 Looking up address…</p>}
+                {lookupErr&&<p style={{ color:T.red, fontSize:12, margin:'0 0 10px' }}>⚠️ {lookupErr}</p>}
+                {recipient&&(
+                  <div style={{ background:'rgba(0,200,83,0.08)', border:`1px solid ${T.green}30`, borderRadius:10, padding:'10px 14px', marginBottom:12, display:'flex', gap:10, alignItems:'center' }}>
+                    <span style={{ fontSize:16 }}>✅</span>
+                    <div>
+                      <p style={{ color:'#fff', fontWeight:700, fontSize:13, margin:0 }}>{recipient.name}</p>
+                      <p style={{ color:T.green, fontSize:11, margin:0 }}>{recipient.verified?'KYC Verified ✓':'Address confirmed'}</p>
+                    </div>
+                  </div>
+                )}
+
+                <p style={{ color:T.muted, fontSize:11, fontWeight:700, letterSpacing:0.5, margin:'0 0 8px' }}>AMOUNT (INRT)</p>
+                <div style={{ display:'flex', alignItems:'center', gap:8, background:'rgba(255,255,255,0.04)', borderRadius:14, padding:'14px 16px', border:`1.5px solid ${sendAmt?T.inrt:T.border}`, marginBottom:6 }}>
+                  <span style={{ fontSize:20 }}>🪙</span>
+                  <input type="number" value={sendAmt} onChange={e=>setSendAmt(e.target.value)} placeholder="0"
+                    style={{ flex:1, background:'none', border:'none', outline:'none', fontFamily:"'Plus Jakarta Sans',sans-serif", fontWeight:800, fontSize:28, color:'#fff' }}/>
+                </div>
+                <p style={{ color:T.muted, fontSize:12, margin:'0 0 12px' }}>≈ ₹{parseFloat(sendAmt||'0').toLocaleString()} · No fees</p>
+
+                <input value={sendNote} onChange={e=>setSendNote(e.target.value)} placeholder="Note (optional)"
+                  style={{ width:'100%', background:'rgba(255,255,255,0.04)', border:`1px solid ${T.border}`, borderRadius:12, padding:'12px 14px', color:'#fff', fontSize:14, outline:'none', boxSizing:'border-box' as const, marginBottom:14, fontFamily:"'Plus Jakarta Sans',sans-serif" }}/>
+
+                {parseFloat(sendAmt||'0') > inrtBal&&<p style={{ color:T.red, fontSize:12, marginBottom:10, textAlign:'center' as const }}>Insufficient INRT. <button onClick={()=>navigate('/checkout')} style={{ background:'none', border:'none', color:T.inrtL, cursor:'pointer', fontWeight:700, fontSize:12 }}>Buy INRT →</button></p>}
+
+                <button onClick={()=>setSendStep('review')} disabled={!recipient||!sendAmt||parseFloat(sendAmt)<=0||parseFloat(sendAmt)>inrtBal}
+                  style={{ width:'100%', padding:'16px', borderRadius:14, border:'none', background:`linear-gradient(135deg,${T.inrt},#5B17A3)`, color:'#fff', fontWeight:700, fontSize:15, cursor:'pointer', fontFamily:"'Plus Jakarta Sans',sans-serif", opacity:(!recipient||!sendAmt||parseFloat(sendAmt)<=0||parseFloat(sendAmt)>inrtBal)?0.5:1 }}>
+                  Continue →
+                </button>
+              </div>
+            )}
+
+            {sendStep==='review'&&(
+              <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:18, padding:'18px 16px' }}>
+                <p style={{ color:'#fff', fontWeight:800, fontSize:15, margin:'0 0 16px', fontFamily:"'Plus Jakarta Sans',sans-serif" }}>Confirm Transfer</p>
+                <div style={{ textAlign:'center', marginBottom:16 }}>
+                  <p style={{ color:'#fff', fontSize:38, fontWeight:800, margin:'0 0 4px', fontFamily:"'Plus Jakarta Sans',sans-serif" }}>{parseFloat(sendAmt).toLocaleString()} <span style={{ fontSize:18, color:T.inrtL }}>INRT</span></p>
+                  <p style={{ color:T.muted, fontSize:13, margin:0 }}>≈ ₹{parseFloat(sendAmt).toLocaleString()}</p>
+                </div>
+                {[['To',recipient?.name||''],['Address',toAddress],['Fee','₹0 (Free)'],['Est. Delivery','2-4 seconds'],...(sendNote?[['Note',sendNote]]:[])].map(([k,v])=>(
+                  <div key={k} style={{ display:'flex', justifyContent:'space-between', padding:'9px 0', borderBottom:`1px solid rgba(255,255,255,0.05)` }}>
+                    <span style={{ color:T.muted, fontSize:13 }}>{k}</span>
+                    <span style={{ color:k==='Fee'?T.green:'#fff', fontWeight:600, fontSize:13, fontFamily:k==='Address'?'monospace':'inherit', maxWidth:'60%', textAlign:'right' as const, wordBreak:'break-all' as const }}>{v}</span>
+                  </div>
+                ))}
+                {sendErr&&<p style={{ color:T.red, fontSize:13, marginTop:10 }}>{sendErr}</p>}
+                <div style={{ display:'flex', gap:10, marginTop:16 }}>
+                  <button onClick={()=>setSendStep('form')} style={{ flex:1, padding:'14px', borderRadius:12, border:`1px solid ${T.border}`, background:'transparent', color:T.muted, fontWeight:700, cursor:'pointer', fontFamily:"'Plus Jakarta Sans',sans-serif" }}>Back</button>
+                  <button onClick={()=>setSendStep('pin')} style={{ flex:2, padding:'14px', borderRadius:12, border:'none', background:`linear-gradient(135deg,${T.inrt},#5B17A3)`, color:'#fff', fontWeight:700, fontSize:14, cursor:'pointer', fontFamily:"'Plus Jakarta Sans',sans-serif" }}>Confirm & Send</button>
+                </div>
+              </div>
+            )}
+
+            {sendStep==='pin'&&(
+              <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:18, padding:'18px 16px' }}>
+                <PinPad onComplete={handleSend} onCancel={()=>setSendStep('review')}/>
+              </div>
+            )}
+
+            {sendStep==='processing'&&(
+              <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:18, padding:'30px 16px', textAlign:'center' as const }}>
+                <div style={{ width:60, height:60, border:`4px solid rgba(123,47,190,0.15)`, borderTopColor:T.inrt, borderRadius:'50%', animation:'spin 0.8s linear infinite', margin:'0 auto 16px' }}/>
+                <p style={{ color:'#fff', fontWeight:800, fontSize:17, margin:'0 0 6px', fontFamily:"'Plus Jakarta Sans',sans-serif" }}>Sending INRT…</p>
+                <p style={{ color:T.muted, fontSize:13, margin:'0 0 20px' }}>Delivering to {recipient?.name}</p>
+                <div style={{ background:`rgba(123,47,190,0.1)`, border:`1px solid ${T.inrt}30`, borderRadius:12, padding:'14px' }}>
+                  <p style={{ color:T.muted, fontSize:10, margin:'0 0 4px', letterSpacing:1 }}>ELAPSED</p>
+                  <p style={{ color:T.inrtL, fontSize:30, fontWeight:800, margin:0, fontFamily:'monospace' }}>{fmtMs(elapsed)}</p>
+                </div>
+              </div>
+            )}
+
+            {sendStep==='done'&&(
+              <div style={{ background:T.card, border:`1px solid ${T.green}30`, borderRadius:18, padding:'30px 16px', textAlign:'center' as const }}>
+                <div style={{ width:72, height:72, borderRadius:'50%', background:`rgba(0,200,83,0.1)`, border:`2px solid ${T.green}`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:32, margin:'0 auto 16px' }}>✅</div>
+                <p style={{ color:'#fff', fontWeight:800, fontSize:20, margin:'0 0 6px', fontFamily:"'Plus Jakarta Sans',sans-serif" }}>Transfer Complete!</p>
+                <p style={{ color:T.muted, fontSize:13, margin:'0 0 18px' }}>{parseFloat(sendAmt).toLocaleString()} INRT delivered to {recipient?.name}</p>
+                <div style={{ background:`rgba(0,229,204,0.08)`, border:`1px solid ${T.teal}30`, borderRadius:12, padding:'14px', marginBottom:16 }}>
+                  <p style={{ color:T.muted, fontSize:10, margin:'0 0 4px', letterSpacing:1 }}>⚡ DELIVERED IN</p>
+                  <p style={{ color:T.teal, fontSize:30, fontWeight:800, margin:0, fontFamily:'monospace' }}>{fmtMs(durationMs)}</p>
+                </div>
+                <button onClick={resetSend} style={{ width:'100%', padding:'14px', borderRadius:12, border:'none', background:`linear-gradient(135deg,${T.inrt},#5B17A3)`, color:'#fff', fontWeight:700, fontSize:14, cursor:'pointer', fontFamily:"'Plus Jakarta Sans',sans-serif" }}>
+                  Send Another
+                </button>
+              </div>
+            )}
+
+            {sendStep==='failed'&&(
+              <div style={{ background:T.card, border:`1px solid ${T.red}30`, borderRadius:18, padding:'30px 16px', textAlign:'center' as const }}>
+                <div style={{ width:72, height:72, borderRadius:'50%', background:`rgba(255,59,48,0.1)`, border:`2px solid ${T.red}`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:32, margin:'0 auto 16px' }}>❌</div>
+                <p style={{ color:'#fff', fontWeight:800, fontSize:18, margin:'0 0 6px' }}>Transfer Failed</p>
+                <p style={{ color:T.muted, fontSize:13, margin:'0 0 20px' }}>Your INRT has been refunded.</p>
+                <button onClick={resetSend} style={{ width:'100%', padding:'14px', borderRadius:12, border:'none', background:T.inrt, color:'#fff', fontWeight:700, fontSize:14, cursor:'pointer', fontFamily:"'Plus Jakarta Sans',sans-serif" }}>Try Again</button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ══════════ RECEIVE ══════════ */}
+        {tab==='receive'&&(
+          <div style={{ textAlign:'center' as const }}>
+            <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:18, padding:'24px 16px', marginBottom:12 }}>
+              <p style={{ color:T.muted, fontSize:12, margin:'0 0 16px' }}>Share this address to receive INRT from anywhere in the world</p>
+              <div style={{ display:'inline-block', padding:14, background:'#fff', borderRadius:14, marginBottom:14 }}>
+                {wallet?.inrtAddress ? (
+                  <img src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(wallet.inrtAddress)}`} alt="INRT QR" style={{ width:200, height:200, display:'block' }}/>
+                ) : (
+                  <div style={{ width:200, height:200, display:'flex', alignItems:'center', justifyContent:'center', color:'#999' }}>Generating…</div>
+                )}
+              </div>
+              <p style={{ color:'#fff', fontWeight:800, fontSize:16, margin:'0 0 4px', fontFamily:'monospace', letterSpacing:1 }}>{wallet?.inrtAddress||'—'}</p>
+              <p style={{ color:T.muted, fontSize:13, margin:'0 0 16px' }}>{wallet?.name}</p>
+              <div style={{ display:'flex', gap:10 }}>
+                <button onClick={()=>wallet&&navigator.clipboard.writeText(wallet.inrtAddress).then(()=>alert('Address copied!'))}
+                  style={{ flex:1, padding:'12px', borderRadius:12, border:`1px solid ${T.border}`, background:'transparent', color:T.teal, fontWeight:700, fontSize:13, cursor:'pointer', fontFamily:"'Plus Jakarta Sans',sans-serif" }}>
+                  📋 Copy Address
+                </button>
+                <button onClick={()=>wallet&&navigator.share&&navigator.share({title:'My INRT Wallet',text:wallet.inrtAddress})}
+                  style={{ flex:1, padding:'12px', borderRadius:12, border:'none', background:`linear-gradient(135deg,${T.inrt},#5B17A3)`, color:'#fff', fontWeight:700, fontSize:13, cursor:'pointer', fontFamily:"'Plus Jakarta Sans',sans-serif" }}>
+                  📤 Share
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ══════════ HISTORY ══════════ */}
+        {tab==='history'&&(
+          <div>
+            {historyLoading ? (
+              <div style={{ textAlign:'center', padding:40, color:T.muted }}>Loading…</div>
+            ) : history.length===0 ? (
+              <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:18, padding:'40px 20px', textAlign:'center' as const }}>
+                <p style={{ fontSize:32, marginBottom:10 }}>🪙</p>
+                <p style={{ color:'#fff', fontWeight:700, fontSize:15, margin:'0 0 4px' }}>No INRT activity yet</p>
+                <p style={{ color:T.muted, fontSize:13, margin:0 }}>Buy or send INRT to see history here</p>
+              </div>
+            ) : (
+              <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:18, overflow:'hidden' }}>
+                {history.map((tx,i)=>(
+                  <div key={tx.id} style={{ padding:'14px 16px', borderBottom:i<history.length-1?`1px solid rgba(255,255,255,0.05)`:'none' }}>
+                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start' }}>
+                      <div style={{ display:'flex', gap:10 }}>
+                        <div style={{ width:38, height:38, borderRadius:10, background:tx.type==='credit'?'rgba(0,200,83,0.1)':'rgba(123,47,190,0.1)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:16, flexShrink:0 }}>
+                          {tx.type==='convert'?'🔁':tx.type==='credit'?'📥':'📤'}
+                        </div>
+                        <div>
+                          <p style={{ color:'#fff', fontWeight:700, fontSize:13, margin:0, maxWidth:180, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' as const }}>{tx.note}</p>
+                          <p style={{ color:T.dim, fontSize:11, margin:'2px 0 0' }}>{tx.createdAt?new Date(tx.createdAt).toLocaleString('en-IN',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}):''}</p>
+                        </div>
+                      </div>
+                      <div style={{ textAlign:'right' as const }}>
+                        <p style={{ color:tx.type==='credit'?T.green:'#fff', fontWeight:800, fontSize:13, margin:0 }}>
+                          {tx.type==='credit'?'+':tx.type==='debit'?'−':''}{tx.amount?.toLocaleString()} INRT
+                        </p>
+                        <span style={{ fontSize:10, padding:'2px 7px', borderRadius:20, fontWeight:700, background:tx.status==='success'?'rgba(0,200,83,0.1)':'rgba(255,149,0,0.1)', color:tx.status==='success'?T.green:T.orange }}>
+                          {(tx.status||'').toUpperCase()}
+                        </span>
+                      </div>
+                    </div>
+                    {tx.durationMs&&<p style={{ color:T.dim, fontSize:11, margin:'5px 0 0', paddingLeft:48 }}>⚡ Delivered in {fmtMs(tx.durationMs)}</p>}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+      </div>
+
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap');
+        @keyframes spin{to{transform:rotate(360deg)}}
+        * { -webkit-tap-highlight-color: transparent; }
+        input::-webkit-outer-spin-button, input::-webkit-inner-spin-button { -webkit-appearance: none; }
+      `}</style>
+    </div>
+  );
+}
