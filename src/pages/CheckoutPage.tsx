@@ -207,16 +207,11 @@ export default function CheckoutPage() {
           </div>
         </div>
 
-        {/* Balance cards */}
-        <div style={{ display:'flex', gap:10 }}>
-          <div style={{ flex:1, background:'rgba(255,255,255,0.1)', borderRadius:14, padding:'14px', border:'1px solid rgba(255,255,255,0.15)' }}>
-            <p style={{ color:'rgba(255,255,255,0.5)', fontSize:10, margin:'0 0 4px', letterSpacing:0.5 }}>₹ WALLET</p>
-            <p style={{ color:'#fff', fontSize:20, fontWeight:800, margin:0, fontFamily:"'Plus Jakarta Sans',sans-serif" }}>₹{inrBal.toLocaleString('en-IN')}</p>
-          </div>
-          <div style={{ flex:1, background:'rgba(123,47,190,0.3)', borderRadius:14, padding:'14px', border:'1px solid rgba(200,150,255,0.2)' }}>
-            <p style={{ color:'rgba(224,176,255,0.6)', fontSize:10, margin:'0 0 4px', letterSpacing:0.5 }}>🪙 INRT</p>
-            <p style={{ color:'#E0B0FF', fontSize:20, fontWeight:800, margin:0, fontFamily:"'Plus Jakarta Sans',sans-serif" }}>{inrtBal.toLocaleString('en-IN')}</p>
-          </div>
+        {/* Single INRT balance */}
+        <div style={{ background:'rgba(123,47,190,0.3)', borderRadius:14, padding:'16px', border:'1px solid rgba(200,150,255,0.2)', textAlign:'center' as const }}>
+          <p style={{ color:'rgba(224,176,255,0.6)', fontSize:10, margin:'0 0 6px', letterSpacing:1 }}>INRT BALANCE</p>
+          <p style={{ color:'#E0B0FF', fontSize:32, fontWeight:800, margin:'0 0 2px', fontFamily:"'Plus Jakarta Sans',sans-serif" }}>{inrtBal.toLocaleString('en-IN')} INRT</p>
+          <p style={{ color:'rgba(224,176,255,0.4)', fontSize:12, margin:0 }}>≈ ₹{inrtBal.toLocaleString('en-IN')} · 1 INRT = ₹1</p>
         </div>
       </div>
 

@@ -310,7 +310,7 @@ export default function CryptoPage() {
               <p style={{ color:T.muted, fontSize:11, fontWeight:700, letterSpacing:0.5, margin:'0 0 6px' }}>FROM</p>
               <div style={{ background:'rgba(255,255,255,0.04)', border:`1px solid ${T.border}`, borderRadius:12, padding:'12px 14px', marginBottom:6, display:'flex', justifyContent:'space-between' }}>
                 <span style={{ color:'#fff', fontWeight:700 }}>{convDir==='inr_to_inrt'?'₹ INR Wallet':'🪙 INRT'}</span>
-                <span style={{ color:T.muted, fontSize:12 }}>Balance: {convDir==='inr_to_inrt'?`₹${inrBal.toLocaleString()}`:`${inrtBal.toLocaleString()} INRT`}</span>
+                <span style={{ color:T.muted, fontSize:12 }}>Balance: {convDir==='inr_to_inrt'?`₹${inrBal.toLocaleString()} in wallet`:`${inrtBal.toLocaleString()} INRT`}</span>
               </div>
 
               <div style={{ textAlign:'center', padding:'6px 0' }}>
@@ -324,7 +324,7 @@ export default function CryptoPage() {
               <p style={{ color:T.muted, fontSize:11, fontWeight:700, letterSpacing:0.5, margin:'6px 0 6px' }}>TO</p>
               <div style={{ background:'rgba(255,255,255,0.04)', border:`1px solid ${T.border}`, borderRadius:12, padding:'12px 14px', marginBottom:14, display:'flex', justifyContent:'space-between' }}>
                 <span style={{ color:'#fff', fontWeight:700 }}>{convDir==='inr_to_inrt'?'🪙 INRT':'₹ INR Wallet'}</span>
-                <span style={{ color:T.muted, fontSize:12 }}>Balance: {convDir==='inr_to_inrt'?`${inrtBal.toLocaleString()} INRT`:`₹${inrBal.toLocaleString()}`}</span>
+                <span style={{ color:T.muted, fontSize:12 }}>Balance: {convDir==='inr_to_inrt'?`${inrtBal.toLocaleString()} INRT`:`₹${inrBal.toLocaleString()} in wallet`}</span>
               </div>
 
               {/* Amount */}
