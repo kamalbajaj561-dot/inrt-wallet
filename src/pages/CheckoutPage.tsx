@@ -65,7 +65,7 @@ export default function CheckoutPage() {
     document.head.appendChild(s);
   }, []);
 
-  const inrtBal = Number(profile?.rewardPoints ?? 0);
+  const inrtBal = Number(profile?.inrtBalance ?? 0);
   const inrBal  = Number(profile?.balance ?? 0);
   const amt     = parseFloat(amount) || 0;
 

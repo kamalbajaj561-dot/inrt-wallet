@@ -80,7 +80,7 @@ export default function SendMoney() {
     return () => unsub();
   }, [user?.uid]);
 
-  const inrtBal = Number(profile?.rewardPoints ?? 0);
+  const inrtBal = Number(profile?.inrtBalance ?? 0);
   const amt     = parseFloat(amount) || 0;
 
   // ── Lookup INRT address ───────────────────────────────────────
