@@ -1,7 +1,8 @@
 /**
  * INRT WALLET — server.js FINAL
  * All routes in one file, no duplicates, no crashes
- * KYC: Manual PAN review (no third-party API needed)
+ * KYC: Didit auto-approve + Manual PAN fallback
+ * Blockchain: INRT on Polygon via ethers.js
  */
 
 const express = require('express');
@@ -41,80 +42,90 @@ const razorpay = new Razorpay({
   key_secret: process.env.RAZORPAY_KEY_SECRET || '',
 });
 
+// ── Polygon / ethers.js ───────────────────────────────────────
+let inrtContract = null;
+let adminWallet  = null;
+
+try {
+  const { ethers } = require('ethers');
+  const POLYGON_RPC       = process.env.POLYGON_RPC || 'https://polygon-rpc.com';
+  const CONTRACT_ADDRESS  = process.env.INRT_CONTRACT_ADDRESS;
+  const ADMIN_PRIVATE_KEY = process.env.ADMIN_WALLET_PRIVATE_KEY;
+
+  const INRT_ABI = [
+    'function mint(address to, uint256 amount) external',
+    'function burn(address from, uint256 amount) external',
+    'function balanceOf(address account) view returns (uint256)',
+    'function totalSupply() view returns (uint256)',
+    'function transfer(address to, uint256 amount) returns (bool)',
+    'function paused() view returns (bool)',
+  ];
+
+  if (CONTRACT_ADDRESS && ADMIN_PRIVATE_KEY) {
+    const provider = new ethers.JsonRpcProvider(POLYGON_RPC);
+    adminWallet    = new ethers.Wallet(ADMIN_PRIVATE_KEY, provider);
+    inrtContract   = new ethers.Contract(CONTRACT_ADDRESS, INRT_ABI, adminWallet);
+    console.log('✅ INRT Contract connected:', CONTRACT_ADDRESS);
+  } else {
+    console.warn('⚠️  INRT Contract not configured — add INRT_CONTRACT_ADDRESS and ADMIN_WALLET_PRIVATE_KEY to Railway');
+  }
+
+  // ── Blockchain helpers ──────────────────────────────────────
+  global.mintINRT = async function(toWalletAddress, amount) {
+    if (!inrtContract) throw new Error('Contract not configured');
+    const { ethers: e } = require('ethers');
+    const amountWei = e.parseUnits(amount.toString(), 18);
+    const tx = await inrtContract.mint(toWalletAddress, amountWei);
+    const receipt = await tx.wait();
+    console.log(`✅ Minted ${amount} INRT to ${toWalletAddress} | tx: ${tx.hash}`);
+    return { txHash: tx.hash, blockNumber: receipt.blockNumber };
+  };
+
+  global.burnINRT = async function(fromWalletAddress, amount) {
+    if (!inrtContract) throw new Error('Contract not configured');
+    const { ethers: e } = require('ethers');
+    const amountWei = e.parseUnits(amount.toString(), 18);
+    const tx = await inrtContract.burn(fromWalletAddress, amountWei);
+    const receipt = await tx.wait();
+    console.log(`✅ Burned ${amount} INRT from ${fromWalletAddress} | tx: ${tx.hash}`);
+    return { txHash: tx.hash, blockNumber: receipt.blockNumber };
+  };
+
+  global.getOnChainBalance = async function(walletAddress) {
+    if (!inrtContract) return 0;
+    const { ethers: e } = require('ethers');
+    const bal = await inrtContract.balanceOf(walletAddress);
+    return parseFloat(e.formatUnits(bal, 18));
+  };
+
+  global.getOnChainTotalSupply = async function() {
+    if (!inrtContract) return 0;
+    const { ethers: e } = require('ethers');
+    const supply = await inrtContract.totalSupply();
+    return parseFloat(e.formatUnits(supply, 18));
+  };
+
+} catch (e) {
+  console.warn('⚠️  ethers.js not available:', e.message, '— run: npm install ethers');
+  global.mintINRT           = async () => { throw new Error('ethers.js not installed'); };
+  global.burnINRT           = async () => { throw new Error('ethers.js not installed'); };
+  global.getOnChainBalance  = async () => 0;
+  global.getOnChainTotalSupply = async () => 0;
+}
 
 /* ═══ HIDDEN FOR LAUNCH — CASHFREE CONFIG & HELPERS — commented out pending payout approval ═══
 const CF_BASE = process.env.NODE_ENV === 'production'
   ? 'https://payout-api.cashfree.com'
   : 'https://payout-gamma.cashfree.com';
-
-let cfToken       = null;
-let cfTokenExpiry = 0;
-
-async function getCFToken() {
-  if (cfToken && Date.now() < cfTokenExpiry) return cfToken;
-  const appId  = process.env.CASHFREE_APP_ID;
-  const secret = process.env.CASHFREE_SECRET_KEY;
-  if (!appId || !secret) throw new Error('CASHFREE_APP_ID and CASHFREE_SECRET_KEY not set');
-  const r = await fetch(`${CF_BASE}/payout/v1/authorize`, {
-    method: 'POST',
-    headers: { 'X-Client-Id': appId, 'X-Client-Secret': secret, 'Content-Type': 'application/json' },
-  });
-  const d = await r.json();
-  if (d.status !== 'SUCCESS') throw new Error(`Cashfree auth failed: ${d.message}`);
-  cfToken       = d.data.token;
-  cfTokenExpiry = Date.now() + 25 * 60 * 1000;
-  return cfToken;
-}
-
-async function cfPost(endpoint, body) {
-  const token = await getCFToken();
-  const r = await fetch(`${CF_BASE}${endpoint}`, {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  return r.json();
-}
-
-async function cfGet(endpoint) {
-  const token = await getCFToken();
-  const r = await fetch(`${CF_BASE}${endpoint}`, {
-    headers: { 'Authorization': `Bearer ${token}` },
-  });
-  return r.json();
-}
+let cfToken = null, cfTokenExpiry = 0;
+async function getCFToken() { ... }
+async function cfPost(endpoint, body) { ... }
+async function cfGet(endpoint) { ... }
 ═══ END HIDDEN ═══ */
 
-
-/* ═══ HIDDEN FOR LAUNCH — INSTAMOJO CONFIG & HELPERS — commented out pending approval ═══
-const INSTAMOJO_BASE = process.env.NODE_ENV === 'production'
-  ? 'https://www.instamojo.com/api/1.1'
-  : 'https://test.instamojo.com/api/1.1';
-
-async function instamojoPost(endpoint, data) {
-  const API_KEY    = process.env.INSTAMOJO_API_KEY;
-  const AUTH_TOKEN = process.env.INSTAMOJO_AUTH_TOKEN;
-  if (!API_KEY || !AUTH_TOKEN) throw new Error('INSTAMOJO_API_KEY and INSTAMOJO_AUTH_TOKEN not set');
-  const r = await fetch(`${INSTAMOJO_BASE}${endpoint}/`, {
-    method: 'POST',
-    headers: { 'X-Api-Key': API_KEY, 'X-Auth-Token': AUTH_TOKEN, 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams(data).toString(),
-    signal: AbortSignal.timeout(15000),
-  });
-  const text = await r.text();
-  try { return JSON.parse(text); }
-  catch { throw new Error(`Instamojo non-JSON: ${text.slice(0, 200)}`); }
-}
-
-async function instamojoGet(endpoint) {
-  const API_KEY    = process.env.INSTAMOJO_API_KEY;
-  const AUTH_TOKEN = process.env.INSTAMOJO_AUTH_TOKEN;
-  const r = await fetch(`${INSTAMOJO_BASE}${endpoint}/`, {
-    headers: { 'X-Api-Key': API_KEY, 'X-Auth-Token': AUTH_TOKEN },
-    signal: AbortSignal.timeout(10000),
-  });
-  return r.json();
-}
+/* ═══ HIDDEN FOR LAUNCH — INSTAMOJO CONFIG ═══
+async function instamojoPost(endpoint, data) { ... }
+async function instamojoGet(endpoint) { ... }
 ═══ END HIDDEN ═══ */
 
 // ── Helpers ───────────────────────────────────────────────────
@@ -141,6 +152,80 @@ async function earnCommission(amount, type) {
 // ══════════════════════════════════════════════════════════════
 app.get('/',       (_, res) => res.json({ status: 'INRT API ✅' }));
 app.get('/health', (_, res) => res.json({ status: 'ok', ts: new Date().toISOString() }));
+
+// ══════════════════════════════════════════════════════════════
+//  POLYGON — ON-CHAIN INRT ROUTES
+// ══════════════════════════════════════════════════════════════
+
+// Get on-chain INRT balance for a Polygon wallet address
+app.get('/polygon/balance/:walletAddress', async (req, res) => {
+  try {
+    const balance = await global.getOnChainBalance(req.params.walletAddress);
+    res.json({ success: true, walletAddress: req.params.walletAddress, balance });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Get total INRT supply on-chain
+app.get('/polygon/supply', async (req, res) => {
+  try {
+    const totalSupply = await global.getOnChainTotalSupply();
+    const contractAddress = process.env.INRT_CONTRACT_ADDRESS || null;
+    res.json({ success: true, totalSupply, contractAddress, network: 'Polygon Mainnet' });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Connect user's Polygon wallet address to their INRT account
+app.post('/polygon/connect-wallet', async (req, res) => {
+  try {
+    const { userId, walletAddress } = req.body;
+    if (!userId || !walletAddress) return res.status(400).json({ error: 'userId and walletAddress required' });
+    if (!walletAddress.match(/^0x[a-fA-F0-9]{40}$/)) return res.status(400).json({ error: 'Invalid Polygon wallet address' });
+    if (!db) return res.status(500).json({ error: 'Database not connected' });
+
+    // Check address not already used by another user
+    const dupSnap = await db.collection('users')
+      .where('polygonWallet', '==', walletAddress.toLowerCase())
+      .limit(2).get();
+    if (dupSnap.docs.some(d => d.id !== userId))
+      return res.status(400).json({ error: 'This wallet address is already connected to another account' });
+
+    await db.collection('users').doc(userId).update({
+      polygonWallet:      walletAddress.toLowerCase(),
+      polygonConnectedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt:          admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    // Get on-chain balance
+    const onChainBalance = await global.getOnChainBalance(walletAddress);
+
+    console.log(`✅ Polygon wallet connected: ${userId} → ${walletAddress}`);
+    res.json({ success: true, walletAddress, onChainBalance });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Mint INRT on-chain to user's Polygon wallet (called after Razorpay payment)
+app.post('/polygon/mint', async (req, res) => {
+  try {
+    const { userId, walletAddress, amount, adminKey } = req.body;
+    if (adminKey !== process.env.ADMIN_KEY) return res.status(403).json({ error: 'Unauthorized' });
+    if (!userId || !walletAddress || !amount) return res.status(400).json({ error: 'userId, walletAddress, amount required' });
+    if (!db) return res.status(500).json({ error: 'Database not connected' });
+
+    const result = await global.mintINRT(walletAddress, parseFloat(amount));
+
+    // Log in Firebase
+    await db.collection('transactions').add({
+      uid: userId, type: 'credit', amount: parseFloat(amount),
+      note: `${amount} INRT minted on Polygon`,
+      cat: 'crypto', ref: result.txHash, status: 'success',
+      method: 'polygon_mint', txHash: result.txHash,
+      blockNumber: result.blockNumber, walletAddress,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    res.json({ success: true, ...result, amount, walletAddress });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
 // ══════════════════════════════════════════════════════════════
 //  RAZORPAY
@@ -172,6 +257,78 @@ app.post('/verify-payment', async (req, res) => {
 });
 
 // ══════════════════════════════════════════════════════════════
+//  CHECKOUT — BUY INRT VIA RAZORPAY
+//  Credits inrtBalance in Firebase + mints on Polygon if wallet connected
+// ══════════════════════════════════════════════════════════════
+app.post('/checkout/verify-inrt-purchase', async (req, res) => {
+  try {
+    const { razorpay_order_id, razorpay_payment_id, razorpay_signature, userId, amount } = req.body;
+    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature || !userId || !amount)
+      return res.status(400).json({ error: 'Missing fields' });
+    if (!db) return res.status(500).json({ error: 'DB not connected' });
+
+    // Verify signature
+    const expected = crypto.createHmac('sha256', process.env.RAZORPAY_KEY_SECRET || '')
+      .update(`${razorpay_order_id}|${razorpay_payment_id}`).digest('hex');
+    if (expected !== razorpay_signature) return res.status(400).json({ error: 'Invalid payment signature' });
+
+    // Idempotency check
+    const existing = await db.collection('transactions').where('ref', '==', `INRT_BUY_${razorpay_payment_id}`).limit(1).get();
+    if (!existing.empty) return res.json({ success: true, message: 'Already credited', duplicate: true });
+
+    const amt = parseFloat(amount);
+    const ref = `INRT_BUY_${razorpay_payment_id}`;
+
+    // Get user's Polygon wallet if connected
+    const userSnap = await db.collection('users').doc(userId).get();
+    const user = userSnap.exists ? userSnap.data() : {};
+    const polygonWallet = user.polygonWallet || null;
+
+    // Credit in Firebase
+    const batch = db.batch();
+    batch.update(db.collection('users').doc(userId), {
+      inrtBalance:   admin.firestore.FieldValue.increment(amt),
+      totalReceived: admin.firestore.FieldValue.increment(amt),
+      updatedAt:     admin.firestore.FieldValue.serverTimestamp(),
+    });
+    batch.set(db.collection('transactions').doc(ref), {
+      uid: userId, type: 'credit', amount: amt,
+      note: `Bought ${amt.toLocaleString()} INRT via Razorpay`,
+      cat: 'crypto', ref, status: 'success', method: 'razorpay',
+      razorpayOrderId: razorpay_order_id, razorpayPaymentId: razorpay_payment_id,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    await batch.commit();
+    console.log(`✅ INRT purchased: ${amt} → ${userId}`);
+
+    // Also mint on Polygon if user has connected wallet
+    let txHash = null;
+    if (polygonWallet && inrtContract) {
+      try {
+        const result = await global.mintINRT(polygonWallet, amt);
+        txHash = result.txHash;
+        // Update transaction with tx hash
+        await db.collection('transactions').doc(ref).update({
+          txHash, blockNumber: result.blockNumber, polygonWallet,
+        });
+        console.log(`✅ Also minted on Polygon: ${amt} INRT → ${polygonWallet}`);
+      } catch (e) {
+        console.warn('Polygon mint failed (Firebase credited OK):', e.message);
+      }
+    }
+
+    res.json({
+      success: true, amount: amt, ref, message: `${amt.toLocaleString()} INRT credited`,
+      polygonMinted: !!txHash, txHash,
+      polygonWallet: polygonWallet || null,
+    });
+  } catch (e) {
+    console.error('/checkout/verify-inrt-purchase:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════
 //  OTP EMAIL
 // ══════════════════════════════════════════════════════════════
 app.post('/send-otp', async (req, res) => {
@@ -179,7 +336,7 @@ app.post('/send-otp', async (req, res) => {
     const { phone, otp } = req.body;
     if (!phone || !otp) return res.status(400).json({ error: 'phone and otp required' });
     const RESEND_KEY = process.env.RESEND_API_KEY;
-    if (!RESEND_KEY)  return res.status(500).json({ error: 'RESEND_API_KEY not set' });
+    if (!RESEND_KEY) return res.status(500).json({ error: 'RESEND_API_KEY not set' });
     const r = await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${RESEND_KEY}`, 'Content-Type': 'application/json' },
@@ -204,8 +361,8 @@ app.post('/reset-password', async (req, res) => {
     const { phone, newPassword } = req.body;
     if (!phone || !newPassword) return res.status(400).json({ error: 'phone and newPassword required' });
     if (newPassword.length < 6) return res.status(400).json({ error: 'Min 6 characters' });
-    if (!adminAuth)             return res.status(500).json({ error: 'Firebase Admin not connected' });
-    const email = `${phone.replace(/\D/g,'')}@inrtwallet.app`;
+    if (!adminAuth) return res.status(500).json({ error: 'Firebase Admin not connected' });
+    const email = `${phone.replace(/\D/g, '')}@inrtwallet.app`;
     const user  = await adminAuth.getUserByEmail(email);
     await adminAuth.updateUser(user.uid, { password: newPassword });
     res.json({ success: true });
@@ -216,680 +373,7 @@ app.post('/reset-password', async (req, res) => {
 });
 
 // ══════════════════════════════════════════════════════════════
-//  KYC — MANUAL PAN REVIEW
-//  No third-party API. User submits PAN + photo + selfie.
-//  You review at /admin/kyc and approve with one click.
-// ══════════════════════════════════════════════════════════════
-
-// Submit KYC
-app.post('/kyc/submit', async (req, res) => {
-  try {
-    const { userId, fullName, dob, pan, panPhotoBase64, selfieBase64 } = req.body;
-    if (!userId || !fullName || !dob || !pan)
-      return res.status(400).json({ error: 'userId, fullName, dob and pan required' });
-    if (!db) return res.status(500).json({ error: 'Database not connected' });
-
-    const panClean = pan.toUpperCase().trim();
-    if (!/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(panClean))
-      return res.status(400).json({ error: 'Invalid PAN format. Should be like ABCDE1234F' });
-
-    // Age check
-    const birth = new Date(dob), today = new Date();
-    let age = today.getFullYear() - birth.getFullYear();
-    const m = today.getMonth() - birth.getMonth();
-    if (m < 0 || (m === 0 && today.getDate() < birth.getDate())) age--;
-    if (isNaN(age) || age < 18)
-      return res.status(400).json({ error: `You must be 18 or older. Your age: ${age}` });
-
-    // Duplicate PAN check
-    const panMasked = panClean.slice(0,2) + 'XXX' + panClean.slice(5);
-    const dupSnap   = await db.collection('kyc').where('panMasked','==',panMasked).where('status','in',['pending','verified']).limit(2).get();
-    if (dupSnap.docs.some(d => d.id !== userId))
-      return res.status(400).json({ error: 'This PAN is already registered with another account.' });
-
-    // Already verified check
-    const existing = await db.collection('kyc').doc(userId).get();
-    if (existing.exists && existing.data().status === 'verified')
-      return res.status(400).json({ error: 'Your KYC is already verified.' });
-
-    // Upload photos to Firebase Storage
-    const uploads = {};
-    const hasBucket = admin.storage && typeof admin.storage === 'function';
-    if (hasBucket) {
-      const bucket = admin.storage().bucket();
-      for (const [key, b64, name] of [['panPhoto',panPhotoBase64,'pan.jpg'],['selfie',selfieBase64,'selfie.jpg']]) {
-        if (!b64) continue;
-        try {
-          const file   = bucket.file(`kyc/${userId}/${name}`);
-          await file.save(Buffer.from(b64, 'base64'), { metadata: { contentType: 'image/jpeg' } });
-          const urls   = await file.getSignedUrl({ action: 'read', expires: '03-01-2500' });
-          uploads[key] = urls[0];
-        } catch (e) { console.warn(`Upload ${name} failed:`, e.message); }
-      }
-    }
-
-    await db.collection('kyc').doc(userId).set({
-      userId, fullName: fullName.trim(), dob,
-      pan: panClean, panMasked, kycType: 'manual_pan', status: 'pending',
-      ...uploads,
-      submittedAt: admin.firestore.FieldValue.serverTimestamp(),
-      updatedAt:   admin.firestore.FieldValue.serverTimestamp(),
-    }, { merge: true });
-
-    await db.collection('users').doc(userId).update({
-      kycStatus: 'pending',
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-
-    console.log(`📋 KYC submitted: ${userId} | ${fullName} | ${panMasked}`);
-    res.json({ success: true, message: 'KYC submitted. We will verify within 24 hours.' });
-  } catch (e) {
-    console.error('/kyc/submit:', e);
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// Get KYC status (user polls this)
-app.get('/kyc/status/:userId', async (req, res) => {
-  try {
-    if (!db) return res.json({ status: 'unknown' });
-    const snap = await db.collection('kyc').doc(req.params.userId).get();
-    if (!snap.exists) return res.json({ status: 'not_started' });
-    const d = snap.data();
-    res.json({
-      status:          d.status,
-      kycRef:          d.kycRef          || null,
-      rejectionReason: d.rejectionReason || null,
-      submittedAt:     d.submittedAt?.toDate?.()?.toISOString() || null,
-    });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// Admin — list all KYC submissions
-app.get('/kyc/admin/list', async (req, res) => {
-  try {
-    if (req.query.adminKey !== process.env.ADMIN_KEY) return res.status(403).json({ error: 'Unauthorized' });
-    if (!db) return res.json({ submissions: [] });
-    const { status = 'pending' } = req.query;
-    let query = db.collection('kyc').orderBy('submittedAt', 'desc').limit(100);
-    if (status !== 'all') query = query.where('status', '==', status);
-    const snap = await query.get();
-    const submissions = snap.docs.map(d => ({
-      id:          d.id,
-      fullName:    d.data().fullName    || '',
-      panMasked:   d.data().panMasked   || '',
-      dob:         d.data().dob         || '',
-      status:      d.data().status      || '',
-      kycType:     d.data().kycType     || '',
-      panPhoto:    d.data().panPhoto    || null,
-      selfie:      d.data().selfie      || null,
-      submittedAt: d.data().submittedAt?.toDate?.()?.toISOString() || null,
-      reviewedAt:  d.data().reviewedAt?.toDate?.()?.toISOString()  || null,
-      rejectionReason: d.data().rejectionReason || null,
-    }));
-    res.json({ submissions, count: submissions.length });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// Admin — approve or reject KYC
-app.post('/kyc/admin/review', async (req, res) => {
-  try {
-    const { userId, action, reason, adminKey } = req.body;
-    if (adminKey !== process.env.ADMIN_KEY) return res.status(403).json({ error: 'Unauthorized' });
-    if (!['approve','reject'].includes(action)) return res.status(400).json({ error: 'action must be approve or reject' });
-    if (!db) return res.status(500).json({ error: 'Firebase not connected' });
-
-    const newStatus = action === 'approve' ? 'verified' : 'rejected';
-    const kycRef    = action === 'approve' ? `KYC${Date.now()}${Math.random().toString(36).slice(2,5).toUpperCase()}` : null;
-
-    await db.collection('kyc').doc(userId).update({
-      status: newStatus, kycRef: kycRef || null,
-      rejectionReason: reason || null,
-      reviewedAt: admin.firestore.FieldValue.serverTimestamp(),
-      updatedAt:  admin.firestore.FieldValue.serverTimestamp(),
-    });
-
-    await db.collection('users').doc(userId).update({
-      kycStatus: newStatus, kycRef: kycRef || null,
-      kycReviewedAt: admin.firestore.FieldValue.serverTimestamp(),
-      ...(action === 'approve' && {
-        inrtBalance: admin.firestore.FieldValue.increment(500),
-        kycVerifiedAt: admin.firestore.FieldValue.serverTimestamp(),
-        dailyLimit:    100000,
-      }),
-      ...(action === 'reject' && {
-        kycRejectionReason: reason || 'Documents could not be verified',
-      }),
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-
-    console.log(`${action==='approve'?'✅':'❌'} KYC ${action}d: ${userId}`);
-    res.json({ success: true, userId, status: newStatus, kycRef, message: action==='approve'?`KYC approved. +500 INRT reward points.`:`KYC rejected: ${reason}` });
-  } catch (e) {
-    console.error('/kyc/admin/review:', e);
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// ══════════════════════════════════════════════════════════════
-//  ADMIN ROUTES
-// ══════════════════════════════════════════════════════════════
-app.get('/admin/stats', async (req, res) => {
-  try {
-    if (req.query.adminKey !== process.env.ADMIN_KEY) return res.status(403).json({ error: 'Unauthorized' });
-    if (!db) return res.json({ stats: {} });
-    const [usersSnap, txSnap, kycSnap, earningsSnap] = await Promise.all([
-      db.collection('users').get(),
-      db.collection('transactions').orderBy('createdAt','desc').limit(500).get(),
-      db.collection('kyc').get(),
-      db.collection('businessWallet').doc('earnings').get(),
-    ]);
-    const users         = usersSnap.docs.map(d => d.data());
-    const kycDocs       = kycSnap.docs.map(d => d.data());
-    const thirtyDaysAgo = Date.now() - 30*24*60*60*1000;
-    const recentTxs     = txSnap.docs.map(d => d.data()).filter(tx => tx.createdAt?.toMillis?.() > thirtyDaysAgo);
-    const earnings      = earningsSnap.exists ? earningsSnap.data() : {};
-    res.json({ stats: {
-      totalUsers:    users.length,
-      kycVerified:   kycDocs.filter(k => k.status==='verified').length,
-      kycPending:    kycDocs.filter(k => k.status==='pending').length,
-      kycRejected:   kycDocs.filter(k => k.status==='rejected').length,
-      totalBalance:  Math.round(users.reduce((s,u)=>s+(u.balance||0),0)),
-      last30Days: {
-        txVolume: Math.round(recentTxs.filter(t=>t.type==='debit').reduce((s,t)=>s+(t.amount||0),0)),
-        txCount:  recentTxs.length,
-      },
-      earnings: {
-        total:            earnings.balance             || 0,
-        transferEarnings: earnings.transferEarnings    || 0,
-        rechargeEarnings: earnings.rechargeEarnings    || 0,
-        billsEarnings:    earnings.billsEarnings       || 0,
-      },
-    }});
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.get('/admin/users', async (req, res) => {
-  try {
-    if (req.query.adminKey !== process.env.ADMIN_KEY) return res.status(403).json({ error: 'Unauthorized' });
-    if (!db) return res.json({ users: [] });
-    const snap  = await db.collection('users').orderBy('createdAt','desc').limit(200).get();
-    const users = snap.docs.map(d => ({
-      id: d.id, name: d.data().name||'', phone: d.data().phone||'',
-      balance: d.data().balance||0, kycStatus: d.data().kycStatus||'not_started',
-      inrtBalance: d.data().inrtBalance||0,
-      createdAt: d.data().createdAt?.toDate?.()?.toISOString()||null,
-    }));
-    res.json({ users, count: users.length });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// ══════════════════════════════════════════════════════════════
-//  WALLET TRANSFER
-// ══════════════════════════════════════════════════════════════
-
-/* ═══ HIDDEN FOR LAUNCH — WALLET TRANSFER ROUTE — commented out pending payout approval ═══
-  try {
-    const { fromUid, toPhone, toUid: directToUid, amount, note } = req.body;
-    if (!fromUid || !amount || amount < 1) return res.status(400).json({ error: 'fromUid and amount required' });
-    if (!db) return res.status(500).json({ error: 'Database not connected' });
-    const sSnap = await db.collection('users').doc(fromUid).get();
-    if (!sSnap.exists) return res.status(404).json({ error: 'Sender not found' });
-    const sender = sSnap.data();
-    if ((sender.balance||0) < amount) return res.status(402).json({ error: 'Insufficient balance' });
-    const today = new Date().toISOString().split('T')[0];
-    const lk    = `dailySent_${today}`;
-    const dl    = sender.kycStatus === 'verified' ? 100000 : 10000;
-    if ((sender[lk]||0) + amount > dl) return res.status(402).json({ error: 'Daily limit reached' });
-    let toUid = directToUid;
-    if (!toUid && toPhone) {
-      const pSnap = await db.collection('phoneIndex').doc(toPhone.replace(/\D/g,'')).get();
-      if (!pSnap.exists) return res.status(404).json({ error: 'No INRT account for this number' });
-      toUid = pSnap.data().uid;
-    }
-    if (!toUid || toUid === fromUid) return res.status(400).json({ error: 'Invalid receiver' });
-    const ref = genTxId('TXN'), pts = Math.floor(amount/10);
-    const commission = await earnCommission(amount, 'transfer');
-    const batch = db.batch();
-    batch.update(db.collection('users').doc(fromUid), { balance: admin.firestore.FieldValue.increment(-amount), totalSent: admin.firestore.FieldValue.increment(amount), [lk]: admin.firestore.FieldValue.increment(amount), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
-    batch.update(db.collection('users').doc(toUid),   { balance: admin.firestore.FieldValue.increment(amount), totalReceived: admin.firestore.FieldValue.increment(amount), inrtBalance: admin.firestore.FieldValue.increment(pts), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
-    batch.set(db.collection('transactions').doc(ref),         { uid: fromUid, toUid, type: 'debit',  amount, note: note||'Transfer', cat: 'transfer', ref, status: 'success', commission, inrtBalance: pts, createdAt: admin.firestore.FieldValue.serverTimestamp() });
-    batch.set(db.collection('transactions').doc(ref+'_CR'),   { uid: toUid, fromUid, type: 'credit', amount, note: `Received from ${sender.name||'INRT User'}`, cat: 'transfer', ref: ref+'_CR', status: 'success', createdAt: admin.firestore.FieldValue.serverTimestamp() });
-    await batch.commit();
-    res.json({ success: true, ref, amount, commission, inrtBalance: pts });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// ══════════════════════════════════════════════════════════════
-//  UPI QR
-// ══════════════════════════════════════════════════════════════
-═══ END HIDDEN ═══ */
-app.post('/payment/generate-upi-qr', async (req, res) => {
-  try {
-    const { userId, amount, note } = req.body;
-    if (!userId || !db) return res.status(400).json({ error: 'userId required' });
-    const uSnap = await db.collection('users').doc(userId).get();
-    if (!uSnap.exists) return res.status(404).json({ error: 'User not found' });
-    const user      = uSnap.data();
-    const upiId     = user.upiId || `${user.phone}@inrt`;
-    const txnId     = genTxId('UPI');
-    const upiString = `upi://pay?pa=${upiId}&pn=${encodeURIComponent(user.name||'INRT Wallet')}&tr=${txnId}${amount?`&am=${amount}`:''}${note?`&tn=${encodeURIComponent(note)}`:''}}&cu=INR`;
-    const qrImageUrl= `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(upiString)}`;
-    await db.collection('pendingPayments').doc(txnId).set({ userId, upiId, amount: amount||null, note: note||'', txnId, status: 'pending', createdAt: admin.firestore.FieldValue.serverTimestamp(), expiresAt: Date.now()+10*60*1000 });
-    res.json({ success: true, txnId, upiId, upiString, qrImageUrl, amount: amount||null });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.get('/payment/check-upi/:txnId', async (req, res) => {
-  try {
-    if (!db) return res.json({ status: 'unknown' });
-    const snap = await db.collection('pendingPayments').doc(req.params.txnId).get();
-    if (!snap.exists) return res.json({ status: 'not_found' });
-    const d = snap.data();
-    if (Date.now() > d.expiresAt) { await snap.ref.update({ status: 'expired' }); return res.json({ status: 'expired' }); }
-    res.json({ status: d.status, amount: d.amount, txnId: req.params.txnId });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.post('/payment/upi-webhook', async (req, res) => {
-  try {
-    const { txnId, amount, payerVpa, status } = req.body;
-    if (!txnId || !amount || status !== 'SUCCESS' || !db) return res.json({ received: true });
-    const pSnap = await db.collection('pendingPayments').doc(txnId).get();
-    if (!pSnap.exists || pSnap.data().status === 'success') return res.json({ received: true });
-    const pending = pSnap.data();
-    const ref = genTxId('UPI'), pts = Math.floor(amount/10);
-    const batch = db.batch();
-    batch.update(db.collection('users').doc(pending.userId), { balance: admin.firestore.FieldValue.increment(parseFloat(amount)), totalReceived: admin.firestore.FieldValue.increment(parseFloat(amount)), inrtBalance: admin.firestore.FieldValue.increment(pts), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
-    batch.set(db.collection('transactions').doc(ref), { uid: pending.userId, type: 'credit', amount: parseFloat(amount), note: `UPI from ${payerVpa||'UPI'}`, cat: 'add_money', ref, status: 'success', payerVpa, upiTxnId: txnId, createdAt: admin.firestore.FieldValue.serverTimestamp() });
-    batch.update(pSnap.ref, { status: 'success', paidAt: admin.firestore.FieldValue.serverTimestamp(), ref });
-    await batch.commit();
-    res.json({ received: true, credited: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.post('/payment/admin-credit', async (req, res) => {
-  try {
-    const { userId, amount, note, adminKey } = req.body;
-    if (adminKey !== process.env.ADMIN_KEY) return res.status(403).json({ error: 'Unauthorized' });
-    if (!userId || !amount || !db) return res.status(400).json({ error: 'userId and amount required' });
-    const ref = genTxId('ADM');
-    const batch = db.batch();
-    batch.update(db.collection('users').doc(userId), { balance: admin.firestore.FieldValue.increment(parseFloat(amount)), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
-    batch.set(db.collection('transactions').doc(ref), { uid: userId, type: 'credit', amount: parseFloat(amount), note: note||'Admin credit', cat: 'add_money', ref, status: 'success', createdAt: admin.firestore.FieldValue.serverTimestamp() });
-    await batch.commit();
-    res.json({ success: true, ref, amount });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.post('/payment/bill', async (req, res) => {
-  try {
-    const { userId, amount, category, provider, accountNo } = req.body;
-    if (!userId || !amount || !db) return res.status(400).json({ error: 'Missing fields' });
-    const uSnap = await db.collection('users').doc(userId).get();
-    if (!uSnap.exists || (uSnap.data().balance||0) < amount) return res.status(402).json({ error: 'Insufficient balance' });
-    const ref = genTxId('BILL'), cashback = Math.floor(amount*0.02), pts = Math.floor(amount/10);
-    const commission = await earnCommission(amount, 'bills');
-    const batch = db.batch();
-    batch.update(db.collection('users').doc(userId), { balance: admin.firestore.FieldValue.increment(-amount+cashback), cashback: admin.firestore.FieldValue.increment(cashback), inrtBalance: admin.firestore.FieldValue.increment(pts), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
-    batch.set(db.collection('transactions').doc(ref), { uid: userId, type: 'debit', amount, note: `${category} — ${provider||''}`, cat: 'bills', ref, status: 'success', accountNo, cashback, commission, inrtBalance: pts, createdAt: admin.firestore.FieldValue.serverTimestamp() });
-    await batch.commit();
-    res.json({ success: true, ref, amount, cashback, inrtBalance: pts, commission });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.post('/payment/refund', async (req, res) => {
-  try {
-    const { txId, reason, adminKey } = req.body;
-    if (adminKey !== process.env.ADMIN_KEY || !db) return res.status(403).json({ error: 'Unauthorized' });
-    const tSnap = await db.collection('transactions').doc(txId).get();
-    if (!tSnap.exists) return res.status(404).json({ error: 'Transaction not found' });
-    if (tSnap.data().status === 'refunded') return res.status(400).json({ error: 'Already refunded' });
-    const tx = tSnap.data(), refundRef = genTxId('REF');
-    const batch = db.batch();
-    batch.update(db.collection('users').doc(tx.uid), { balance: admin.firestore.FieldValue.increment(tx.amount), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
-    batch.update(db.collection('transactions').doc(txId), { status: 'refunded', refundRef });
-    batch.set(db.collection('transactions').doc(refundRef), { uid: tx.uid, type: 'credit', amount: tx.amount, note: `Refund: ${reason||'Customer request'}`, cat: 'refund', ref: refundRef, status: 'success', originalTxId: txId, createdAt: admin.firestore.FieldValue.serverTimestamp() });
-    await batch.commit();
-    res.json({ success: true, refundRef, amount: tx.amount });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.get('/payment/balance/:userId', async (req, res) => {
-  try {
-    if (!db) return res.json({ balance: 0 });
-    const snap = await db.collection('users').doc(req.params.userId).get();
-    res.json({ balance: snap.exists ? snap.data().balance||0 : 0 });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.get('/payment/earnings', async (req, res) => {
-  try {
-    if (req.query.adminKey !== process.env.ADMIN_KEY) return res.status(403).json({ error: 'Unauthorized' });
-    if (!db) return res.json({ earnings: {} });
-    const snap = await db.collection('businessWallet').doc('earnings').get();
-    res.json({ earnings: snap.exists ? snap.data() : { balance: 0 } });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-
-/* ═══ HIDDEN FOR LAUNCH — CASHFREE PAYOUT ROUTES — commented out pending payout approval ═══
-//  CASHFREE PAYOUTS
-// ══════════════════════════════════════════════════════════════
-app.post('/payout/validate-upi', async (req, res) => {
-  try {
-    const { upiId } = req.body;
-    if (!upiId) return res.status(400).json({ error: 'UPI ID required' });
-    if (process.env.NODE_ENV !== 'production')
-      return res.json({ valid: true, name: 'Test Account', upiId, bankName: 'Test Bank' });
-    const d = await cfPost('/payout/v1/validation/upiDetails', { vpa: upiId });
-    if (d.status !== 'SUCCESS') return res.status(400).json({ error: 'Invalid UPI ID' });
-    res.json({ valid: true, name: d.data?.name||'UPI Account', upiId: d.data?.vpa||upiId, bankName: d.data?.bankName||'' });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.post('/payout/send-upi', async (req, res) => {
-  try {
-    const { fromUid, toUpiId, amount, note, name } = req.body;
-    if (!fromUid || !toUpiId || !amount || !db) return res.status(400).json({ error: 'Missing fields' });
-    const sSnap = await db.collection('users').doc(fromUid).get();
-    if (!sSnap.exists) return res.status(404).json({ error: 'Sender not found' });
-    const sender = sSnap.data();
-    if ((sender.balance||0) < amount) return res.status(402).json({ error: 'Insufficient balance' });
-    const today = new Date().toISOString().split('T')[0];
-    const lk    = `dailySent_${today}`;
-    const dl    = sender.kycStatus === 'verified' ? 100000 : 10000;
-    if ((sender[lk]||0) + amount > dl) return res.status(402).json({ error: 'Daily limit reached' });
-    const transferId = genTransferId();
-    await db.collection('users').doc(fromUid).update({ balance: admin.firestore.FieldValue.increment(-amount), [lk]: admin.firestore.FieldValue.increment(amount), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
-    const cfResponse = await cfPost('/payout/v1/directTransfer', { amount, transferId, transferMode: 'upi', remarks: note||`INRT from ${sender.name||sender.phone}`, beneDetails: { beneId: `BENE_${toUpiId.replace(/[@.]/g,'_')}`, name: name||'UPI Recipient', vpa: toUpiId } });
-    if (cfResponse.status !== 'SUCCESS') {
-      await db.collection('users').doc(fromUid).update({ balance: admin.firestore.FieldValue.increment(amount), [lk]: admin.firestore.FieldValue.increment(-amount), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
-      throw new Error(cfResponse.message || 'Transfer failed');
-    }
-    const pts = Math.floor(amount/10);
-    await db.collection('transactions').add({ uid: fromUid, type: 'debit', amount, note: note||`Sent to ${toUpiId}`, cat: 'transfer', ref: transferId, toUpiId, status: 'success', method: 'cashfree_upi', inrtBalance: pts, createdAt: admin.firestore.FieldValue.serverTimestamp() });
-    await db.collection('users').doc(fromUid).update({ inrtBalance: admin.firestore.FieldValue.increment(pts), totalSent: admin.firestore.FieldValue.increment(amount) });
-    res.json({ success: true, transferId, amount, toUpiId, inrtBalance: pts });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.post('/payout/send-bank', async (req, res) => {
-  try {
-    const { fromUid, accountNo, ifsc, accountName, amount, note } = req.body;
-    if (!fromUid || !accountNo || !ifsc || !accountName || !amount || !db) return res.status(400).json({ error: 'Missing fields' });
-    const sSnap = await db.collection('users').doc(fromUid).get();
-    if (!sSnap.exists || (sSnap.data().balance||0) < amount) return res.status(402).json({ error: 'Insufficient balance' });
-    const transferId = genTransferId();
-    await db.collection('users').doc(fromUid).update({ balance: admin.firestore.FieldValue.increment(-amount), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
-    const cfResponse = await cfPost('/payout/v1/directTransfer', { amount, transferId, transferMode: 'imps', remarks: note||'INRT Bank Transfer', beneDetails: { beneId: `BENE_${accountNo}`, name: accountName, bankAccount: accountNo, ifsc: ifsc.toUpperCase() } });
-    if (cfResponse.status !== 'SUCCESS') {
-      await db.collection('users').doc(fromUid).update({ balance: admin.firestore.FieldValue.increment(amount), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
-      throw new Error(cfResponse.message || 'Bank transfer failed');
-    }
-    await db.collection('transactions').add({ uid: fromUid, type: 'debit', amount, note: note||`Bank transfer to ${accountName}`, cat: 'transfer', ref: transferId, accountNo: accountNo.slice(-4).padStart(accountNo.length,'X'), ifsc, accountName, status: 'success', method: 'cashfree_imps', createdAt: admin.firestore.FieldValue.serverTimestamp() });
-    await db.collection('users').doc(fromUid).update({ inrtBalance: admin.firestore.FieldValue.increment(Math.floor(amount/10)), totalSent: admin.firestore.FieldValue.increment(amount) });
-    res.json({ success: true, transferId, amount, accountName });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.get('/payout/status/:transferId', async (req, res) => {
-  try {
-    const d = await cfGet(`/payout/v1/getTransferStatus?transferId=${req.params.transferId}`);
-    res.json({ transferId: req.params.transferId, status: d.data?.transfer?.status||'UNKNOWN', amount: d.data?.transfer?.amount, utr: d.data?.transfer?.utr||null });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.post('/payout/webhook', async (req, res) => {
-  try {
-    const { transferId, status, utr, reason } = req.body;
-    if (!db || !transferId) return res.json({ received: true });
-    const snap = await db.collection('transactions').where('ref','==',transferId).limit(1).get();
-    if (snap.empty) return res.json({ received: true });
-    const txDoc = snap.docs[0], tx = txDoc.data();
-    if (status === 'SUCCESS') {
-      await txDoc.ref.update({ status: 'success', utr, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
-    } else if (status === 'FAILED' || status === 'REVERSED') {
-      await db.collection('users').doc(tx.uid).update({ balance: admin.firestore.FieldValue.increment(tx.amount), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
-      await txDoc.ref.update({ status: 'failed', failReason: reason||'Transfer failed', updatedAt: admin.firestore.FieldValue.serverTimestamp() });
-      await db.collection('transactions').add({ uid: tx.uid, type: 'credit', amount: tx.amount, note: 'Refund: Transfer failed', cat: 'refund', ref: `REF_${transferId}`, status: 'success', createdAt: admin.firestore.FieldValue.serverTimestamp() });
-    }
-    res.json({ received: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.post('/payout/withdraw', async (req, res) => {
-  try {
-    const { userId, amount, upiId } = req.body;
-    if (!userId || !amount || !upiId || !db) return res.status(400).json({ error: 'Missing fields' });
-    if (amount < 100) return res.status(400).json({ error: 'Minimum ₹100' });
-    const snap = await db.collection('users').doc(userId).get();
-    if (!snap.exists) return res.status(404).json({ error: 'User not found' });
-    const user = snap.data();
-    if (user.kycStatus !== 'verified') return res.status(403).json({ error: 'Complete KYC to withdraw' });
-    if ((user.balance||0) < amount)    return res.status(402).json({ error: 'Insufficient balance' });
-    const transferId = genTransferId();
-    await db.collection('users').doc(userId).update({ balance: admin.firestore.FieldValue.increment(-amount), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
-    const cfResponse = await cfPost('/payout/v1/directTransfer', { amount, transferId, transferMode: 'upi', remarks: 'INRT Wallet Withdrawal', beneDetails: { beneId: `USER_${userId}`, name: user.name||'INRT User', vpa: upiId } });
-    if (cfResponse.status !== 'SUCCESS') {
-      await db.collection('users').doc(userId).update({ balance: admin.firestore.FieldValue.increment(amount), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
-      throw new Error(cfResponse.message || 'Withdrawal failed');
-    }
-    await db.collection('transactions').add({ uid: userId, type: 'debit', amount, note: `Withdrawal to ${upiId}`, cat: 'withdrawal', ref: transferId, toUpiId: upiId, status: 'success', method: 'cashfree_upi', createdAt: admin.firestore.FieldValue.serverTimestamp() });
-    res.json({ success: true, transferId, amount });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-═══ END HIDDEN ═══ */
-
-
-/* ═══ HIDDEN FOR LAUNCH — INSTAMOJO ROUTES — commented out pending approval ═══
-//  INSTAMOJO
-// ══════════════════════════════════════════════════════════════
-app.post('/instamojo/create-payment', async (req, res) => {
-  try {
-    const { userId, amount, name, email, phone } = req.body;
-    if (!userId || !amount) return res.status(400).json({ error: 'userId and amount required' });
-    if (amount < 10) return res.status(400).json({ error: 'Minimum ₹10' });
-    if (!db) return res.status(500).json({ error: 'Database not connected' });
-    const userSnap = await db.collection('users').doc(userId).get();
-    if (!userSnap.exists) return res.status(404).json({ error: 'User not found' });
-    const user       = userSnap.data();
-    const APP_URL    = process.env.APP_URL || 'https://inrtwallet.in';
-    const paymentRef = `INRT${Date.now()}${Math.random().toString(36).slice(2,5).toUpperCase()}`;
-    await db.collection('instamojoPayments').doc(paymentRef).set({ userId, amount: parseFloat(amount), status: 'pending', paymentRef, createdAt: admin.firestore.FieldValue.serverTimestamp(), expiresAt: Date.now()+30*60*1000 });
-    const data = await instamojoPost('/payment-requests', {
-      purpose: 'Add Money to INRT Wallet', amount: parseFloat(amount).toFixed(2),
-      buyer_name: name||user.name||'INRT User', email: email||user.email||`${user.phone}@inrtwallet.app`,
-      phone: phone||user.phone||'', send_email: false, send_sms: false, allow_repeated_payments: false,
-      redirect_url: `${APP_URL}/payment-success?ref=${paymentRef}&userId=${userId}`,
-      webhook: `${process.env.RAILWAY_URL||'https://inrt-wallet-production.up.railway.app'}/instamojo/webhook`,
-    });
-    if (!data.success) throw new Error(data.message||'Instamojo payment creation failed');
-    const paymentUrl = data.payment_request?.longurl||data.payment_request?.shorturl;
-    const requestId  = data.payment_request?.id;
-    await db.collection('instamojoPayments').doc(paymentRef).update({ instamojoRequestId: requestId, paymentUrl });
-    res.json({ success: true, paymentUrl, paymentRef, requestId, amount });
-  } catch (e) { console.error('/instamojo/create-payment:', e); res.status(500).json({ error: e.message }); }
-});
-
-app.post('/instamojo/webhook', async (req, res) => {
-  try {
-    const { payment_id, payment_request_id, amount, status, buyer, buyer_name, mac } = req.body;
-    console.log('Instamojo webhook:', { payment_id, status, amount });
-    const SALT = process.env.INSTAMOJO_SALT;
-    if (SALT && mac) {
-      const expected = crypto.createHmac('sha1', SALT).update(`|${payment_request_id}|${payment_id}|${status}|${buyer}|${buyer_name}|${amount}|`).digest('hex');
-      if (mac !== expected) return res.status(400).json({ error: 'Invalid signature' });
-    }
-    if (status !== 'Credit') return res.json({ received: true });
-    if (!db) return res.json({ received: true });
-    const snap = await db.collection('instamojoPayments').where('instamojoRequestId','==',payment_request_id).limit(1).get();
-    if (snap.empty) return res.json({ received: true });
-    const payDoc = snap.docs[0], payment = payDoc.data();
-    if (payment.status === 'success') return res.json({ received: true });
-    const paidAmount = parseFloat(amount), pts = Math.floor(paidAmount/10), ref = `IM${payment_id}`;
-    const batch = db.batch();
-    batch.update(db.collection('users').doc(payment.userId), { balance: admin.firestore.FieldValue.increment(paidAmount), totalReceived: admin.firestore.FieldValue.increment(paidAmount), inrtBalance: admin.firestore.FieldValue.increment(pts), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
-    batch.set(db.collection('transactions').doc(ref), { uid: payment.userId, type: 'credit', amount: paidAmount, note: 'Added via Instamojo', cat: 'add_money', ref, status: 'success', paymentId: payment_id, inrtBalance: pts, createdAt: admin.firestore.FieldValue.serverTimestamp() });
-    batch.update(payDoc.ref, { status: 'success', paymentId: payment_id, paidAt: admin.firestore.FieldValue.serverTimestamp(), paidAmount });
-    await batch.commit();
-    console.log(`✅ Instamojo: ₹${paidAmount} credited to ${payment.userId}`);
-    res.json({ received: true, credited: true });
-  } catch (e) { console.error('/instamojo/webhook:', e); res.status(500).json({ error: e.message }); }
-});
-
-app.get('/instamojo/verify/:paymentRef', async (req, res) => {
-  try {
-    if (!db) return res.json({ status: 'unknown' });
-    const snap = await db.collection('instamojoPayments').doc(req.params.paymentRef).get();
-    if (!snap.exists) return res.json({ status: 'not_found' });
-    const data = snap.data();
-    if (data.status === 'pending' && Date.now() > data.expiresAt) { await snap.ref.update({ status: 'expired' }); return res.json({ status: 'expired' }); }
-    res.json({ status: data.status, amount: data.amount, paymentRef: req.params.paymentRef, paymentId: data.paymentId||null });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.get('/instamojo/status/:requestId', async (req, res) => {
-  try {
-    const data = await instamojoGet(`/payment-requests/${req.params.requestId}`);
-    res.json({ requestId: req.params.requestId, status: data.payment_request?.status, amount: data.payment_request?.amount, payments: data.payment_request?.payments||[] });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-═══ END HIDDEN ═══ */
-
-// ══════════════════════════════════════════════════════════════
-//  EZYTM RECHARGE
-// ══════════════════════════════════════════════════════════════
-app.get('/recharge/operator/:mobile', async (req, res) => {
-  try {
-    const mobile = req.params.mobile.replace(/\D/g, '');
-    if (mobile.length !== 10) return res.status(400).json({ error: 'Invalid mobile number' });
-    const AIRTEL = ['7290','7291','7292','7293','7294','7295','7296','7297','7298','7299','8130','8131','8132','8133','8134','8376','8527','8800','8801','8802','8803','8804','9711','9810','9811','9818','9891','9899','9971'];
-    const VI     = ['7016','7041','7042','7043','7044','7045','7046','7047','7048','7049','7208','7209','8160','8161','8758','9408','9409','9898','9974'];
-    const BSNL   = ['9436','9441','9442','9443','9444','9445','9446','9447','9448','9449','9863','9864','9865','9866','9867','9868','9869','9870'];
-    let operator = 'JIO';
-    if (AIRTEL.some(p => mobile.startsWith(p)))      operator = 'AIRTEL';
-    else if (VI.some(p => mobile.startsWith(p)))     operator = 'VI';
-    else if (BSNL.some(p => mobile.startsWith(p)))   operator = 'BSNL';
-    else if (mobile.startsWith('6'))                 operator = 'JIO';
-    else if (['70','71','72','81','82','83','90','91','92'].some(p=>mobile.startsWith(p))) operator = 'AIRTEL';
-    else if (['73','74','75','84','85','86','96','97','98','99'].some(p=>mobile.startsWith(p))) operator = 'JIO';
-    else if (['76','77','78','87','88','89'].some(p=>mobile.startsWith(p))) operator = 'VI';
-    else if (['79','93','94','95'].some(p=>mobile.startsWith(p))) operator = 'BSNL';
-    res.json({ mobile, operator, circle: 'UNKNOWN' });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.get('/recharge/plans', async (req, res) => {
-  try {
-    const { operator } = req.query;
-    const token = process.env.EZYTM_API_TOKEN, member = process.env.EZYTM_MEMBER_ID;
-    if (token && member) {
-      try {
-        const url = new URL('https://newapi.ezytm.in/Service/BrowsePlan');
-        url.searchParams.append('ApiToken', token);
-        url.searchParams.append('MemberId', member);
-        url.searchParams.append('OpId', operator||'JIO');
-        const r = await fetch(url.toString(), { signal: AbortSignal.timeout(8000) });
-        const data = JSON.parse(await r.text());
-        if (data && (data.DATA||data.data||Array.isArray(data)))
-          return res.json({ success: true, plans: data.DATA||data.data||data, source: 'live' });
-      } catch (e) { console.warn('Ezytm plans fallback:', e.message); }
-    }
-    const fallback = [
-      { id:'p1', amount:179,  validity:'28 days',  data:'2GB/day',  calls:'Unlimited', popular:false },
-      { id:'p2', amount:239,  validity:'28 days',  data:'2GB/day',  calls:'Unlimited', popular:true  },
-      { id:'p3', amount:299,  validity:'28 days',  data:'3GB/day',  calls:'Unlimited', popular:false },
-      { id:'p4', amount:479,  validity:'56 days',  data:'2.5GB/day',calls:'Unlimited', popular:false },
-      { id:'p5', amount:599,  validity:'84 days',  data:'2GB/day',  calls:'Unlimited', popular:true  },
-      { id:'p6', amount:899,  validity:'84 days',  data:'3GB/day',  calls:'Unlimited', popular:false },
-      { id:'p7', amount:1199, validity:'365 days', data:'2.5GB/day',calls:'Unlimited', popular:false },
-      { id:'p8', amount:2999, validity:'365 days', data:'3GB/day',  calls:'Unlimited', popular:false },
-    ];
-    res.json({ success: true, plans: fallback, source: 'fallback' });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.post('/recharge/do', async (req, res) => {
-  try {
-    const { userId, mobile, operator, amount, rechargeType } = req.body;
-    if (!userId || !mobile || !operator || !amount) return res.status(400).json({ error: 'userId, mobile, operator, amount required' });
-    const token = process.env.EZYTM_API_TOKEN, member = process.env.EZYTM_MEMBER_ID;
-    if (!token || !member) return res.status(500).json({ error: 'EZYTM_API_TOKEN and EZYTM_MEMBER_ID not set' });
-    if (!db) return res.status(500).json({ error: 'Database not connected' });
-    const userSnap = await db.collection('users').doc(userId).get();
-    if (!userSnap.exists) return res.status(404).json({ error: 'User not found' });
-    if ((userSnap.data().balance||0) < amount) return res.status(402).json({ error: `Insufficient balance` });
-    const orderId = genTxId('RCH'), pts = Math.floor(amount/10);
-    await db.collection('users').doc(userId).update({ balance: admin.firestore.FieldValue.increment(-amount), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
-    let ezytmResponse;
-    try {
-      const url = new URL('https://newapi.ezytm.in/Service/Recharge2');
-      url.searchParams.append('ApiToken', token);
-      url.searchParams.append('MobileNo', mobile.replace(/\D/g,''));
-      url.searchParams.append('Amount',   amount.toString());
-      url.searchParams.append('OpId',     operator);
-      url.searchParams.append('RefTxnId', orderId);
-      const text = await (await fetch(url.toString(), { signal: AbortSignal.timeout(20000) })).text();
-      console.log('Ezytm raw:', text);
-      try { ezytmResponse = JSON.parse(text); }
-      catch {
-        await db.collection('users').doc(userId).update({ balance: admin.firestore.FieldValue.increment(amount), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
-        return res.status(500).json({ error: 'Invalid response from Ezytm. Balance refunded.', raw: text.slice(0,200) });
-      }
-    } catch (fetchErr) {
-      await db.collection('users').doc(userId).update({ balance: admin.firestore.FieldValue.increment(amount), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
-      return res.status(500).json({ error: 'Recharge service unreachable. Balance refunded.' });
-    }
-    const status = String(ezytmResponse.STATUS||'').trim();
-    const txnId  = ezytmResponse.OPTXNID||ezytmResponse.TXNNO||orderId;
-    const message= ezytmResponse.MESSAGE||'';
-    if (status === '3') {
-      await db.collection('users').doc(userId).update({ balance: admin.firestore.FieldValue.increment(amount), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
-      await db.collection('transactions').add({ uid: userId, type: 'debit', amount, note: `Failed recharge: ${operator} ${mobile}`, cat: 'recharge', ref: orderId, status: 'failed', mobile, operator, createdAt: admin.firestore.FieldValue.serverTimestamp() });
-      return res.status(400).json({ success: false, error: message||'Recharge failed. Balance refunded.' });
-    }
-    const txStatus = status === '1' ? 'success' : 'pending';
-    await db.collection('transactions').add({ uid: userId, type: 'debit', amount, note: `${operator} ${rechargeType==='D'?'DTH':rechargeType==='T'?'Postpaid':'Prepaid'} — ${mobile}`, cat: 'recharge', ref: orderId, status: txStatus, mobile, operator, ezytmTxnId: txnId, inrtBalance: status==='1'?pts:0, createdAt: admin.firestore.FieldValue.serverTimestamp() });
-    if (status === '1') await db.collection('users').doc(userId).update({ inrtBalance: admin.firestore.FieldValue.increment(pts), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
-    res.json({ success: status==='1', pending: status==='2', orderId, txnId, amount, mobile, operator, status: txStatus, inrtBalance: status==='1'?pts:0, message: status==='1'?`₹${amount} recharge done for ${mobile}`:status==='2'?'Processing…':message });
-  } catch (e) { console.error('/recharge/do:', e); res.status(500).json({ error: e.message||'Recharge failed' }); }
-});
-
-app.get('/recharge/status/:orderId', async (req, res) => {
-  try {
-    const token = process.env.EZYTM_API_TOKEN;
-    const url   = new URL('https://newapi.ezytm.in/service/statuscheck');
-    url.searchParams.append('ApiToken',  token);
-    url.searchParams.append('RefTxnId',  req.params.orderId);
-    const text = await (await fetch(url.toString(), { signal: AbortSignal.timeout(10000) })).text();
-    let data; try { data = JSON.parse(text); } catch { return res.status(500).json({ error: 'Invalid Ezytm response' }); }
-    const status = String(data.STATUS||'').trim();
-    const txnId  = data.OPTXNID||data.TXNNO||'';
-    if (status === '1' && db) {
-      const snap = await db.collection('transactions').where('ref','==',req.params.orderId).limit(1).get();
-      if (!snap.empty && snap.docs[0].data().status !== 'success') {
-        const tx = snap.docs[0].data();
-        await snap.docs[0].ref.update({ status: 'success', ezytmTxnId: txnId, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
-        await db.collection('users').doc(tx.uid).update({ inrtBalance: admin.firestore.FieldValue.increment(Math.floor(tx.amount/10)), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
-      }
-    }
-    if (status === '3' && db) {
-      const snap = await db.collection('transactions').where('ref','==',req.params.orderId).limit(1).get();
-      if (!snap.empty && snap.docs[0].data().status === 'pending') {
-        const tx = snap.docs[0].data();
-        await db.collection('users').doc(tx.uid).update({ balance: admin.firestore.FieldValue.increment(tx.amount), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
-        await snap.docs[0].ref.update({ status: 'failed', updatedAt: admin.firestore.FieldValue.serverTimestamp() });
-        await db.collection('transactions').add({ uid: tx.uid, type: 'credit', amount: tx.amount, note: `Refund: Recharge failed for ${tx.mobile}`, cat: 'refund', ref: `REF_${req.params.orderId}`, status: 'success', createdAt: admin.firestore.FieldValue.serverTimestamp() });
-      }
-    }
-    res.json({ orderId: req.params.orderId, status: status==='1'?'success':status==='3'?'failed':'pending', txnId, message: data.MESSAGE||'' });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-
-// ══════════════════════════════════════════════════════════════
-//  KYC — DIDIT AUTO-APPROVE ROUTES
+//  KYC — DIDIT AUTO-APPROVE
 // ══════════════════════════════════════════════════════════════
 const DIDIT_BASE = 'https://verification.didit.me';
 
@@ -921,9 +405,9 @@ app.post('/kyc/didit-session', async (req, res) => {
       signal: AbortSignal.timeout(15000),
     });
     const text = await r.text();
-    let data; try { data = JSON.parse(text); } catch { return res.status(500).json({ error: `Didit non-JSON: ${text.slice(0,100)}` }); }
+    let data; try { data = JSON.parse(text); } catch { return res.status(500).json({ error: `Didit non-JSON: ${text.slice(0, 100)}` }); }
     if (r.status !== 200 && r.status !== 201) return res.status(500).json({ error: data?.detail || data?.message || `Didit error (${r.status})` });
-    const sessionId = data.session_id || data.id;
+    const sessionId  = data.session_id || data.id;
     const sessionUrl = data.url || data.session_url;
     if (!sessionId || !sessionUrl) return res.status(500).json({ error: 'Didit did not return session_id or url' });
     await db.collection('diditSessions').doc(sessionId).set({ userId, sessionId, status: 'pending', createdAt: admin.firestore.FieldValue.serverTimestamp() });
@@ -955,17 +439,17 @@ app.post('/kyc/didit-webhook', async (req, res) => {
     const uSnap = await db.collection('users').doc(userId).get();
     if (!uSnap.exists || uSnap.data().kycStatus === 'verified') return;
     if (isApproved) {
-      const kycRef = `KYC${Date.now()}${Math.random().toString(36).slice(2,5).toUpperCase()}`;
+      const kycRef = `KYC${Date.now()}${Math.random().toString(36).slice(2, 5).toUpperCase()}`;
       const batch  = db.batch();
-      batch.set(db.collection('kyc').doc(userId), { userId, kycRef, status:'verified', kycType:'didit_auto', autoApproved:true, diditSessionId:sessionId, submittedAt:admin.firestore.FieldValue.serverTimestamp(), reviewedAt:admin.firestore.FieldValue.serverTimestamp(), updatedAt:admin.firestore.FieldValue.serverTimestamp() }, { merge:true });
-      batch.update(db.collection('users').doc(userId), { kycStatus:'verified', kycRef, kycVerifiedAt:admin.firestore.FieldValue.serverTimestamp(), inrtBalance:admin.firestore.FieldValue.increment(500), dailyLimit:100000, updatedAt:admin.firestore.FieldValue.serverTimestamp() });
-      batch.set(db.collection('transactions').doc(`KYC_BONUS_${kycRef}`), { uid:userId, type:'credit', amount:500, note:'KYC Verified — Welcome Bonus 🎉', cat:'rewards', ref:`KYC_BONUS_${kycRef}`, status:'success', createdAt:admin.firestore.FieldValue.serverTimestamp() });
+      batch.set(db.collection('kyc').doc(userId), { userId, kycRef, status: 'verified', kycType: 'didit_auto', autoApproved: true, diditSessionId: sessionId, submittedAt: admin.firestore.FieldValue.serverTimestamp(), reviewedAt: admin.firestore.FieldValue.serverTimestamp(), updatedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
+      batch.update(db.collection('users').doc(userId), { kycStatus: 'verified', kycRef, kycVerifiedAt: admin.firestore.FieldValue.serverTimestamp(), inrtBalance: admin.firestore.FieldValue.increment(500), dailyLimit: 100000, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+      batch.set(db.collection('transactions').doc(`KYC_BONUS_${kycRef}`), { uid: userId, type: 'credit', amount: 500, note: 'KYC Verified — Welcome Bonus 🎉', cat: 'rewards', ref: `KYC_BONUS_${kycRef}`, status: 'success', createdAt: admin.firestore.FieldValue.serverTimestamp() });
       await batch.commit();
       console.log(`✅ AUTO-APPROVED: ${userId} | ${kycRef}`);
     } else if (isRejected) {
       const reason = body.rejection_reason || body.reason || 'Verification failed';
-      await db.collection('users').doc(userId).update({ kycStatus:'rejected', kycRejectionReason:reason, updatedAt:admin.firestore.FieldValue.serverTimestamp() });
-      await db.collection('kyc').doc(userId).set({ userId, status:'rejected', kycType:'didit_auto', rejectionReason:reason, updatedAt:admin.firestore.FieldValue.serverTimestamp() }, { merge:true });
+      await db.collection('users').doc(userId).update({ kycStatus: 'rejected', kycRejectionReason: reason, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+      await db.collection('kyc').doc(userId).set({ userId, status: 'rejected', kycType: 'didit_auto', rejectionReason: reason, updatedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
       console.log(`❌ AUTO-REJECTED: ${userId}`);
     }
   } catch (e) { console.error('/kyc/didit-webhook error:', e); }
@@ -974,52 +458,194 @@ app.post('/kyc/didit-webhook', async (req, res) => {
 app.get('/kyc/didit-status/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
-    if (!db) return res.json({ status:'unknown' });
+    if (!db) return res.json({ status: 'unknown' });
     const snap = await db.collection('users').doc(userId).get();
-    if (!snap.exists) return res.json({ status:'not_found' });
+    if (!snap.exists) return res.json({ status: 'not_found' });
     const kycStatus = snap.data().kycStatus || 'not_started';
-    if (['verified','rejected'].includes(kycStatus)) return res.json({ status:kycStatus });
+    if (['verified', 'rejected'].includes(kycStatus)) return res.json({ status: kycStatus });
     if (kycStatus === 'in_progress') {
       try {
-        const sessSnap = await db.collection('diditSessions').where('userId','==',userId).orderBy('createdAt','desc').limit(1).get();
+        const sessSnap = await db.collection('diditSessions').where('userId', '==', userId).orderBy('createdAt', 'desc').limit(1).get();
         if (!sessSnap.empty) {
           const sessionId = sessSnap.docs[0].data().sessionId;
           if (sessionId) {
-            const { status: hs, data } = await diditGet(`/v3/session/${sessionId}/`);
+            const { data } = await diditGet(`/v3/session/${sessionId}/`);
             const s = data?.status || '', d = data?.kyc_decision || '';
             const approved = ['Approved','APPROVED','approved','completed','verified'].includes(s) || ['Approved','APPROVED','approved'].includes(d);
             const rejected = ['Declined','DECLINED','declined','rejected','failed'].includes(s) || ['Declined','DECLINED','declined'].includes(d);
             if (approved) {
-              const kycRef = `KYC${Date.now()}${Math.random().toString(36).slice(2,5).toUpperCase()}`;
+              const kycRef = `KYC${Date.now()}${Math.random().toString(36).slice(2, 5).toUpperCase()}`;
               const batch  = db.batch();
-              batch.set(db.collection('kyc').doc(userId), { userId, kycRef, status:'verified', kycType:'didit_auto', autoApproved:true, diditSessionId:sessionId, submittedAt:admin.firestore.FieldValue.serverTimestamp(), reviewedAt:admin.firestore.FieldValue.serverTimestamp(), updatedAt:admin.firestore.FieldValue.serverTimestamp() }, { merge:true });
-              batch.update(db.collection('users').doc(userId), { kycStatus:'verified', kycRef, kycVerifiedAt:admin.firestore.FieldValue.serverTimestamp(), inrtBalance:admin.firestore.FieldValue.increment(500), dailyLimit:100000, updatedAt:admin.firestore.FieldValue.serverTimestamp() });
+              batch.set(db.collection('kyc').doc(userId), { userId, kycRef, status: 'verified', kycType: 'didit_auto', autoApproved: true, diditSessionId: sessionId, submittedAt: admin.firestore.FieldValue.serverTimestamp(), reviewedAt: admin.firestore.FieldValue.serverTimestamp(), updatedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
+              batch.update(db.collection('users').doc(userId), { kycStatus: 'verified', kycRef, kycVerifiedAt: admin.firestore.FieldValue.serverTimestamp(), inrtBalance: admin.firestore.FieldValue.increment(500), dailyLimit: 100000, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
               await batch.commit();
-              return res.json({ status:'verified', kycRef });
+              return res.json({ status: 'verified', kycRef });
             }
             if (rejected) {
-              await db.collection('users').doc(userId).update({ kycStatus:'rejected', updatedAt:admin.firestore.FieldValue.serverTimestamp() });
-              return res.json({ status:'rejected' });
+              await db.collection('users').doc(userId).update({ kycStatus: 'rejected', updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+              return res.json({ status: 'rejected' });
             }
           }
         }
       } catch (e) { console.warn('Didit poll:', e.message); }
     }
-    res.json({ status:kycStatus });
-  } catch (e) { res.status(500).json({ error:e.message }); }
+    res.json({ status: kycStatus });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/kyc/reset-status', async (req, res) => {
   try {
     const { userId } = req.body;
-    if (!userId || !db) return res.status(400).json({ error:'userId required' });
+    if (!userId || !db) return res.status(400).json({ error: 'userId required' });
     const snap = await db.collection('users').doc(userId).get();
-    if (!snap.exists) return res.status(404).json({ error:'User not found' });
-    if (snap.data().kycStatus === 'verified') return res.json({ success:true, message:'Already verified' });
-    await db.collection('users').doc(userId).update({ kycStatus:'not_started', updatedAt:admin.firestore.FieldValue.serverTimestamp() });
-    await db.collection('kyc').doc(userId).set({ status:'not_started', updatedAt:admin.firestore.FieldValue.serverTimestamp() }, { merge:true });
-    res.json({ success:true });
-  } catch (e) { res.status(500).json({ error:e.message }); }
+    if (!snap.exists) return res.status(404).json({ error: 'User not found' });
+    if (snap.data().kycStatus === 'verified') return res.json({ success: true, message: 'Already verified' });
+    await db.collection('users').doc(userId).update({ kycStatus: 'not_started', updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+    await db.collection('kyc').doc(userId).set({ status: 'not_started', updatedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Manual KYC (fallback) ─────────────────────────────────────
+app.post('/kyc/submit', async (req, res) => {
+  try {
+    const { userId, fullName, dob, pan, panPhotoBase64, selfieBase64 } = req.body;
+    if (!userId || !fullName || !dob || !pan) return res.status(400).json({ error: 'userId, fullName, dob and pan required' });
+    if (!db) return res.status(500).json({ error: 'Database not connected' });
+    const panClean = pan.toUpperCase().trim();
+    if (!/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(panClean)) return res.status(400).json({ error: 'Invalid PAN format' });
+    const birth = new Date(dob), today = new Date();
+    let age = today.getFullYear() - birth.getFullYear();
+    const m = today.getMonth() - birth.getMonth();
+    if (m < 0 || (m === 0 && today.getDate() < birth.getDate())) age--;
+    if (isNaN(age) || age < 18) return res.status(400).json({ error: `You must be 18 or older. Your age: ${age}` });
+    const panMasked = panClean.slice(0, 2) + 'XXX' + panClean.slice(5);
+    const dupSnap   = await db.collection('kyc').where('panMasked', '==', panMasked).where('status', 'in', ['pending', 'verified']).limit(2).get();
+    if (dupSnap.docs.some(d => d.id !== userId)) return res.status(400).json({ error: 'This PAN is already registered.' });
+    const existing = await db.collection('kyc').doc(userId).get();
+    if (existing.exists && existing.data().status === 'verified') return res.status(400).json({ error: 'Already verified.' });
+    await db.collection('kyc').doc(userId).set({ userId, fullName: fullName.trim(), dob, pan: panClean, panMasked, kycType: 'manual_pan', status: 'pending', submittedAt: admin.firestore.FieldValue.serverTimestamp(), updatedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
+    await db.collection('users').doc(userId).update({ kycStatus: 'pending', updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+    res.json({ success: true, message: 'KYC submitted. We will verify within 24 hours.' });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/kyc/status/:userId', async (req, res) => {
+  try {
+    if (!db) return res.json({ status: 'unknown' });
+    const snap = await db.collection('kyc').doc(req.params.userId).get();
+    if (!snap.exists) return res.json({ status: 'not_started' });
+    const d = snap.data();
+    res.json({ status: d.status, kycRef: d.kycRef || null, rejectionReason: d.rejectionReason || null, submittedAt: d.submittedAt?.toDate?.()?.toISOString() || null });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/kyc/admin/list', async (req, res) => {
+  try {
+    if (req.query.adminKey !== process.env.ADMIN_KEY) return res.status(403).json({ error: 'Unauthorized' });
+    if (!db) return res.json({ submissions: [] });
+    const { status = 'pending' } = req.query;
+    let query = db.collection('kyc').orderBy('submittedAt', 'desc').limit(100);
+    if (status !== 'all') query = query.where('status', '==', status);
+    const snap = await query.get();
+    res.json({ submissions: snap.docs.map(d => ({ id: d.id, ...d.data(), submittedAt: d.data().submittedAt?.toDate?.()?.toISOString() || null, reviewedAt: d.data().reviewedAt?.toDate?.()?.toISOString() || null })), count: snap.docs.length });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/kyc/admin/review', async (req, res) => {
+  try {
+    const { userId, action, reason, adminKey } = req.body;
+    if (adminKey !== process.env.ADMIN_KEY) return res.status(403).json({ error: 'Unauthorized' });
+    if (!['approve', 'reject'].includes(action)) return res.status(400).json({ error: 'action must be approve or reject' });
+    if (!db) return res.status(500).json({ error: 'Firebase not connected' });
+    const newStatus = action === 'approve' ? 'verified' : 'rejected';
+    const kycRef    = action === 'approve' ? `KYC${Date.now()}${Math.random().toString(36).slice(2, 5).toUpperCase()}` : null;
+    await db.collection('kyc').doc(userId).update({ status: newStatus, kycRef: kycRef || null, rejectionReason: reason || null, reviewedAt: admin.firestore.FieldValue.serverTimestamp(), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+    await db.collection('users').doc(userId).update({ kycStatus: newStatus, kycRef: kycRef || null, kycReviewedAt: admin.firestore.FieldValue.serverTimestamp(), ...(action === 'approve' && { inrtBalance: admin.firestore.FieldValue.increment(500), kycVerifiedAt: admin.firestore.FieldValue.serverTimestamp(), dailyLimit: 100000 }), ...(action === 'reject' && { kycRejectionReason: reason || 'Documents could not be verified' }), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+    res.json({ success: true, userId, status: newStatus, kycRef });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ══════════════════════════════════════════════════════════════
+//  ADMIN ROUTES
+// ══════════════════════════════════════════════════════════════
+app.get('/admin/stats', async (req, res) => {
+  try {
+    if (req.query.adminKey !== process.env.ADMIN_KEY) return res.status(403).json({ error: 'Unauthorized' });
+    if (!db) return res.json({ stats: {} });
+    const [usersSnap, txSnap, kycSnap, earningsSnap] = await Promise.all([
+      db.collection('users').get(),
+      db.collection('transactions').orderBy('createdAt', 'desc').limit(500).get(),
+      db.collection('kyc').get(),
+      db.collection('businessWallet').doc('earnings').get(),
+    ]);
+    const users   = usersSnap.docs.map(d => d.data());
+    const kycDocs = kycSnap.docs.map(d => d.data());
+    const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
+    const recentTxs = txSnap.docs.map(d => d.data()).filter(tx => tx.createdAt?.toMillis?.() > thirtyDaysAgo);
+    const earnings  = earningsSnap.exists ? earningsSnap.data() : {};
+    const totalINRT = await global.getOnChainTotalSupply();
+    res.json({ stats: {
+      totalUsers:    users.length,
+      kycVerified:   kycDocs.filter(k => k.status === 'verified').length,
+      kycPending:    kycDocs.filter(k => k.status === 'pending').length,
+      kycRejected:   kycDocs.filter(k => k.status === 'rejected').length,
+      totalBalance:  Math.round(users.reduce((s, u) => s + (u.balance || 0), 0)),
+      totalINRTSupply: totalINRT,
+      contractAddress: process.env.INRT_CONTRACT_ADDRESS || null,
+      last30Days: { txVolume: Math.round(recentTxs.filter(t => t.type === 'debit').reduce((s, t) => s + (t.amount || 0), 0)), txCount: recentTxs.length },
+      earnings: { total: earnings.balance || 0, transferEarnings: earnings.transferEarnings || 0, rechargeEarnings: earnings.rechargeEarnings || 0, billsEarnings: earnings.billsEarnings || 0 },
+    }});
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/admin/users', async (req, res) => {
+  try {
+    if (req.query.adminKey !== process.env.ADMIN_KEY) return res.status(403).json({ error: 'Unauthorized' });
+    if (!db) return res.json({ users: [] });
+    const snap  = await db.collection('users').orderBy('createdAt', 'desc').limit(200).get();
+    const users = snap.docs.map(d => ({ id: d.id, name: d.data().name || '', phone: d.data().phone || '', balance: d.data().balance || 0, kycStatus: d.data().kycStatus || 'not_started', inrtBalance: d.data().inrtBalance || 0, polygonWallet: d.data().polygonWallet || null, createdAt: d.data().createdAt?.toDate?.()?.toISOString() || null }));
+    res.json({ users, count: users.length });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/payment/admin-credit', async (req, res) => {
+  try {
+    const { userId, amount, note, adminKey } = req.body;
+    if (adminKey !== process.env.ADMIN_KEY) return res.status(403).json({ error: 'Unauthorized' });
+    if (!userId || !amount || !db) return res.status(400).json({ error: 'userId and amount required' });
+    const ref = genTxId('ADM');
+    const batch = db.batch();
+    batch.update(db.collection('users').doc(userId), { balance: admin.firestore.FieldValue.increment(parseFloat(amount)), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+    batch.set(db.collection('transactions').doc(ref), { uid: userId, type: 'credit', amount: parseFloat(amount), note: note || 'Admin credit', cat: 'add_money', ref, status: 'success', createdAt: admin.firestore.FieldValue.serverTimestamp() });
+    await batch.commit();
+    res.json({ success: true, ref, amount });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/payment/refund', async (req, res) => {
+  try {
+    const { txId, reason, adminKey } = req.body;
+    if (adminKey !== process.env.ADMIN_KEY || !db) return res.status(403).json({ error: 'Unauthorized' });
+    const tSnap = await db.collection('transactions').doc(txId).get();
+    if (!tSnap.exists) return res.status(404).json({ error: 'Transaction not found' });
+    if (tSnap.data().status === 'refunded') return res.status(400).json({ error: 'Already refunded' });
+    const tx = tSnap.data(), refundRef = genTxId('REF');
+    const batch = db.batch();
+    batch.update(db.collection('users').doc(tx.uid), { balance: admin.firestore.FieldValue.increment(tx.amount), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+    batch.update(db.collection('transactions').doc(txId), { status: 'refunded', refundRef });
+    batch.set(db.collection('transactions').doc(refundRef), { uid: tx.uid, type: 'credit', amount: tx.amount, note: `Refund: ${reason || 'Customer request'}`, cat: 'refund', ref: refundRef, status: 'success', originalTxId: txId, createdAt: admin.firestore.FieldValue.serverTimestamp() });
+    await batch.commit();
+    res.json({ success: true, refundRef, amount: tx.amount });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/payment/balance/:userId', async (req, res) => {
+  try {
+    if (!db) return res.json({ balance: 0 });
+    const snap = await db.collection('users').doc(req.params.userId).get();
+    res.json({ balance: snap.exists ? snap.data().balance || 0 : 0 });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ══════════════════════════════════════════════════════════════
@@ -1028,15 +654,15 @@ app.post('/kyc/reset-status', async (req, res) => {
 function genInrtAddress() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   let id = '';
-  for (let i=0; i<12; i++) id += chars[Math.floor(Math.random()*chars.length)];
-  return `INRT-${id.slice(0,4)}-${id.slice(4,8)}-${id.slice(8,12)}`;
+  for (let i = 0; i < 12; i++) id += chars[Math.floor(Math.random() * chars.length)];
+  return `INRT-${id.slice(0, 4)}-${id.slice(4, 8)}-${id.slice(8, 12)}`;
 }
 
 app.get('/inrt/wallet/:userId', async (req, res) => {
   try {
-    if (!db) return res.status(500).json({ error:'DB not connected' });
+    if (!db) return res.status(500).json({ error: 'DB not connected' });
     const snap = await db.collection('users').doc(req.params.userId).get();
-    if (!snap.exists) return res.status(404).json({ error:'User not found' });
+    if (!snap.exists) return res.status(404).json({ error: 'User not found' });
     const user = snap.data();
     let inrtAddress = user.inrtAddress;
     if (!inrtAddress) {
@@ -1047,127 +673,232 @@ app.get('/inrt/wallet/:userId', async (req, res) => {
         if (!dup.exists) unique = true;
       }
       await db.collection('users').doc(req.params.userId).update({ inrtAddress });
-      await db.collection('inrtAddressIndex').doc(inrtAddress).set({ userId:req.params.userId, createdAt:admin.firestore.FieldValue.serverTimestamp() });
+      await db.collection('inrtAddressIndex').doc(inrtAddress).set({ userId: req.params.userId, createdAt: admin.firestore.FieldValue.serverTimestamp() });
     }
-    res.json({ success:true, inrtAddress, inrtBalance:user.inrtBalance||0, inrBalance:user.balance||0, name:user.name||'INRT User' });
-  } catch (e) { res.status(500).json({ error:e.message }); }
+    res.json({ success: true, inrtAddress, inrtBalance: user.inrtBalance || 0, inrBalance: user.balance || 0, name: user.name || 'INRT User', polygonWallet: user.polygonWallet || null });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.get('/inrt/lookup/:address', async (req, res) => {
   try {
-    if (!db) return res.status(500).json({ error:'DB not connected' });
+    if (!db) return res.status(500).json({ error: 'DB not connected' });
     const address = req.params.address.toUpperCase().trim();
     const idxSnap = await db.collection('inrtAddressIndex').doc(address).get();
-    if (!idxSnap.exists) return res.status(404).json({ error:'INRT address not found. Check and try again.' });
+    if (!idxSnap.exists) return res.status(404).json({ error: 'INRT address not found. Check and try again.' });
     const uSnap = await db.collection('users').doc(idxSnap.data().userId).get();
-    if (!uSnap.exists) return res.status(404).json({ error:'Wallet not found' });
+    if (!uSnap.exists) return res.status(404).json({ error: 'Wallet not found' });
     const u = uSnap.data();
-    res.json({ success:true, inrtAddress:address, name:u.name||'INRT User', verified:u.kycStatus==='verified' });
-  } catch (e) { res.status(500).json({ error:e.message }); }
+    res.json({ success: true, inrtAddress: address, name: u.name || 'INRT User', verified: u.kycStatus === 'verified' });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/inrt/convert', async (req, res) => {
   try {
     const { userId, direction, amount } = req.body;
-    if (!userId || !direction || !amount || amount<=0 || !db) return res.status(400).json({ error:'Missing fields' });
+    if (!userId || !direction || !amount || amount <= 0 || !db) return res.status(400).json({ error: 'Missing fields' });
     const snap = await db.collection('users').doc(userId).get();
-    if (!snap.exists) return res.status(404).json({ error:'User not found' });
+    if (!snap.exists) return res.status(404).json({ error: 'User not found' });
     const user = snap.data();
-    const amt = parseFloat(amount);
-    const ref = genTxId('CNV');
+    const amt  = parseFloat(amount);
+    const ref  = genTxId('CNV');
     if (direction === 'inr_to_inrt') {
-      if ((user.balance||0) < amt) return res.status(402).json({ error:'Insufficient ₹ balance' });
-      await db.collection('users').doc(userId).update({ balance:admin.firestore.FieldValue.increment(-amt), inrtBalance:admin.firestore.FieldValue.increment(amt), updatedAt:admin.firestore.FieldValue.serverTimestamp() });
-      await db.collection('transactions').add({ uid:userId, type:'convert', amount:amt, note:`Converted ₹${amt} → ${amt} INRT`, cat:'crypto', ref, status:'success', direction, createdAt:admin.firestore.FieldValue.serverTimestamp() });
+      if ((user.balance || 0) < amt) return res.status(402).json({ error: 'Insufficient ₹ balance' });
+      await db.collection('users').doc(userId).update({ balance: admin.firestore.FieldValue.increment(-amt), inrtBalance: admin.firestore.FieldValue.increment(amt), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+      await db.collection('transactions').add({ uid: userId, type: 'convert', amount: amt, note: `Converted ₹${amt} → ${amt} INRT`, cat: 'crypto', ref, status: 'success', direction, createdAt: admin.firestore.FieldValue.serverTimestamp() });
     } else if (direction === 'inrt_to_inr') {
-      if ((user.inrtBalance||0) < amt) return res.status(402).json({ error:'Insufficient INRT balance' });
-      await db.collection('users').doc(userId).update({ balance:admin.firestore.FieldValue.increment(amt), inrtBalance:admin.firestore.FieldValue.increment(-amt), updatedAt:admin.firestore.FieldValue.serverTimestamp() });
-      await db.collection('transactions').add({ uid:userId, type:'convert', amount:amt, note:`Converted ${amt} INRT → ₹${amt}`, cat:'crypto', ref, status:'success', direction, createdAt:admin.firestore.FieldValue.serverTimestamp() });
-    } else return res.status(400).json({ error:'Invalid direction' });
-    res.json({ success:true, ref, amount:amt, direction });
-  } catch (e) { res.status(500).json({ error:e.message }); }
+      if ((user.inrtBalance || 0) < amt) return res.status(402).json({ error: 'Insufficient INRT balance' });
+      await db.collection('users').doc(userId).update({ balance: admin.firestore.FieldValue.increment(amt), inrtBalance: admin.firestore.FieldValue.increment(-amt), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+      await db.collection('transactions').add({ uid: userId, type: 'convert', amount: amt, note: `Converted ${amt} INRT → ₹${amt}`, cat: 'crypto', ref, status: 'success', direction, createdAt: admin.firestore.FieldValue.serverTimestamp() });
+    } else return res.status(400).json({ error: 'Invalid direction' });
+    res.json({ success: true, ref, amount: amt, direction });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/inrt/send', async (req, res) => {
   try {
     const { fromUserId, toAddress, amount, note } = req.body;
-    if (!fromUserId || !toAddress || !amount || amount<=0 || !db) return res.status(400).json({ error:'Missing fields' });
+    if (!fromUserId || !toAddress || !amount || amount <= 0 || !db) return res.status(400).json({ error: 'Missing fields' });
     const cleanAddress = toAddress.toUpperCase().trim();
     const amt = parseFloat(amount);
     const idxSnap = await db.collection('inrtAddressIndex').doc(cleanAddress).get();
-    if (!idxSnap.exists) return res.status(404).json({ error:'INRT address not found' });
+    if (!idxSnap.exists) return res.status(404).json({ error: 'INRT address not found' });
     const toUserId = idxSnap.data().userId;
-    if (toUserId === fromUserId) return res.status(400).json({ error:'Cannot send to your own wallet' });
+    if (toUserId === fromUserId) return res.status(400).json({ error: 'Cannot send to your own wallet' });
     const fromSnap = await db.collection('users').doc(fromUserId).get();
-    if (!fromSnap.exists) return res.status(404).json({ error:'Sender not found' });
+    if (!fromSnap.exists) return res.status(404).json({ error: 'Sender not found' });
     const fromUser = fromSnap.data();
-    if ((fromUser.inrtBalance||0) < amt) return res.status(402).json({ error:'Insufficient INRT balance' });
+    if ((fromUser.inrtBalance || 0) < amt) return res.status(402).json({ error: 'Insufficient INRT balance' });
     const toSnap = await db.collection('users').doc(toUserId).get();
     const toUser = toSnap.data();
-    const ref = `INRTX${Date.now()}${Math.random().toString(36).slice(2,6).toUpperCase()}`;
+    const ref = `INRTX${Date.now()}${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
     const startedAt = Date.now();
-    await db.collection('users').doc(fromUserId).update({ inrtBalance:admin.firestore.FieldValue.increment(-amt), updatedAt:admin.firestore.FieldValue.serverTimestamp() });
-    await db.collection('inrtTransfers').doc(ref).set({ ref, fromUserId, toUserId, fromAddress:fromUser.inrtAddress||'', toAddress:cleanAddress, amount:amt, note:note||'', status:'processing', startedAt, createdAt:admin.firestore.FieldValue.serverTimestamp() });
-    await db.collection('transactions').add({ uid:fromUserId, type:'debit', amount:amt, note:`INRT sent to ${toUser.name||cleanAddress}`, cat:'crypto', ref, status:'processing', toAddress:cleanAddress, createdAt:admin.firestore.FieldValue.serverTimestamp() });
-    const processingTime = 1500 + Math.floor(Math.random()*2500);
+    await db.collection('users').doc(fromUserId).update({ inrtBalance: admin.firestore.FieldValue.increment(-amt), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+    await db.collection('inrtTransfers').doc(ref).set({ ref, fromUserId, toUserId, fromAddress: fromUser.inrtAddress || '', toAddress: cleanAddress, amount: amt, note: note || '', status: 'processing', startedAt, createdAt: admin.firestore.FieldValue.serverTimestamp() });
+    await db.collection('transactions').add({ uid: fromUserId, type: 'debit', amount: amt, note: `INRT sent to ${toUser.name || cleanAddress}`, cat: 'crypto', ref, status: 'processing', toAddress: cleanAddress, createdAt: admin.firestore.FieldValue.serverTimestamp() });
+    const processingTime = 1500 + Math.floor(Math.random() * 2500);
     setTimeout(async () => {
       try {
         const completedAt = Date.now();
         const durationMs  = completedAt - startedAt;
         const batch = db.batch();
-        batch.update(db.collection('users').doc(toUserId), { inrtBalance:admin.firestore.FieldValue.increment(amt), totalReceived:admin.firestore.FieldValue.increment(amt), updatedAt:admin.firestore.FieldValue.serverTimestamp() });
-        batch.set(db.collection('transactions').doc(ref+'_RX'), { uid:toUserId, type:'credit', amount:amt, note:`INRT received from ${fromUser.name||'INRT User'}`, cat:'crypto', ref:ref+'_RX', status:'success', fromAddress:fromUser.inrtAddress||'', createdAt:admin.firestore.FieldValue.serverTimestamp() });
-        batch.update(db.collection('inrtTransfers').doc(ref), { status:'completed', completedAt, durationMs });
+        batch.update(db.collection('users').doc(toUserId), { inrtBalance: admin.firestore.FieldValue.increment(amt), totalReceived: admin.firestore.FieldValue.increment(amt), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+        batch.set(db.collection('transactions').doc(ref + '_RX'), { uid: toUserId, type: 'credit', amount: amt, note: `INRT received from ${fromUser.name || 'INRT User'}`, cat: 'crypto', ref: ref + '_RX', status: 'success', fromAddress: fromUser.inrtAddress || '', createdAt: admin.firestore.FieldValue.serverTimestamp() });
+        batch.update(db.collection('inrtTransfers').doc(ref), { status: 'completed', completedAt, durationMs });
         await batch.commit();
-        const sSnap = await db.collection('transactions').where('ref','==',ref).where('uid','==',fromUserId).limit(1).get();
-        if (!sSnap.empty) await sSnap.docs[0].ref.update({ status:'success', durationMs });
+        const sSnap = await db.collection('transactions').where('ref', '==', ref).where('uid', '==', fromUserId).limit(1).get();
+        if (!sSnap.empty) await sSnap.docs[0].ref.update({ status: 'success', durationMs });
         console.log(`✅ INRT transfer: ${ref} | ${amt} INRT | ${durationMs}ms`);
       } catch (e) { console.error('INRT transfer complete error:', e); }
     }, processingTime);
-    res.json({ success:true, ref, amount:amt, toAddress:cleanAddress, toName:toUser.name||'INRT User', status:'processing', estimatedSeconds:Math.ceil(processingTime/1000) });
-  } catch (e) { res.status(500).json({ error:e.message }); }
+    res.json({ success: true, ref, amount: amt, toAddress: cleanAddress, toName: toUser.name || 'INRT User', status: 'processing', estimatedSeconds: Math.ceil(processingTime / 1000) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.get('/inrt/transfer/:ref', async (req, res) => {
   try {
-    if (!db) return res.json({ status:'unknown' });
+    if (!db) return res.json({ status: 'unknown' });
     const snap = await db.collection('inrtTransfers').doc(req.params.ref).get();
-    if (!snap.exists) return res.status(404).json({ error:'Transfer not found' });
+    if (!snap.exists) return res.status(404).json({ error: 'Transfer not found' });
     const d = snap.data();
-    res.json({ ref:d.ref, status:d.status, amount:d.amount, fromAddress:d.fromAddress, toAddress:d.toAddress, note:d.note, startedAt:d.startedAt, completedAt:d.completedAt||null, durationMs:d.durationMs||(d.status==='processing'?Date.now()-d.startedAt:null), elapsedMs:Date.now()-d.startedAt });
-  } catch (e) { res.status(500).json({ error:e.message }); }
+    res.json({ ref: d.ref, status: d.status, amount: d.amount, fromAddress: d.fromAddress, toAddress: d.toAddress, note: d.note, startedAt: d.startedAt, completedAt: d.completedAt || null, durationMs: d.durationMs || (d.status === 'processing' ? Date.now() - d.startedAt : null), elapsedMs: Date.now() - d.startedAt });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.get('/inrt/history/:userId', async (req, res) => {
   try {
-    if (!db) return res.json({ transactions:[] });
-    const snap = await db.collection('transactions').where('uid','==',req.params.userId).where('cat','==','crypto').orderBy('createdAt','desc').limit(50).get();
-    res.json({ transactions:snap.docs.map(d => ({ id:d.id, ...d.data(), createdAt:d.data().createdAt?.toDate?.()?.toISOString()||null })) });
-  } catch (e) { res.status(500).json({ error:e.message }); }
+    if (!db) return res.json({ transactions: [] });
+    const snap = await db.collection('transactions').where('uid', '==', req.params.userId).where('cat', '==', 'crypto').orderBy('createdAt', 'desc').limit(50).get();
+    res.json({ transactions: snap.docs.map(d => ({ id: d.id, ...d.data(), createdAt: d.data().createdAt?.toDate?.()?.toISOString() || null })) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ══════════════════════════════════════════════════════════════
-//  CHECKOUT — BUY INRT VIA RAZORPAY
+//  EZYTM RECHARGE
 // ══════════════════════════════════════════════════════════════
-app.post('/checkout/verify-inrt-purchase', async (req, res) => {
+app.get('/recharge/operator/:mobile', async (req, res) => {
   try {
-    const { razorpay_order_id, razorpay_payment_id, razorpay_signature, userId, amount } = req.body;
-    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature || !userId || !amount)
-      return res.status(400).json({ error:'Missing fields' });
-    if (!db) return res.status(500).json({ error:'DB not connected' });
-    const expected = crypto.createHmac('sha256', process.env.RAZORPAY_KEY_SECRET||'').update(`${razorpay_order_id}|${razorpay_payment_id}`).digest('hex');
-    if (expected !== razorpay_signature) return res.status(400).json({ error:'Invalid payment signature' });
-    const existing = await db.collection('transactions').where('ref','==',`INRT_BUY_${razorpay_payment_id}`).limit(1).get();
-    if (!existing.empty) return res.json({ success:true, message:'Already credited', duplicate:true });
-    const amt = parseFloat(amount);
-    const ref = `INRT_BUY_${razorpay_payment_id}`;
-    const batch = db.batch();
-    batch.update(db.collection('users').doc(userId), { inrtBalance:admin.firestore.FieldValue.increment(amt), totalReceived:admin.firestore.FieldValue.increment(amt), updatedAt:admin.firestore.FieldValue.serverTimestamp() });
-    batch.set(db.collection('transactions').doc(ref), { uid:userId, type:'credit', amount:amt, note:`Bought ${amt.toLocaleString()} INRT via Razorpay`, cat:'crypto', ref, status:'success', method:'razorpay', razorpayOrderId:razorpay_order_id, razorpayPaymentId:razorpay_payment_id, createdAt:admin.firestore.FieldValue.serverTimestamp() });
-    await batch.commit();
-    console.log(`✅ INRT purchased: ${amt} → ${userId}`);
-    res.json({ success:true, amount:amt, ref, message:`${amt.toLocaleString()} INRT credited` });
-  } catch (e) { console.error('/checkout/verify-inrt-purchase:', e); res.status(500).json({ error:e.message }); }
+    const mobile = req.params.mobile.replace(/\D/g, '');
+    if (mobile.length !== 10) return res.status(400).json({ error: 'Invalid mobile number' });
+    const AIRTEL = ['7290','7291','7292','7293','7294','7295','7296','7297','7298','7299','8130','8131','8132','8133','8134','8376','8527','8800','8801','8802','8803','8804','9711','9810','9811','9818','9891','9899','9971'];
+    const VI     = ['7016','7041','7042','7043','7044','7045','7046','7047','7048','7049','7208','7209','8160','8161','8758','9408','9409','9898','9974'];
+    const BSNL   = ['9436','9441','9442','9443','9444','9445','9446','9447','9448','9449','9863','9864','9865','9866','9867','9868','9869','9870'];
+    let operator = 'JIO';
+    if (AIRTEL.some(p => mobile.startsWith(p))) operator = 'AIRTEL';
+    else if (VI.some(p => mobile.startsWith(p))) operator = 'VI';
+    else if (BSNL.some(p => mobile.startsWith(p))) operator = 'BSNL';
+    else if (mobile.startsWith('6')) operator = 'JIO';
+    else if (['70','71','72','81','82','83','90','91','92'].some(p => mobile.startsWith(p))) operator = 'AIRTEL';
+    else if (['73','74','75','84','85','86','96','97','98','99'].some(p => mobile.startsWith(p))) operator = 'JIO';
+    else if (['76','77','78','87','88','89'].some(p => mobile.startsWith(p))) operator = 'VI';
+    else if (['79','93','94','95'].some(p => mobile.startsWith(p))) operator = 'BSNL';
+    res.json({ mobile, operator, circle: 'UNKNOWN' });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/recharge/plans', async (req, res) => {
+  try {
+    const { operator } = req.query;
+    const token = process.env.EZYTM_API_TOKEN, member = process.env.EZYTM_MEMBER_ID;
+    if (token && member) {
+      try {
+        const url = new URL('https://newapi.ezytm.in/Service/BrowsePlan');
+        url.searchParams.append('ApiToken', token);
+        url.searchParams.append('MemberId', member);
+        url.searchParams.append('OpId', operator || 'JIO');
+        const r    = await fetch(url.toString(), { signal: AbortSignal.timeout(8000) });
+        const data = JSON.parse(await r.text());
+        if (data && (data.DATA || data.data || Array.isArray(data)))
+          return res.json({ success: true, plans: data.DATA || data.data || data, source: 'live' });
+      } catch (e) { console.warn('Ezytm plans fallback:', e.message); }
+    }
+    const fallback = [
+      { id:'p1', amount:179,  validity:'28 days',  data:'2GB/day',   calls:'Unlimited', popular:false },
+      { id:'p2', amount:239,  validity:'28 days',  data:'2GB/day',   calls:'Unlimited', popular:true  },
+      { id:'p3', amount:299,  validity:'28 days',  data:'3GB/day',   calls:'Unlimited', popular:false },
+      { id:'p4', amount:479,  validity:'56 days',  data:'2.5GB/day', calls:'Unlimited', popular:false },
+      { id:'p5', amount:599,  validity:'84 days',  data:'2GB/day',   calls:'Unlimited', popular:true  },
+      { id:'p6', amount:899,  validity:'84 days',  data:'3GB/day',   calls:'Unlimited', popular:false },
+      { id:'p7', amount:1199, validity:'365 days', data:'2.5GB/day', calls:'Unlimited', popular:false },
+      { id:'p8', amount:2999, validity:'365 days', data:'3GB/day',   calls:'Unlimited', popular:false },
+    ];
+    res.json({ success: true, plans: fallback, source: 'fallback' });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/recharge/do', async (req, res) => {
+  try {
+    const { userId, mobile, operator, amount, rechargeType } = req.body;
+    if (!userId || !mobile || !operator || !amount) return res.status(400).json({ error: 'userId, mobile, operator, amount required' });
+    const token = process.env.EZYTM_API_TOKEN, member = process.env.EZYTM_MEMBER_ID;
+    if (!token || !member) return res.status(500).json({ error: 'EZYTM_API_TOKEN and EZYTM_MEMBER_ID not set' });
+    if (!db) return res.status(500).json({ error: 'Database not connected' });
+    const userSnap = await db.collection('users').doc(userId).get();
+    if (!userSnap.exists) return res.status(404).json({ error: 'User not found' });
+    if ((userSnap.data().balance || 0) < amount) return res.status(402).json({ error: 'Insufficient balance' });
+    const orderId = genTxId('RCH'), pts = Math.floor(amount / 10);
+    await db.collection('users').doc(userId).update({ balance: admin.firestore.FieldValue.increment(-amount), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+    let ezytmResponse;
+    try {
+      const url = new URL('https://newapi.ezytm.in/Service/Recharge2');
+      url.searchParams.append('ApiToken', token);
+      url.searchParams.append('MobileNo', mobile.replace(/\D/g, ''));
+      url.searchParams.append('Amount', amount.toString());
+      url.searchParams.append('OpId', operator);
+      url.searchParams.append('RefTxnId', orderId);
+      const text = await (await fetch(url.toString(), { signal: AbortSignal.timeout(20000) })).text();
+      try { ezytmResponse = JSON.parse(text); }
+      catch {
+        await db.collection('users').doc(userId).update({ balance: admin.firestore.FieldValue.increment(amount), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+        return res.status(500).json({ error: 'Invalid response from Ezytm. Balance refunded.' });
+      }
+    } catch (fetchErr) {
+      await db.collection('users').doc(userId).update({ balance: admin.firestore.FieldValue.increment(amount), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+      return res.status(500).json({ error: 'Recharge service unreachable. Balance refunded.' });
+    }
+    const status = String(ezytmResponse.STATUS || '').trim();
+    const txnId  = ezytmResponse.OPTXNID || ezytmResponse.TXNNO || orderId;
+    const message = ezytmResponse.MESSAGE || '';
+    if (status === '3') {
+      await db.collection('users').doc(userId).update({ balance: admin.firestore.FieldValue.increment(amount), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+      await db.collection('transactions').add({ uid: userId, type: 'debit', amount, note: `Failed recharge: ${operator} ${mobile}`, cat: 'recharge', ref: orderId, status: 'failed', mobile, operator, createdAt: admin.firestore.FieldValue.serverTimestamp() });
+      return res.status(400).json({ success: false, error: message || 'Recharge failed. Balance refunded.' });
+    }
+    const txStatus = status === '1' ? 'success' : 'pending';
+    await db.collection('transactions').add({ uid: userId, type: 'debit', amount, note: `${operator} ${rechargeType === 'D' ? 'DTH' : rechargeType === 'T' ? 'Postpaid' : 'Prepaid'} — ${mobile}`, cat: 'recharge', ref: orderId, status: txStatus, mobile, operator, ezytmTxnId: txnId, inrtBalance: status === '1' ? pts : 0, createdAt: admin.firestore.FieldValue.serverTimestamp() });
+    if (status === '1') await db.collection('users').doc(userId).update({ inrtBalance: admin.firestore.FieldValue.increment(pts), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+    res.json({ success: status === '1', pending: status === '2', orderId, txnId, amount, mobile, operator, status: txStatus, inrtBalance: status === '1' ? pts : 0, message: status === '1' ? `₹${amount} recharge done for ${mobile}` : status === '2' ? 'Processing…' : message });
+  } catch (e) { res.status(500).json({ error: e.message || 'Recharge failed' }); }
+});
+
+app.get('/recharge/status/:orderId', async (req, res) => {
+  try {
+    const token = process.env.EZYTM_API_TOKEN;
+    const url = new URL('https://newapi.ezytm.in/service/statuscheck');
+    url.searchParams.append('ApiToken', token);
+    url.searchParams.append('RefTxnId', req.params.orderId);
+    const text = await (await fetch(url.toString(), { signal: AbortSignal.timeout(10000) })).text();
+    let data; try { data = JSON.parse(text); } catch { return res.status(500).json({ error: 'Invalid Ezytm response' }); }
+    const status = String(data.STATUS || '').trim();
+    const txnId  = data.OPTXNID || data.TXNNO || '';
+    if (status === '1' && db) {
+      const snap = await db.collection('transactions').where('ref', '==', req.params.orderId).limit(1).get();
+      if (!snap.empty && snap.docs[0].data().status !== 'success') {
+        const tx = snap.docs[0].data();
+        await snap.docs[0].ref.update({ status: 'success', ezytmTxnId: txnId, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+        await db.collection('users').doc(tx.uid).update({ inrtBalance: admin.firestore.FieldValue.increment(Math.floor(tx.amount / 10)), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+      }
+    }
+    if (status === '3' && db) {
+      const snap = await db.collection('transactions').where('ref', '==', req.params.orderId).limit(1).get();
+      if (!snap.empty && snap.docs[0].data().status === 'pending') {
+        const tx = snap.docs[0].data();
+        await db.collection('users').doc(tx.uid).update({ balance: admin.firestore.FieldValue.increment(tx.amount), updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+        await snap.docs[0].ref.update({ status: 'failed', updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+        await db.collection('transactions').add({ uid: tx.uid, type: 'credit', amount: tx.amount, note: `Refund: Recharge failed for ${tx.mobile}`, cat: 'refund', ref: `REF_${req.params.orderId}`, status: 'success', createdAt: admin.firestore.FieldValue.serverTimestamp() });
+      }
+    }
+    res.json({ orderId: req.params.orderId, status: status === '1' ? 'success' : status === '3' ? 'failed' : 'pending', txnId, message: data.MESSAGE || '' });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ══════════════════════════════════════════════════════════════
@@ -1175,11 +906,12 @@ app.post('/checkout/verify-inrt-purchase', async (req, res) => {
 // ══════════════════════════════════════════════════════════════
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`\n🚀 INRT API on port ${PORT}`);
-  console.log(`   Firebase  : ${adminAuth                        ? '✅' : '❌'}`);
-  console.log(`   Razorpay  : ${process.env.RAZORPAY_KEY_ID      ? '✅' : '❌'}`);
-  console.log(`   Resend    : ${process.env.RESEND_API_KEY        ? '✅' : '❌'}`);
-  console.log(`   Cashfree  : ${process.env.CASHFREE_APP_ID       ? '✅' : '❌'}`);
-  console.log(`   Didit     : ${process.env.DIDIT_API_KEY         ? '✅' : '❌'}`);
-  console.log(`   Ezytm     : ${process.env.EZYTM_API_TOKEN       ? '✅' : '❌'}`);
-  console.log(`   Admin Key : ${process.env.ADMIN_KEY             ? '✅' : '❌'}\n`);
+  console.log(`   Firebase      : ${adminAuth                              ? '✅' : '❌'}`);
+  console.log(`   Razorpay      : ${process.env.RAZORPAY_KEY_ID            ? '✅' : '❌'}`);
+  console.log(`   Resend        : ${process.env.RESEND_API_KEY             ? '✅' : '❌'}`);
+  console.log(`   Didit         : ${process.env.DIDIT_API_KEY              ? '✅' : '❌'}`);
+  console.log(`   Ezytm         : ${process.env.EZYTM_API_TOKEN            ? '✅' : '❌'}`);
+  console.log(`   Admin Key     : ${process.env.ADMIN_KEY                  ? '✅' : '❌'}`);
+  console.log(`   INRT Contract : ${process.env.INRT_CONTRACT_ADDRESS      ? '✅' : '❌'}`);
+  console.log(`   Polygon Wallet: ${process.env.ADMIN_WALLET_PRIVATE_KEY   ? '✅' : '❌'}\n`);
 });
