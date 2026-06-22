@@ -13,6 +13,7 @@ import RefundPolicy       from './pages/RefundPolicy';
 import AdminKYC from './pages/AdminKYC';
 import CheckoutPage from './pages/CheckoutPage';
 import './styles/global.css';
+import ConnectWallet from './pages/ConnectWallet';
 
 // ── Lazy ───────────────────────────────────────────────────────
 const TransactionHistory = lazy(() => import('./pages/TransactionHistory'));
@@ -120,6 +121,8 @@ export default function App() {
 <Route path="/admin/kyc" element={<AdminKYC />} />
 
 <Route path="/checkout" element={<CheckoutPage />} />
+
+<Route path="/connect-wallet" element={<ConnectWallet />} />
 
             // Inside your Routes:
 <Route path="/privacy"       element={<PrivacyPolicy />} />
