@@ -8,6 +8,7 @@
 const express = require('express');
 const cors    = require('cors');
 const crypto  = require('crypto');
+const CryptoJS = require('crypto-js');
 require('dotenv').config();
 
 const app  = express();
@@ -899,6 +900,260 @@ app.get('/recharge/status/:orderId', async (req, res) => {
     }
     res.json({ orderId: req.params.orderId, status: status === '1' ? 'success' : status === '3' ? 'failed' : 'pending', txnId, message: data.MESSAGE || '' });
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ══════════════════════════════════════════════════════════════
+//  BUILT-IN POLYGON WALLET SYSTEM
+// ══════════════════════════════════════════════════════════════
+
+// ROUTE 1 — POST /wallet/generate
+// Generate a new Polygon wallet for a user. Only generates if they don't have one yet.
+app.post('/wallet/generate', async (req, res) => {
+  try {
+    const { userId, userPin } = req.body;
+    if (!userId || !userPin) return res.status(400).json({ error: 'userId and userPin required' });
+    if (!db) return res.status(500).json({ error: 'Database not connected' });
+    if (userPin.length !== 6) return res.status(400).json({ error: 'PIN must be 6 digits' });
+
+    // Check if user already has a wallet
+    const userSnap = await db.collection('users').doc(userId).get();
+    if (!userSnap.exists) return res.status(404).json({ error: 'User not found' });
+    const userData = userSnap.data();
+    if (userData.polygonWallet) return res.status(400).json({ error: 'Wallet already exists' });
+
+    // Generate new wallet
+    const { ethers } = require('ethers');
+    const wallet = ethers.Wallet.createRandom();
+
+    // Encrypt private key with user's PIN
+    const encryptedKey = CryptoJS.AES.encrypt(wallet.privateKey, userPin).toString();
+
+    // Store in Firebase
+    await db.collection('users').doc(userId).update({
+      polygonWallet: wallet.address.toLowerCase(),
+      encryptedKey: encryptedKey,
+      walletCreatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    console.log(`✅ Wallet generated for ${userId}: ${wallet.address}`);
+    res.json({ 
+      success: true, 
+      address: wallet.address, 
+      mnemonic: wallet.mnemonic.phrase 
+    });
+  } catch (e) {
+    console.error('/wallet/generate error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ROUTE 2 — POST /wallet/send-onchain
+// Send INRT from user's wallet to ANY 0x address on Polygon blockchain.
+app.post('/wallet/send-onchain', async (req, res) => {
+  try {
+    const { userId, toAddress, amount, userPin } = req.body;
+    if (!userId || !toAddress || !amount || !userPin) {
+      return res.status(400).json({ error: 'userId, toAddress, amount, and userPin required' });
+    }
+    if (!toAddress.match(/^0x[a-fA-F0-9]{40}$/)) {
+      return res.status(400).json({ error: 'Invalid Polygon wallet address' });
+    }
+    if (!db) return res.status(500).json({ error: 'Database not connected' });
+
+    // Get user from Firebase
+    const userSnap = await db.collection('users').doc(userId).get();
+    if (!userSnap.exists) return res.status(404).json({ error: 'User not found' });
+    const user = userSnap.data();
+
+    if (!user.polygonWallet || !user.encryptedKey) {
+      return res.status(400).json({ error: 'User does not have a Polygon wallet' });
+    }
+
+    // Verify user has enough inrtBalance in Firebase
+    const inrtBalance = Number(user.inrtBalance || 0);
+    if (inrtBalance < amount) {
+      return res.status(400).json({ error: 'Insufficient INRT balance' });
+    }
+
+    // Decrypt private key
+    const decrypted = CryptoJS.AES.decrypt(user.encryptedKey, userPin).toString(CryptoJS.enc.Utf8);
+    if (!decrypted) return res.status(400).json({ error: 'Invalid PIN' });
+
+    // Create user wallet
+    const { ethers } = require('ethers');
+    const POLYGON_RPC = process.env.POLYGON_RPC || 'https://polygon-rpc.com';
+    const provider = new ethers.JsonRpcProvider(POLYGON_RPC);
+    const userWallet = new ethers.Wallet(decrypted, provider);
+
+    // Check if user has INRT on-chain
+    const onChainBalance = await global.getOnChainBalance(user.polygonWallet);
+    const amountWei = ethers.parseUnits(amount.toString(), 18);
+
+    let txHash, blockNumber;
+
+    if (onChainBalance >= amount) {
+      // Send from their wallet directly
+      const tx = await inrtContract.connect(userWallet).transfer(toAddress, amountWei);
+      const receipt = await tx.wait();
+      txHash = tx.hash;
+      blockNumber = receipt.blockNumber;
+    } else {
+      // First mint to their address using admin wallet, then transfer
+      const mintResult = await global.mintINRT(user.polygonWallet, amount);
+      // Wait a bit for mint to confirm
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      const tx = await inrtContract.connect(userWallet).transfer(toAddress, amountWei);
+      const receipt = await tx.wait();
+      txHash = tx.hash;
+      blockNumber = receipt.blockNumber;
+    }
+
+    // Update Firebase: deduct inrtBalance, log transaction
+    await db.collection('users').doc(userId).update({
+      inrtBalance: admin.firestore.FieldValue.increment(-amount),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    await db.collection('transactions').add({
+      uid: userId,
+      type: 'debit',
+      amount: amount,
+      note: `Sent ${amount} INRT to ${toAddress.slice(0, 8)}...`,
+      cat: 'crypto',
+      ref: txHash,
+      status: 'success',
+      method: 'polygon_onchain',
+      txHash: txHash,
+      blockNumber: blockNumber,
+      toAddress: toAddress,
+      fromAddress: user.polygonWallet,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    console.log(`✅ On-chain send: ${amount} INRT from ${user.polygonWallet} to ${toAddress}`);
+    res.json({ 
+      success: true, 
+      txHash, 
+      blockNumber, 
+      explorerUrl: `https://polygonscan.com/tx/${txHash}` 
+    });
+  } catch (e) {
+    console.error('/wallet/send-onchain error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ROUTE 3 — GET /wallet/balance/:userId
+// Get both internal and on-chain INRT balance.
+app.get('/wallet/balance/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    if (!db) return res.status(500).json({ error: 'Database not connected' });
+
+    const userSnap = await db.collection('users').doc(userId).get();
+    if (!userSnap.exists) return res.status(404).json({ error: 'User not found' });
+    const user = userSnap.data();
+
+    const internalBalance = Number(user.inrtBalance || 0);
+    const polygonWallet = user.polygonWallet || null;
+
+    let onChainBalance = 0;
+    if (polygonWallet) {
+      onChainBalance = await global.getOnChainBalance(polygonWallet);
+    }
+
+    const totalBalance = internalBalance + onChainBalance;
+
+    res.json({
+      success: true,
+      internalBalance,
+      onChainBalance,
+      polygonWallet,
+      totalBalance,
+    });
+  } catch (e) {
+    console.error('/wallet/balance error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ROUTE 4 — GET /wallet/history/:walletAddress
+// Get transaction history from Polygonscan API.
+app.get('/wallet/history/:walletAddress', async (req, res) => {
+  try {
+    const { walletAddress } = req.params;
+    const apiKey = process.env.POLYGONSCAN_API_KEY;
+    const contractAddress = process.env.INRT_CONTRACT_ADDRESS;
+
+    if (!apiKey) {
+      return res.json({ 
+        success: true, 
+        transactions: [], 
+        note: 'Add POLYGONSCAN_API_KEY to Railway vars' 
+      });
+    }
+
+    const url = `https://api.polygonscan.com/api?module=account&action=tokentx&contractaddress=${contractAddress}&address=${walletAddress}&sort=desc&apikey=${apiKey}`;
+    const response = await fetch(url);
+    const data = await response.json();
+
+    if (data.status !== '1') {
+      return res.json({ success: true, transactions: [] });
+    }
+
+    const transactions = data.result.map((tx: any) => ({
+      hash: tx.hash,
+      from: tx.from,
+      to: tx.to,
+      value: (parseFloat(tx.value) / 1e18).toFixed(4),
+      timeStamp: tx.timeStamp,
+      confirmations: tx.confirmations,
+    }));
+
+    res.json({ success: true, transactions });
+  } catch (e) {
+    console.error('/wallet/history error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ROUTE 5 — GET /wallet/address/:userId
+// Get user's Polygon wallet address.
+app.get('/wallet/address/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    if (!db) return res.status(500).json({ error: 'Database not connected' });
+
+    const userSnap = await db.collection('users').doc(userId).get();
+    if (!userSnap.exists) return res.status(404).json({ error: 'User not found' });
+    const user = userSnap.data();
+
+    res.json({ success: true, polygonWallet: user.polygonWallet || null });
+  } catch (e) {
+    console.error('/wallet/address error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ROUTE 6 — POST /wallet/mint-to-user
+// Mint INRT on-chain to a user's Polygon wallet (called after Razorpay payment).
+app.post('/wallet/mint-to-user', async (req, res) => {
+  try {
+    const { userPolygonWallet, amount } = req.body;
+    if (!userPolygonWallet || !amount) {
+      return res.status(400).json({ error: 'userPolygonWallet and amount required' });
+    }
+    if (!inrtContract) return res.status(500).json({ error: 'Contract not configured' });
+
+    const result = await global.mintINRT(userPolygonWallet, parseFloat(amount));
+
+    console.log(`✅ Minted ${amount} INRT to ${userPolygonWallet} | tx: ${result.txHash}`);
+    res.json({ success: true, ...result });
+  } catch (e) {
+    console.error('/wallet/mint-to-user error:', e);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // ══════════════════════════════════════════════════════════════

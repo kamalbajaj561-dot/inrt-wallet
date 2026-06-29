@@ -85,7 +85,6 @@ export default function Dashboard() {
     { label:'Recharge',  icon:'📱', path:'/recharge',      color:T.orange  },
     { label:'History',   icon:'📋', path:'/history',       color:T.muted   },
     { label:'Rewards',   icon:'🏆', path:'/rewards',       color:T.gold    },
-    { label:'Wallet',  icon:'🦊', path:'/connect-wallet', color:'#8247E5' },
   ];
 
   const TX_ICON: Record<string,string> = {
