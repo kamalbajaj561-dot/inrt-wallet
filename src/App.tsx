@@ -121,7 +121,6 @@ export default function App() {
 
 <Route path="/checkout" element={<CheckoutPage />} />
 
-<Route path="/connect-wallet" element={<ConnectWallet />} />
 <Route path="/privacy"       element={<PrivacyPolicy />} />
 <Route path="/terms"         element={<TermsAndConditions />} />
 <Route path="/refund-policy" element={<RefundPolicy />} />
