@@ -798,12 +798,11 @@ app.get('/recharge/operator/:mobile', async (req, res) => {
 app.get('/recharge/plans', async (req, res) => {
   try {
     const { operator } = req.query;
-    const token = process.env.EZYTM_API_TOKEN, member = process.env.EZYTM_MEMBER_ID;
-    if (token && member) {
+    const token = process.env.EZYTM_API_TOKEN;
+    if (token) {
       try {
         const url = new URL('https://newapi.ezytm.in/Service/BrowsePlan');
         url.searchParams.append('ApiToken', token);
-        url.searchParams.append('MemberId', member);
         url.searchParams.append('OpId', operator || 'JIO');
         const r    = await fetch(url.toString(), { signal: AbortSignal.timeout(8000) });
         const data = JSON.parse(await r.text());
@@ -829,8 +828,8 @@ app.post('/recharge/do', async (req, res) => {
   try {
     const { userId, mobile, operator, amount, rechargeType } = req.body;
     if (!userId || !mobile || !operator || !amount) return res.status(400).json({ error: 'userId, mobile, operator, amount required' });
-    const token = process.env.EZYTM_API_TOKEN, member = process.env.EZYTM_MEMBER_ID;
-    if (!token || !member) return res.status(500).json({ error: 'EZYTM_API_TOKEN and EZYTM_MEMBER_ID not set' });
+    const token = process.env.EZYTM_API_TOKEN;
+    if (!token) return res.status(500).json({ error: 'EZYTM_API_TOKEN not set in Railway variables' });
     if (!db) return res.status(500).json({ error: 'Database not connected' });
     const userSnap = await db.collection('users').doc(userId).get();
     if (!userSnap.exists) return res.status(404).json({ error: 'User not found' });
