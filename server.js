@@ -795,6 +795,20 @@ app.get('/recharge/operator/:mobile', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Debug endpoint — shows raw Ezytm response (remove after fixing)
+app.get('/recharge/debug', async (req, res) => {
+  try {
+    const token = process.env.EZYTM_API_TOKEN;
+    if (!token) return res.json({ error: 'EZYTM_API_TOKEN not set in Railway' });
+    const url = new URL('https://newapi.ezytm.in/Service/BrowsePlan');
+    url.searchParams.append('ApiToken', token);
+    url.searchParams.append('OpId', 'JIO');
+    const r    = await fetch(url.toString(), { signal: AbortSignal.timeout(10000) });
+    const text = await r.text();
+    res.json({ httpStatus: r.status, tokenSet: !!token, tokenFirst8: token.slice(0,8)+'...', rawResponse: text.slice(0, 2000) });
+  } catch (e) { res.json({ error: e.message }); }
+});
+
 app.get('/recharge/plans', async (req, res) => {
   try {
     const { operator } = req.query;
@@ -805,10 +819,18 @@ app.get('/recharge/plans', async (req, res) => {
         url.searchParams.append('ApiToken', token);
         url.searchParams.append('OpId', operator || 'JIO');
         const r    = await fetch(url.toString(), { signal: AbortSignal.timeout(8000) });
-        const data = JSON.parse(await r.text());
-        if (data && (data.DATA || data.data || Array.isArray(data)))
-          return res.json({ success: true, plans: data.DATA || data.data || data, source: 'live' });
-      } catch (e) { console.warn('Ezytm plans fallback:', e.message); }
+        const text = await r.text();
+        console.log('Ezytm BrowsePlan raw:', text.slice(0, 500));
+        let data;
+        try { data = JSON.parse(text); } catch { console.warn('Ezytm non-JSON:', text.slice(0, 200)); }
+        if (data) {
+          const plans = data.DATA || data.data || data.Plans || data.plans ||
+                        data.PlanList || data.planlist || data.Response ||
+                        (Array.isArray(data) ? data : null);
+          if (plans) return res.json({ success: true, plans: Array.isArray(plans) ? plans : Object.values(plans), source: 'live' });
+          console.warn('Ezytm unknown format:', JSON.stringify(data).slice(0, 300));
+        }
+      } catch (e) { console.warn('Ezytm plans error:', e.message); }
     }
     const fallback = [
       { id:'p1', amount:179,  validity:'28 days',  data:'2GB/day',   calls:'Unlimited', popular:false },
