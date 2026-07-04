@@ -795,6 +795,31 @@ app.get('/recharge/operator/:mobile', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Debug2 — try alternate Ezytm plan endpoints
+app.get('/recharge/debug2', async (req, res) => {
+  const token = process.env.EZYTM_API_TOKEN;
+  if (!token) return res.json({ error: 'No token' });
+  const endpoints = [
+    'https://newapi.ezytm.in/Service/BrowsePlan',
+    'https://api.ezytm.in/Service/BrowsePlan',
+    'https://newapi.ezytm.in/service/browseplan',
+    'https://newapi.ezytm.in/Service/GetPlan',
+    'https://newapi.ezytm.in/Service/Plans',
+  ];
+  const results = {};
+  for (const ep of endpoints) {
+    try {
+      const url = new URL(ep);
+      url.searchParams.append('ApiToken', token);
+      url.searchParams.append('OpId', 'JIO');
+      const r = await fetch(url.toString(), { signal: AbortSignal.timeout(5000) });
+      const text = await r.text();
+      results[ep] = { status: r.status, response: text.slice(0, 200) };
+    } catch (e) { results[ep] = { error: e.message }; }
+  }
+  res.json(results);
+});
+
 // Debug endpoint — shows raw Ezytm response (remove after fixing)
 app.get('/recharge/debug', async (req, res) => {
   try {
