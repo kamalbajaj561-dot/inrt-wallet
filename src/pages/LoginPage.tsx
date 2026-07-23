@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { sendPasswordResetEmail } from 'firebase/auth';
 import { doc, setDoc, getDoc, deleteDoc } from 'firebase/firestore';
@@ -309,7 +309,7 @@ const S: Record<string, React.CSSProperties> = {
               background:'radial-gradient(circle,rgba(0,229,204,0.08),transparent 70%)',pointerEvents:'none' },
   blob2:   { position:'absolute',bottom:-80,left:-80,width:280,height:280,borderRadius:'50%',
               background:'radial-gradient(circle,rgba(77,138,240,0.06),transparent 70%)',pointerEvents:'none' },
-  wrap:    { width:'100%',maxWidth:420,position:'relative' },
+  wrap:    { width:'100%',maxWidth:460,position:'relative' },
   logoRow: { display:'flex',alignItems:'center',gap:14,marginBottom:28,padding:'0 4px' },
   logoMark:{ width:52,height:52,borderRadius:16,
               background:'linear-gradient(135deg,#00e5cc,#00b4a0)',

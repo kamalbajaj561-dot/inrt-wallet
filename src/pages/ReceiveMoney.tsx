@@ -7,13 +7,13 @@ export default function ReceiveMoney() {
 
   const { userProfile } = useAuth();
 
-  const qrValue = userProfile?.phoneNumber
-    ? `upi://pay?phone=${userProfile.phoneNumber}`
+  const qrValue = userProfile?.phone
+    ? `upi://pay?phone=${userProfile.phone}`
     : "";
 
   return (
 
-    <div className="max-w-md mx-auto space-y-6">
+    <div className="w-full space-y-6">
 
       <h1 className="text-2xl font-bold text-center">
         Receive Money
@@ -35,11 +35,11 @@ export default function ReceiveMoney() {
         <div className="text-center">
 
           <p className="font-medium">
-            {userProfile?.fullName || "INRT User"}
+            {userProfile?.name || "INRT User"}
           </p>
 
           <p className="text-sm text-gray-500">
-            {userProfile?.phoneNumber}
+            {userProfile?.phone}
           </p>
 
         </div>

@@ -9,7 +9,7 @@
  * No reCAPTCHA. No phone auth. Works 100% on Vercel.
  */
 
-import { useState } from 'react';
+import React, { useState } from 'react';
 import {
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
@@ -472,7 +472,7 @@ const S: Record<string, React.CSSProperties> = {
               display:'flex', alignItems:'center', justifyContent:'center',
               padding:16, fontFamily:"'DM Sans',sans-serif" },
   card:     { background:'#fff', borderRadius:24, padding:'36px 28px',
-              width:'100%', maxWidth:420,
+              width:'100%', maxWidth:460,
               boxShadow:'0 40px 80px rgba(0,0,0,0.5)' },
   logoRow:  { display:'flex', alignItems:'center', gap:10, marginBottom:4 },
   logoIcon: { width:44, height:44, borderRadius:14, fontWeight:900, fontSize:16,
