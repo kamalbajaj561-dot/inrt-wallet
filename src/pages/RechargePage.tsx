@@ -4,7 +4,7 @@
  * Auto-detects operator, fetches live plans, processes real recharge
  */
 
-import { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import '../styles/theme.css';
@@ -491,7 +491,7 @@ export default function RechargePage() {
 }
 
 const S: Record<string, React.CSSProperties> = {
-  page:        { maxWidth:480,margin:'0 auto',minHeight:'100vh',background:'var(--bg)',fontFamily:'var(--f-body)' },
+  page:        { width:'100%', minHeight:'100vh',background:'var(--bg)',fontFamily:'var(--f-body)' },
   header:      { background:'linear-gradient(160deg,#050914,#0a1428)',padding:'52px 20px 16px',display:'flex',alignItems:'center',gap:14 },
   successTitle:{ fontFamily:'var(--f-display)',fontWeight:700,fontSize:26,color:'var(--t1)',marginBottom:8 },
   bigIcon:     (c:string): React.CSSProperties => ({ width:84,height:84,borderRadius:'50%',background:`${c}15`,border:`2px solid ${c}`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:40,marginBottom:20 }),

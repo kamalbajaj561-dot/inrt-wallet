@@ -1,0 +1,677 @@
+diff --git a/src/App.tsx b/src/App.tsx
+index f4ef425..b8000eb 100644
+--- a/src/App.tsx
++++ b/src/App.tsx
+@@ -1,4 +1,4 @@
+-import { Suspense, lazy } from 'react';
++import React, { Suspense, lazy } from 'react';
+ import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
+ import { AuthProvider, useAuth } from './context/AuthContext';
+ 
+@@ -28,6 +28,7 @@ const CryptoPage         = lazy(() => import('./pages/CryptoPage'));
+ const ProfilePage        = lazy(() => import('./pages/ProfilePage'));
+ const NotificationsPage  = lazy(() => import('./pages/NotificationsPage'));
+ const RequestMoney       = lazy(() => import('./pages/RequestMoney'));
++const ReceiveMoney       = lazy(() => import('./pages/ReceiveMoney'));
+ const ScanPay            = lazy(() => import('./pages/ScanPay'));
+ const LinkBank           = lazy(() => import('./pages/LinkBank'));
+ const InsurancePage      = lazy(() => import('./pages/InsurancePage'));
+@@ -82,6 +83,7 @@ export default function App() {
+             <Route path="/add-money"  element={<Guard><AddMoney /></Guard>} />
+             <Route path="/send"       element={<Guard><SendMoney /></Guard>} />
+             <Route path="/request"    element={<Guard><Suspense fallback={<Loader/>}><RequestMoney /></Suspense></Guard>} />
++            <Route path="/receive"    element={<Guard><Suspense fallback={<Loader/>}><ReceiveMoney /></Suspense></Guard>} />
+             <Route path="/qr"         element={<Guard><Suspense fallback={<Loader/>}><QRPage /></Suspense></Guard>} />
+             <Route path="/scan"       element={<Guard><Suspense fallback={<Loader/>}><ScanPay /></Suspense></Guard>} />
+             <Route path="/history"    element={<Guard><Suspense fallback={<Loader/>}><TransactionHistory /></Suspense></Guard>} />
+diff --git a/src/lib/db.ts b/src/lib/db.ts
+index bcbdeeb..63a6337 100644
+--- a/src/lib/db.ts
++++ b/src/lib/db.ts
+@@ -84,6 +84,28 @@ export async function updateBalance(uid: string, delta: number) {
+   });
+ }
+ 
++// ── Bookings ──────────────────────────────────────────────────
++export async function createBooking(uid: string, data: {
++  type: 'movie' | 'train' | 'bus' | 'flight';
++  details: Record<string, any>;
++  amount: number;
++}) {
++  const ref = await addDoc(collection(db, 'bookings'), {
++    uid, ...data,
++    status:    'confirmed',
++    createdAt: serverTimestamp(),
++  });
++  await updateBalance(uid, -data.amount);
++  await addTransaction(uid, {
++    type:   'debit',
++    amount: data.amount,
++    note:   `${data.type} booking`,
++    cat:    'bookings',
++    ref:    ref.id,
++  });
++  return ref.id;
++}
++
+ // ── Notifications ─────────────────────────────────────────────
+ export async function addNotification(uid: string, title: string, body: string, type = 'info') {
+   await addDoc(collection(db, 'notifications'), {
+diff --git a/src/pages/AddMoney.tsx b/src/pages/AddMoney.tsx
+index eeaabbd..44d5caf 100644
+--- a/src/pages/AddMoney.tsx
++++ b/src/pages/AddMoney.tsx
+@@ -5,7 +5,7 @@
+  *   2. UPI QR Code — works right now, no gateway needed
+  */
+ 
+-import { useState, useEffect, useRef } from 'react';
++import React, { useState, useEffect, useRef } from 'react';
+ import { useNavigate } from 'react-router-dom';
+ import { useAuth } from '../context/AuthContext';
+ 
+@@ -408,7 +408,7 @@ export default function AddMoney() {
+ 
+ // ── Styles ────────────────────────────────────────────────────
+ const S: Record<string, React.CSSProperties> = {
+-  page:        { maxWidth: 480, margin: '0 auto', minHeight: '100vh', background: '#050914', fontFamily: "'Plus Jakarta Sans',sans-serif" },
++  page:        { width:'100%', minHeight: '100vh', background: '#050914', fontFamily: "'Plus Jakarta Sans',sans-serif" },
+   header:      { background: 'linear-gradient(160deg,#050914,#0a1428)', padding: '52px 20px 16px', display: 'flex', alignItems: 'center', gap: 14 },
+   title:       { fontFamily: "'Plus Jakarta Sans',sans-serif", fontWeight: 800, fontSize: 22, color: '#fff', margin: 0 },
+   backBtn:     { background: 'none', border: 'none', color: '#00e5cc', fontSize: 22, cursor: 'pointer', lineHeight: 1 },
+diff --git a/src/pages/BillPayments.tsx b/src/pages/BillPayments.tsx
+index 9f2699b..e67e307 100644
+--- a/src/pages/BillPayments.tsx
++++ b/src/pages/BillPayments.tsx
+@@ -69,7 +69,7 @@ export default function BillPayments() {
+   const reset = () => { setStep('category');setProvider('');setAccountNo('');setAmount('');setBillRef('');setTxId('');setError(''); };
+ 
+   return (
+-    <div style={{maxWidth:480,margin:'0 auto',minHeight:'100vh',background:'var(--bg)',fontFamily:'var(--f-body)'}}>
++    <div style={{width:'100%', minHeight:'100vh',background:'var(--bg)',fontFamily:'var(--f-body)'}}>
+       <div style={{background:'linear-gradient(160deg,#050914,#0a1428)',padding:'52px 20px 16px'}}>
+         <div style={{display:'flex',alignItems:'center',gap:14,marginBottom:10}}>
+           <button onClick={()=>{if(step==='category')navigate('/dashboard');else if(step==='confirm')setStep('details');else if(step==='details')setStep('category');}} className="back-btn">←</button>
+diff --git a/src/pages/BillPaymentsPage.tsx b/src/pages/BillPaymentsPage.tsx
+index 17d59cb..7c923a2 100644
+--- a/src/pages/BillPaymentsPage.tsx
++++ b/src/pages/BillPaymentsPage.tsx
+@@ -1,4 +1,4 @@
+-import { useState } from 'react';
++import React, { useState } from 'react';
+ import { useNavigate } from 'react-router-dom';
+ import { useAuth } from '../context/AuthContext';
+ import { doc, updateDoc, increment, serverTimestamp, collection, addDoc } from 'firebase/firestore';
+@@ -296,7 +296,7 @@ export default function BillPaymentsPage() {
+ }
+ 
+ const S: Record<string, React.CSSProperties> = {
+-  page:         { maxWidth:480,margin:'0 auto',minHeight:'100vh',background:'#0a0a0f',fontFamily:"'DM Sans',sans-serif" },
++  page:         { width:'100%', minHeight:'100vh',background:'#0a0a0f',fontFamily:"'DM Sans',sans-serif" },
+   header:       { display:'flex',alignItems:'center',gap:14,padding:'52px 16px 16px',background:'linear-gradient(160deg,#0f0f1a,#0a0a0f)' },
+   back:         { background:'rgba(255,255,255,0.06)',border:'1px solid rgba(255,255,255,0.07)',borderRadius:12,width:40,height:40,fontSize:18,cursor:'pointer',color:'#f0f0f8',flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center' },
+   title:        { fontFamily:"'Syne',sans-serif",fontWeight:800,fontSize:20,color:'#f0f0f8',flex:1 },
+diff --git a/src/pages/BookingsPage.tsx b/src/pages/BookingsPage.tsx
+index e9562db..eeaeeec 100644
+--- a/src/pages/BookingsPage.tsx
++++ b/src/pages/BookingsPage.tsx
+@@ -151,7 +151,7 @@ export default function BookingsPage() {
+ }
+ 
+ const s: Record<string, React.CSSProperties> = {
+-  page: { maxWidth: 480, margin: '0 auto', minHeight: '100vh', background: '#f8fafc', padding: '20px 16px 40px', fontFamily: "'DM Sans', sans-serif" },
++  page: { width:'100%', minHeight: '100vh', background: '#f8fafc', padding: '20px 16px 40px', fontFamily: "'DM Sans', sans-serif" },
+   toast: { position: 'fixed', top: 20, left: '50%', transform: 'translateX(-50%)', background: '#111', color: '#fff', borderRadius: 14, padding: '12px 20px', fontSize: 14, fontWeight: 600, zIndex: 999 },
+   header: { display: 'flex', alignItems: 'center', gap: 14, marginBottom: 20 },
+   back: { background: '#fff', border: '2px solid #e5e7eb', borderRadius: 12, width: 40, height: 40, fontSize: 18, cursor: 'pointer' },
+diff --git a/src/pages/CheckoutPage.tsx b/src/pages/CheckoutPage.tsx
+index 875fae1..690ad7f 100644
+--- a/src/pages/CheckoutPage.tsx
++++ b/src/pages/CheckoutPage.tsx
+@@ -16,7 +16,7 @@
+  */
+ 
+ import { useState, useEffect } from 'react';
+-import { useNavigate }          from 'react-router-dom';
++import { useNavigate, useLocation } from 'react-router-dom';
+ import { useAuth }              from '../context/AuthContext';
+ import { doc, onSnapshot }      from 'firebase/firestore';
+ import { db as firestoreDb }    from '../lib/firebase';
+@@ -41,9 +41,11 @@ declare global {
+ export default function CheckoutPage() {
+   const { user } = useAuth();
+   const navigate = useNavigate();
++  const location = useLocation();
++  const initialMode: Mode = (location.state as any)?.mode === 'sell' ? 'sell' : 'buy';
+ 
+   const [profile, setProfile] = useState<any>(null);
+-  const [mode, setMode]       = useState<Mode>('buy');
++  const [mode, setMode]       = useState<Mode>(initialMode);
+   const [amount, setAmount]   = useState('');
+   const [loading, setLoading] = useState(false);
+   const [success, setSuccess] = useState<{ amount:number; mode:Mode } | null>(null);
+@@ -158,7 +160,7 @@ export default function CheckoutPage() {
+ 
+   // ── Success screen ───────────────────────────────────────────
+   if (success) return (
+-    <div style={{ maxWidth:480, margin:'0 auto', minHeight:'100vh', background:T.bg, fontFamily:"'Plus Jakarta Sans',sans-serif", display:'flex', alignItems:'center', justifyContent:'center' }}>
++    <div style={{ width:'100%', minHeight:'100vh', background:T.bg, fontFamily:"'Plus Jakarta Sans',sans-serif", display:'flex', alignItems:'center', justifyContent:'center' }}>
+       <div style={{ padding:'40px 24px', textAlign:'center' as const, width:'100%' }}>
+         <div style={{ width:84, height:84, borderRadius:'50%', background:'rgba(0,200,83,0.12)', border:`2px solid ${T.green}`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:40, margin:'0 auto 24px' }}>
+           {success.mode==='buy' ? '🪙' : '💸'}
+@@ -194,7 +196,7 @@ export default function CheckoutPage() {
+   );
+ 
+   return (
+-    <div style={{ maxWidth:480, margin:'0 auto', minHeight:'100vh', background:T.bg, fontFamily:"'Plus Jakarta Sans',sans-serif", paddingBottom:40 }}>
++    <div style={{ width:'100%', minHeight:'100vh', background:T.bg, fontFamily:"'Plus Jakarta Sans',sans-serif", paddingBottom:40 }}>
+ 
+       {/* Header */}
+       <div style={{ background:`linear-gradient(160deg,${T.inrt} 0%,#3D0D7B 60%,${T.bg} 100%)`, padding:'52px 20px 30px', position:'relative', overflow:'hidden' }}>
+diff --git a/src/pages/CibilPage.tsx b/src/pages/CibilPage.tsx
+index c04fb1a..d89ff13 100644
+--- a/src/pages/CibilPage.tsx
++++ b/src/pages/CibilPage.tsx
+@@ -32,14 +32,14 @@ export default function CibilPage() {
+     {t:'Do not close old accounts',imp:'Medium',c:'#f4b942'},{t:'Avoid multiple loan applications',imp:'Low',c:'#00d68f'},
+   ];
+   if(loading) return (
+-    <div style={{maxWidth:480,margin:'0 auto',minHeight:'100vh',background:'var(--bg)',display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column',gap:16}}>
++    <div style={{width:'100%', minHeight:'100vh',background:'var(--bg)',display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column',gap:16}}>
+       <div style={{width:52,height:52,border:'4px solid var(--teal)',borderTopColor:'transparent',borderRadius:'50%',animation:'spin 0.8s linear infinite'}}/>
+       <p style={{color:'var(--t2)',fontSize:14,fontFamily:'var(--f-body)'}}>Fetching your credit score…</p>
+       <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
+     </div>
+   );
+   return (
+-    <div style={{maxWidth:480,margin:'0 auto',minHeight:'100vh',background:'var(--bg)',fontFamily:'var(--f-body)'}}>
++    <div style={{width:'100%', minHeight:'100vh',background:'var(--bg)',fontFamily:'var(--f-body)'}}>
+       <div style={{background:'linear-gradient(160deg,#050914,#0a1428)',padding:'52px 20px 20px'}}>
+         <div style={{display:'flex',alignItems:'center',gap:14}}>
+           <button onClick={()=>navigate('/dashboard')} className="back-btn">←</button>
+diff --git a/src/pages/CryptoPage.tsx b/src/pages/CryptoPage.tsx
+index bfd593d..f6d18ea 100644
+--- a/src/pages/CryptoPage.tsx
++++ b/src/pages/CryptoPage.tsx
+@@ -290,7 +290,7 @@ export default function CryptoPage() {
+ 
+   // ═══════════════════════════════════════════════════════════════
+   return (
+-    <div style={{ maxWidth: 480, margin: '0 auto', minHeight: '100vh', background: bg, fontFamily: "'Plus Jakarta Sans',sans-serif", paddingBottom: 40 }}>
++    <div style={{ width:'100%', minHeight: '100vh', background: bg, fontFamily: "'Plus Jakarta Sans',sans-serif", paddingBottom: 40 }}>
+ 
+       {/* ── HEADER ──────────────────────────────────────────── */}
+       <div style={{ background: 'linear-gradient(160deg,' + poly + ' 0%,' + purple + ' 55%,' + bg + ' 100%)', padding: '52px 20px 28px', position: 'relative', overflow: 'hidden' }}>
+diff --git a/src/pages/Dashboard.tsx b/src/pages/Dashboard.tsx
+index 96be369..cd867ef 100644
+--- a/src/pages/Dashboard.tsx
++++ b/src/pages/Dashboard.tsx
+@@ -5,7 +5,7 @@
+  * Fixed: direct Firestore subscription for live data
+  */
+ 
+-import { useState, useEffect } from 'react';
++import React, { useState, useEffect } from 'react';
+ import { useNavigate }         from 'react-router-dom';
+ import { useAuth }             from '../context/AuthContext';
+ import { doc, onSnapshot, collection, query, where, orderBy, limit } from 'firebase/firestore';
+@@ -78,9 +78,9 @@ export default function Dashboard() {
+   // ── Quick actions (LAUNCH VERSION — UPI/Bank hidden pending payout approval)
+   const ACTIONS = [
+     { label:'Send INRT', icon:'📤', path:'/send',          color:T.inrt    },
+-    { label:'Receive',   icon:'📥', path:'/crypto',        color:T.green   },
+-    { label:'Buy INRT',  icon:'🪙', path:'/checkout',      color:T.inrt    },
+-    { label:'Sell INRT', icon:'💸', path:'/checkout',      color:'#00897B' },
++    { label:'Receive',   icon:'📥', path:'/receive',       color:T.green   },
++    { label:'Buy INRT',  icon:'🪙', path:'/checkout', mode:'buy',  color:T.inrt    },
++    { label:'Sell INRT', icon:'💸', path:'/checkout', mode:'sell', color:'#00897B' },
+     { label:'Scan',      icon:'📷', path:'/scan',          color:T.navy    },
+     { label:'Recharge',  icon:'📱', path:'/recharge',      color:T.orange  },
+     { label:'History',   icon:'📋', path:'/history',       color:T.muted   },
+@@ -93,7 +93,7 @@ export default function Dashboard() {
+   };
+ 
+   if (!ready) return (
+-    <div style={{ maxWidth:480, margin:'0 auto', minHeight:'100vh', background:'#F6F8FA', display:'flex', alignItems:'center', justifyContent:'center' }}>
++    <div style={{ width:'100%', minHeight:'100vh', background:'#F6F8FA', display:'flex', alignItems:'center', justifyContent:'center' }}>
+       <div style={{ textAlign:'center' }}>
+         <div style={{ width:44, height:44, border:`4px solid ${T.light}`, borderTopColor:T.navy, borderRadius:'50%', animation:'spin 0.8s linear infinite', margin:'0 auto 16px' }}/>
+         <p style={{ color:T.muted, fontFamily:"'Plus Jakarta Sans',sans-serif", fontSize:14 }}>Loading your wallet…</p>
+@@ -103,7 +103,7 @@ export default function Dashboard() {
+   );
+ 
+   return (
+-    <div style={{ maxWidth:480, margin:'0 auto', minHeight:'100vh', background:'#F6F8FA', fontFamily:"'Plus Jakarta Sans',sans-serif", paddingBottom:80 }}>
++    <div style={{ width:'100%', minHeight:'100vh', background:'#F6F8FA', fontFamily:"'Plus Jakarta Sans',sans-serif", paddingBottom:80 }}>
+ 
+       {/* ── HERO HEADER ───────────────────────────────────── */}
+       <div style={{ background:`linear-gradient(145deg,${T.navy} 0%,#1565C0 100%)`, padding:'52px 20px 80px', position:'relative', overflow:'hidden' }}>
+@@ -174,7 +174,7 @@ export default function Dashboard() {
+         <div style={{ background:T.card, borderRadius:18, border:`1px solid ${T.border}`, padding:'18px 16px', boxShadow:'0 4px 24px rgba(10,37,64,0.10)' }}>
+           <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:6 }}>
+             {ACTIONS.map(a=>(
+-              <button key={a.path} onClick={()=>navigate(a.path)}
++              <button key={a.label} onClick={()=>navigate(a.path, a.mode ? { state: { mode: a.mode } } : undefined)}
+                 style={{ background:'none', border:'none', cursor:'pointer', display:'flex', flexDirection:'column' as const, alignItems:'center', gap:6, padding:'8px 4px', borderRadius:12 }}>
+                 <div style={{ width:46, height:46, borderRadius:13, background:a.color+'15', display:'flex', alignItems:'center', justifyContent:'center', fontSize:20, border:`1px solid ${a.color}25` }}>
+                   {a.icon}
+@@ -321,7 +321,7 @@ export default function Dashboard() {
+       </div>
+ 
+       {/* ── BOTTOM NAV ────────────────────────────────────── */}
+-      <nav style={{ position:'fixed', bottom:0, left:'50%', transform:'translateX(-50%)', width:'100%', maxWidth:480, height:72, background:'rgba(255,255,255,0.97)', borderTop:`1px solid ${T.border}`, display:'flex', alignItems:'center', zIndex:200, padding:'0 8px 8px', backdropFilter:'blur(20px)' }}>
++      <nav style={{ position:'fixed', bottom:0, left:0, width:'100%', height:72, background:'rgba(255,255,255,0.97)', borderTop:`1px solid ${T.border}`, display:'flex', alignItems:'center', zIndex:200, padding:'0 8px 8px', backdropFilter:'blur(20px)' }}>
+         {[
+           { path:'/dashboard', icon:'🏠', label:'Home'    },
+           { path:'/history',   icon:'📋', label:'History' },
+diff --git a/src/pages/GoldPage.tsx b/src/pages/GoldPage.tsx
+index dccdfb5..fb2fa1c 100644
+--- a/src/pages/GoldPage.tsx
++++ b/src/pages/GoldPage.tsx
+@@ -76,7 +76,7 @@ export default function GoldPage() {
+   };
+ 
+   return (
+-    <div style={{maxWidth:480,margin:'0 auto',minHeight:'100vh',background:'var(--bg)',fontFamily:'var(--f-body)'}}>
++    <div style={{width:'100%', minHeight:'100vh',background:'var(--bg)',fontFamily:'var(--f-body)'}}>
+       {toast&&<div className="toast">{toast}</div>}
+       <div style={{background:'linear-gradient(160deg,#050914,#1a1208)',padding:'52px 20px 20px'}}>
+         <div style={{display:'flex',alignItems:'center',gap:14,marginBottom:16}}>
+diff --git a/src/pages/Insights.tsx b/src/pages/Insights.tsx
+index a971f98..25aeae0 100644
+--- a/src/pages/Insights.tsx
++++ b/src/pages/Insights.tsx
+@@ -17,19 +17,19 @@ export default function Insights() {
+       .then(snap => setTxns(snap.docs.map(d=>({id:d.id,...d.data()}))));
+   },[user]);
+ 
+-  const cats = txns.reduce((acc,t) => {
++  const cats: Record<string, number> = txns.reduce((acc: Record<string, number>, t: any) => {
+     if (t.type !== 'debit') return acc;
+-    const c = t.cat || 'other';
+-    acc[c] = (acc[c]||0) + (t.amount||0);
++    const c: string = t.cat || 'other';
++    acc[c] = (acc[c]||0) + Number(t.amount||0);
+     return acc;
+-  },{} as Record<string,number>);
++  }, {} as Record<string, number>);
+ 
+-  const total = Object.values(cats).reduce((a,b)=>a+b,0);
++  const total: number = (Object.values(cats) as number[]).reduce((a: number, b: number) => a + b, 0);
+   const CAT_COLORS: Record<string,string> = {
+     recharge:'#f4b942',bills:'#00e5cc',crypto:'#f7931a',
+     gold:'#f4b942',transfer:'#4d8af0',other:'#a78bfa'
+   };
+-  const sorted = Object.entries(cats).sort(([,a],[,b])=>b-a);
++  const sorted: [string, number][] = (Object.entries(cats) as [string, number][]).sort(([,a],[,b])=>b-a);
+ 
+   return (
+     <div className="page">
+diff --git a/src/pages/InsurancePage.tsx b/src/pages/InsurancePage.tsx
+index 7170f20..d384b5e 100644
+--- a/src/pages/InsurancePage.tsx
++++ b/src/pages/InsurancePage.tsx
+@@ -13,7 +13,7 @@ const PRODUCTS = [
+ export default function InsurancePage() {
+   const navigate = useNavigate();
+   return (
+-    <div style={{ maxWidth:480,margin:'0 auto',minHeight:'100vh',background:'var(--bg)',fontFamily:'var(--f-body)' }}>
++    <div style={{ width:'100%', minHeight:'100vh',background:'var(--bg)',fontFamily:'var(--f-body)' }}>
+       <div style={{ background:'linear-gradient(160deg,#050914,#0a1428)',padding:'52px 20px 20px' }}>
+         <div style={{ display:'flex',alignItems:'center',gap:14 }}>
+           <button onClick={()=>navigate('/dashboard')} className="back-btn">←</button>
+diff --git a/src/pages/KYCPage.tsx b/src/pages/KYCPage.tsx
+index 2091346..75f434c 100644
+--- a/src/pages/KYCPage.tsx
++++ b/src/pages/KYCPage.tsx
+@@ -9,7 +9,7 @@
+  *   Step 4: Submitted — shows real-time status
+  */
+ 
+-import { useState, useEffect, useRef } from 'react';
++import React, { useState, useEffect, useRef } from 'react';
+ import { useNavigate }                  from 'react-router-dom';
+ import { useAuth }                      from '../context/AuthContext';
+ 
+@@ -477,7 +477,7 @@ export default function KYCPage() {
+ }
+ 
+ const S: Record<string,any> = {
+-  page:      { maxWidth:480, margin:'0 auto', minHeight:'100vh', background:'#050914', fontFamily:"'Plus Jakarta Sans',sans-serif" },
++  page:      { width:'100%', minHeight:'100vh', background:'#050914', fontFamily:"'Plus Jakarta Sans',sans-serif" },
+   header:    { background:'linear-gradient(160deg,#050914,#0a1428)', padding:'52px 20px 16px', display:'flex', alignItems:'center', gap:14, borderBottom:'1px solid rgba(255,255,255,0.06)' },
+   backBtn:   { background:'none', border:'none', color:'#00e5cc', fontSize:22, cursor:'pointer', lineHeight:1, flexShrink:0 },
+   title:     { fontFamily:"'Plus Jakarta Sans',sans-serif", fontWeight:800, fontSize:20, color:'#fff', margin:0 },
+diff --git a/src/pages/LinkBank.tsx b/src/pages/LinkBank.tsx
+index 5d7e5f3..045db5b 100644
+--- a/src/pages/LinkBank.tsx
++++ b/src/pages/LinkBank.tsx
+@@ -20,7 +20,7 @@ export default function LinkBank() {
+   };
+ 
+   return (
+-    <div style={{ maxWidth:480,margin:'0 auto',minHeight:'100vh',background:'var(--bg)',fontFamily:'var(--f-body)' }}>
++    <div style={{ width:'100%', minHeight:'100vh',background:'var(--bg)',fontFamily:'var(--f-body)' }}>
+       <div style={{ background:'linear-gradient(160deg,#050914,#0a1428)',padding:'52px 20px 20px' }}>
+         <div style={{ display:'flex',alignItems:'center',gap:14 }}>
+           <button onClick={()=>navigate('/dashboard')} className="back-btn">←</button>
+diff --git a/src/pages/LoansPage.tsx b/src/pages/LoansPage.tsx
+index 1a970dd..8d6fc2f 100644
+--- a/src/pages/LoansPage.tsx
++++ b/src/pages/LoansPage.tsx
+@@ -13,7 +13,7 @@ const LOANS = [
+ export default function LoansPage() {
+   const navigate = useNavigate();
+   return (
+-    <div style={{ maxWidth:480,margin:'0 auto',minHeight:'100vh',background:'var(--bg)',fontFamily:'var(--f-body)' }}>
++    <div style={{ width:'100%', minHeight:'100vh',background:'var(--bg)',fontFamily:'var(--f-body)' }}>
+       <div style={{ background:'linear-gradient(160deg,#050914,#0a1428)',padding:'52px 20px 20px' }}>
+         <div style={{ display:'flex',alignItems:'center',gap:14 }}>
+           <button onClick={()=>navigate('/dashboard')} className="back-btn">←</button>
+diff --git a/src/pages/Login.tsx b/src/pages/Login.tsx
+index 63162bd..746788a 100644
+--- a/src/pages/Login.tsx
++++ b/src/pages/Login.tsx
+@@ -9,7 +9,7 @@
+  * No reCAPTCHA. No phone auth. Works 100% on Vercel.
+  */
+ 
+-import { useState } from 'react';
++import React, { useState } from 'react';
+ import {
+   createUserWithEmailAndPassword,
+   signInWithEmailAndPassword,
+diff --git a/src/pages/LoginPage.tsx b/src/pages/LoginPage.tsx
+index 9a718a7..6b24eeb 100644
+--- a/src/pages/LoginPage.tsx
++++ b/src/pages/LoginPage.tsx
+@@ -1,4 +1,4 @@
+-import { useState } from 'react';
++import React, { useState } from 'react';
+ import { useNavigate } from 'react-router-dom';
+ import { sendPasswordResetEmail } from 'firebase/auth';
+ import { doc, setDoc, getDoc, deleteDoc } from 'firebase/firestore';
+diff --git a/src/pages/MoviesPage.tsx b/src/pages/MoviesPage.tsx
+index 3334e45..f9313e2 100644
+--- a/src/pages/MoviesPage.tsx
++++ b/src/pages/MoviesPage.tsx
+@@ -30,7 +30,7 @@ export default function MoviesPage() {
+   const [city, setCity] = useState('Mumbai');
+ 
+   return (
+-    <div style={{ maxWidth:480,margin:'0 auto',minHeight:'100vh',background:'var(--bg)',fontFamily:'var(--f-body)' }}>
++    <div style={{ width:'100%', minHeight:'100vh',background:'var(--bg)',fontFamily:'var(--f-body)' }}>
+       <div style={{ background:'linear-gradient(160deg,#050914,#0a1428)',padding:'52px 20px 20px' }}>
+         <div style={{ display:'flex',alignItems:'center',gap:14,marginBottom:16 }}>
+           <button onClick={()=>navigate('/dashboard')} className="back-btn">←</button>
+diff --git a/src/pages/PrivacyPolicy.tsx b/src/pages/PrivacyPolicy.tsx
+index 93b4f72..942095a 100644
+--- a/src/pages/PrivacyPolicy.tsx
++++ b/src/pages/PrivacyPolicy.tsx
+@@ -3,6 +3,7 @@
+  * Add route in App.tsx: <Route path="/privacy" element={<PrivacyPolicy />} />
+  */
+ 
++import React from 'react';
+ import { useNavigate } from 'react-router-dom';
+ 
+ export default function PrivacyPolicy() {
+@@ -155,7 +156,7 @@ export default function PrivacyPolicy() {
+ }
+ 
+ const S: Record<string, React.CSSProperties> = {
+-  page:        { maxWidth: 480, margin: '0 auto', minHeight: '100vh', background: '#050914', fontFamily: "'Plus Jakarta Sans',sans-serif" },
++  page:        { width:'100%', minHeight: '100vh', background: '#050914', fontFamily: "'Plus Jakarta Sans',sans-serif" },
+   header:      { background: 'linear-gradient(160deg,#050914,#0a1428)', padding: '52px 20px 20px', display: 'flex', alignItems: 'center', gap: 14, position: 'sticky', top: 0, zIndex: 100, borderBottom: '1px solid rgba(255,255,255,0.06)' },
+   backBtn:     { background: 'none', border: 'none', color: '#00e5cc', fontSize: 22, cursor: 'pointer', lineHeight: 1, flexShrink: 0 },
+   headerTitle: { fontFamily: "'Plus Jakarta Sans',sans-serif", fontWeight: 800, fontSize: 20, color: '#fff', margin: 0 },
+diff --git a/src/pages/QRPage.tsx b/src/pages/QRPage.tsx
+index 1c18ef0..81f8f0f 100644
+--- a/src/pages/QRPage.tsx
++++ b/src/pages/QRPage.tsx
+@@ -53,7 +53,7 @@ export default function QRPage() {
+   };
+ 
+   return (
+-    <div style={{ maxWidth:480,margin:'0 auto',minHeight:'100vh',background:'var(--bg)',fontFamily:'var(--f-body)' }}>
++    <div style={{ width:'100%', minHeight:'100vh',background:'var(--bg)',fontFamily:'var(--f-body)' }}>
+       <div style={{ background:'linear-gradient(160deg,#050914,#0a1428)',padding:'52px 20px 20px' }}>
+         <div style={{ display:'flex',alignItems:'center',gap:14,marginBottom:4 }}>
+           <button onClick={()=>navigate('/dashboard')} className="back-btn">←</button>
+diff --git a/src/pages/ReceiveMoney.tsx b/src/pages/ReceiveMoney.tsx
+index 5801106..547b424 100644
+--- a/src/pages/ReceiveMoney.tsx
++++ b/src/pages/ReceiveMoney.tsx
+@@ -7,8 +7,8 @@ export default function ReceiveMoney() {
+ 
+   const { userProfile } = useAuth();
+ 
+-  const qrValue = userProfile?.phoneNumber
+-    ? `upi://pay?phone=${userProfile.phoneNumber}`
++  const qrValue = userProfile?.phone
++    ? `upi://pay?phone=${userProfile.phone}`
+     : "";
+ 
+   return (
+@@ -35,11 +35,11 @@ export default function ReceiveMoney() {
+         <div className="text-center">
+ 
+           <p className="font-medium">
+-            {userProfile?.fullName || "INRT User"}
++            {userProfile?.name || "INRT User"}
+           </p>
+ 
+           <p className="text-sm text-gray-500">
+-            {userProfile?.phoneNumber}
++            {userProfile?.phone}
+           </p>
+ 
+         </div>
+diff --git a/src/pages/RechargePage.tsx b/src/pages/RechargePage.tsx
+index 515eab5..3e30273 100644
+--- a/src/pages/RechargePage.tsx
++++ b/src/pages/RechargePage.tsx
+@@ -4,7 +4,7 @@
+  * Auto-detects operator, fetches live plans, processes real recharge
+  */
+ 
+-import { useState, useEffect, useRef } from 'react';
++import React, { useState, useEffect, useRef } from 'react';
+ import { useNavigate } from 'react-router-dom';
+ import { useAuth } from '../context/AuthContext';
+ import '../styles/theme.css';
+@@ -491,7 +491,7 @@ export default function RechargePage() {
+ }
+ 
+ const S: Record<string, React.CSSProperties> = {
+-  page:        { maxWidth:480,margin:'0 auto',minHeight:'100vh',background:'var(--bg)',fontFamily:'var(--f-body)' },
++  page:        { width:'100%', minHeight:'100vh',background:'var(--bg)',fontFamily:'var(--f-body)' },
+   header:      { background:'linear-gradient(160deg,#050914,#0a1428)',padding:'52px 20px 16px',display:'flex',alignItems:'center',gap:14 },
+   successTitle:{ fontFamily:'var(--f-display)',fontWeight:700,fontSize:26,color:'var(--t1)',marginBottom:8 },
+   bigIcon:     (c:string): React.CSSProperties => ({ width:84,height:84,borderRadius:'50%',background:`${c}15`,border:`2px solid ${c}`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:40,marginBottom:20 }),
+diff --git a/src/pages/RefundPolicy.tsx b/src/pages/RefundPolicy.tsx
+index c51eeff..742ed84 100644
+--- a/src/pages/RefundPolicy.tsx
++++ b/src/pages/RefundPolicy.tsx
+@@ -3,6 +3,7 @@
+  * Add route in App.tsx: <Route path="/refund-policy" element={<RefundPolicy />} />
+  */
+ 
++import React from 'react';
+ import { useNavigate } from 'react-router-dom';
+ 
+ export default function RefundPolicy() {
+@@ -243,7 +244,7 @@ export default function RefundPolicy() {
+ }
+ 
+ const S: Record<string, React.CSSProperties> = {
+-  page:        { maxWidth: 480, margin: '0 auto', minHeight: '100vh', background: '#050914', fontFamily: "'Plus Jakarta Sans',sans-serif" },
++  page:        { width:'100%', minHeight: '100vh', background: '#050914', fontFamily: "'Plus Jakarta Sans',sans-serif" },
+   header:      { background: 'linear-gradient(160deg,#050914,#0a1428)', padding: '52px 20px 20px', display: 'flex', alignItems: 'center', gap: 14, position: 'sticky', top: 0, zIndex: 100, borderBottom: '1px solid rgba(255,255,255,0.06)' },
+   backBtn:     { background: 'none', border: 'none', color: '#00e5cc', fontSize: 22, cursor: 'pointer', lineHeight: 1, flexShrink: 0 },
+   headerTitle: { fontFamily: "'Plus Jakarta Sans',sans-serif", fontWeight: 800, fontSize: 20, color: '#fff', margin: 0 },
+diff --git a/src/pages/RequestMoney.tsx b/src/pages/RequestMoney.tsx
+index 7518a87..0a4b060 100644
+--- a/src/pages/RequestMoney.tsx
++++ b/src/pages/RequestMoney.tsx
+@@ -18,7 +18,7 @@ export default function RequestMoney() {
+   };
+ 
+   return (
+-    <div style={{ maxWidth:480,margin:'0 auto',minHeight:'100vh',background:'var(--bg)',fontFamily:'var(--f-body)' }}>
++    <div style={{ width:'100%', minHeight:'100vh',background:'var(--bg)',fontFamily:'var(--f-body)' }}>
+       <div style={{ background:'linear-gradient(160deg,#050914,#0a1428)',padding:'52px 20px 20px' }}>
+         <div style={{ display:'flex',alignItems:'center',gap:14 }}>
+           <button onClick={()=>navigate('/dashboard')} className="back-btn">←</button>
+diff --git a/src/pages/ScanPay.tsx b/src/pages/ScanPay.tsx
+index acbc443..4277081 100644
+--- a/src/pages/ScanPay.tsx
++++ b/src/pages/ScanPay.tsx
+@@ -7,7 +7,7 @@
+  * Replace: src/pages/ScanPay.tsx
+  */
+ 
+-import { useState, useRef, useEffect, useCallback } from 'react';
++import React, { useState, useRef, useEffect, useCallback } from 'react';
+ import { useNavigate }       from 'react-router-dom';
+ import { useAuth }           from '../context/AuthContext';
+ import { doc, onSnapshot }   from 'firebase/firestore';
+@@ -220,7 +220,7 @@ export default function ScanPay() {
+   const inrtAddr= profile?.inrtAddress || '';
+ 
+   return (
+-    <div style={{ maxWidth:480, margin:'0 auto', minHeight:'100vh', background:T.card, fontFamily:"'Plus Jakarta Sans',sans-serif" }}>
++    <div style={{ width:'100%', minHeight:'100vh', background:T.card, fontFamily:"'Plus Jakarta Sans',sans-serif" }}>
+       <div style={{ padding:'52px 20px 24px' }}>
+         <button onClick={()=>navigate('/dashboard')} style={{ background:'none', border:'none', color:T.accent, cursor:'pointer', fontSize:14, fontWeight:700, padding:'0 0 16px', display:'block' }}>← Back</button>
+         <h2 style={{ fontFamily:"'Plus Jakarta Sans',sans-serif", fontWeight:800, fontSize:24, color:T.text, marginBottom:16 }}>Scan & Pay</h2>
+diff --git a/src/pages/SendMoney.tsx b/src/pages/SendMoney.tsx
+index 7707ce0..f7abd9d 100644
+--- a/src/pages/SendMoney.tsx
++++ b/src/pages/SendMoney.tsx
+@@ -343,7 +343,7 @@ export default function SendMoney() {
+ }
+ 
+ const S: Record<string,any> = {
+-  page:    { maxWidth:480, margin:'0 auto', minHeight:'100vh', background:'#fff', fontFamily:"'Plus Jakarta Sans',sans-serif" },
++  page:    { width:'100%', minHeight:'100vh', background:'#fff', fontFamily:"'Plus Jakarta Sans',sans-serif" },
+   backLink:{ background:'none', border:'none', color:'#0070F3', cursor:'pointer', fontSize:14, fontWeight:700, padding:'0 0 16px', display:'block' },
+   h2:      { fontFamily:"'Plus Jakarta Sans',sans-serif", fontWeight:800, fontSize:24, color:'#0A2540', margin:0 },
+   label:   { fontSize:11, color:'#6B7C93', fontWeight:700, letterSpacing:0.5, margin:'0 0 8px' },
+diff --git a/src/pages/ShareMarket.tsx b/src/pages/ShareMarket.tsx
+index 2db404a..aa8fd34 100644
+--- a/src/pages/ShareMarket.tsx
++++ b/src/pages/ShareMarket.tsx
+@@ -49,7 +49,7 @@ export default function ShareMarket() {
+   const fmt=(n:number)=>n?.toFixed(2)||'—';
+   const filtered=STOCKS.filter(s=>!search||s.name.toLowerCase().includes(search.toLowerCase())||s.symbol.toLowerCase().includes(search.toLowerCase()));
+   return (
+-    <div style={{maxWidth:480,margin:'0 auto',minHeight:'100vh',background:'var(--bg)',fontFamily:'var(--f-body)'}}>
++    <div style={{width:'100%', minHeight:'100vh',background:'var(--bg)',fontFamily:'var(--f-body)'}}>
+       <div style={{background:'linear-gradient(160deg,#050914,#0a1428)',padding:'52px 20px 12px'}}>
+         <div style={{display:'flex',alignItems:'center',gap:14,marginBottom:14}}>
+           <button onClick={()=>navigate('/dashboard')} className="back-btn">←</button>
+diff --git a/src/pages/ShareMarketPage.tsx b/src/pages/ShareMarketPage.tsx
+index 4933875..99d70c3 100644
+--- a/src/pages/ShareMarketPage.tsx
++++ b/src/pages/ShareMarketPage.tsx
+@@ -1,4 +1,4 @@
+-import { useState, useEffect } from 'react';
++import React, { useState, useEffect } from 'react';
+ import { useNavigate } from 'react-router-dom';
+ 
+ // Free API: Yahoo Finance via allorigins proxy (no key needed)
+@@ -258,7 +258,7 @@ export default function ShareMarketPage() {
+ }
+ 
+ const s: Record<string,React.CSSProperties> = {
+-  page:     { maxWidth:480,margin:'0 auto',minHeight:'100vh',background:'#0a0a0f',fontFamily:"'DM Sans',sans-serif" },
++  page:     { width:'100%', minHeight:'100vh',background:'#0a0a0f',fontFamily:"'DM Sans',sans-serif" },
+   header:   { display:'flex',alignItems:'center',gap:14,padding:'52px 16px 16px',background:'linear-gradient(160deg,#0f0f1a,#111118)' },
+   back:     { background:'rgba(255,255,255,0.06)',border:'1px solid rgba(255,255,255,0.07)',borderRadius:12,width:40,height:40,fontSize:18,cursor:'pointer',color:'#f0f0f8',flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center' },
+   title:    { fontFamily:"'Syne',sans-serif",fontWeight:800,fontSize:20,color:'#f0f0f8' },
+diff --git a/src/pages/SplitBill.tsx b/src/pages/SplitBill.tsx
+index c6debce..20c02e8 100644
+--- a/src/pages/SplitBill.tsx
++++ b/src/pages/SplitBill.tsx
+@@ -18,7 +18,7 @@ export default function SplitBill() {
+   };
+ 
+   return (
+-    <div style={{maxWidth:480,margin:'0 auto',minHeight:'100vh',background:'var(--bg)',fontFamily:'var(--f-body)'}}>
++    <div style={{width:'100%', minHeight:'100vh',background:'var(--bg)',fontFamily:'var(--f-body)'}}>
+       <div style={{background:'linear-gradient(160deg,#050914,#0a1428)',padding:'52px 20px 20px'}}>
+         <div style={{display:'flex',alignItems:'center',gap:14}}>
+           <button onClick={()=>navigate('/dashboard')} className="back-btn">←</button>
+diff --git a/src/pages/TermsAndConditions.tsx b/src/pages/TermsAndConditions.tsx
+index 90eeb56..8a796ad 100644
+--- a/src/pages/TermsAndConditions.tsx
++++ b/src/pages/TermsAndConditions.tsx
+@@ -3,6 +3,7 @@
+  * Add route in App.tsx: <Route path="/terms" element={<TermsAndConditions />} />
+  */
+ 
++import React from 'react';
+ import { useNavigate } from 'react-router-dom';
+ 
+ export default function TermsAndConditions() {
+@@ -150,7 +151,7 @@ export default function TermsAndConditions() {
+ }
+ 
+ const S: Record<string, React.CSSProperties> = {
+-  page:        { maxWidth: 480, margin: '0 auto', minHeight: '100vh', background: '#050914', fontFamily: "'Plus Jakarta Sans',sans-serif" },
++  page:        { width:'100%', minHeight: '100vh', background: '#050914', fontFamily: "'Plus Jakarta Sans',sans-serif" },
+   header:      { background: 'linear-gradient(160deg,#050914,#0a1428)', padding: '52px 20px 20px', display: 'flex', alignItems: 'center', gap: 14, position: 'sticky', top: 0, zIndex: 100, borderBottom: '1px solid rgba(255,255,255,0.06)' },
+   backBtn:     { background: 'none', border: 'none', color: '#00e5cc', fontSize: 22, cursor: 'pointer', lineHeight: 1, flexShrink: 0 },
+   headerTitle: { fontFamily: "'Plus Jakarta Sans',sans-serif", fontWeight: 800, fontSize: 20, color: '#fff', margin: 0 },
+diff --git a/src/pages/TravelPage.tsx b/src/pages/TravelPage.tsx
+index 13d4bac..7fbf43e 100644
+--- a/src/pages/TravelPage.tsx
++++ b/src/pages/TravelPage.tsx
+@@ -7,7 +7,7 @@ export default function TravelPage() {
+   const [tab, setTab] = useState<'flights'|'hotels'|'trains'|'buses'>('flights');
+ 
+   return (
+-    <div style={{ maxWidth:480,margin:'0 auto',minHeight:'100vh',background:'var(--bg)',fontFamily:'var(--f-body)' }}>
++    <div style={{ width:'100%', minHeight:'100vh',background:'var(--bg)',fontFamily:'var(--f-body)' }}>
+       <div style={{ background:'linear-gradient(160deg,#050914,#0a1428)',padding:'52px 20px 20px' }}>
+         <div style={{ display:'flex',alignItems:'center',gap:14,marginBottom:16 }}>
+           <button onClick={()=>navigate('/dashboard')} className="back-btn">←</button>
+diff --git a/src/styles/theme.css b/src/styles/theme.css
+index 655cf8e..a43c363 100644
+--- a/src/styles/theme.css
++++ b/src/styles/theme.css
+@@ -61,17 +61,19 @@
+ /* ── Reset ── */
+ *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+ html { scroll-behavior: smooth; -webkit-tap-highlight-color: transparent; }
++html, body {
++  height: auto;
++  overflow-y: auto;
++}
+ body {
+   font-family: var(--f-body);
+   background: var(--bg);
+   color: var(--t1);
+   min-height: 100vh;
+   -webkit-font-smoothing: antialiased;
+-  overscroll-behavior: none;
+ }
+ #root {
+-  max-width: var(--max-w);
+-  margin: 0 auto;
++  width: 100%;
+   min-height: 100vh;
+   background: var(--bg);
+   position: relative;
+@@ -214,8 +216,8 @@ input, select, textarea { font-family: var(--f-body); }
+ /* ── Bottom nav ── */
+ .bottom-nav {
+   position: fixed; bottom: 0;
+-  left: 50%; transform: translateX(-50%);
+-  width: 100%; max-width: var(--max-w);
++  left: 0;
++  width: 100%;
+   height: var(--nav-h);
+   background: rgba(5,9,20,0.96);
+   backdrop-filter: blur(24px);
