@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Button } from '@/components/ui';
 import { X, Delete } from 'lucide-react';
 
 interface PinInputProps {
@@ -29,63 +28,77 @@ export const PinInput: React.FC<PinInputProps> = ({ onComplete, onClose, title =
   };
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-end sm:items-center justify-center z-50 animate-in fade-in duration-200">
-      <div className="bg-white w-full max-w-md sm:rounded-2xl rounded-t-2xl p-6 shadow-xl animate-in slide-in-from-bottom duration-300">
-        <div className="flex justify-between items-center mb-6">
-          <h3 className="text-lg font-bold text-slate-900">{title}</h3>
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'flex-end', justifyContent: 'center', zIndex: 50 }}>
+      <div style={{ background: '#ffffff', width: '100%', maxWidth: '448px', borderRadius: '16px 16px 0 0', padding: '24px', boxShadow: '0 25px 50px -12px rgba(0,0,0,0.25)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
+          <h3 style={{ fontSize: '18px', fontWeight: 'bold', color: '#0f172a', margin: 0 }}>{title}</h3>
           {onClose && (
-            <button onClick={onClose} className="p-2 hover:bg-slate-100 rounded-full transition-colors">
-              <X size={20} className="text-slate-500" />
+            <button onClick={onClose} style={{ padding: '8px', background: 'transparent', border: 'none', borderRadius: '50%', cursor: 'pointer', transition: 'background-color 0.2s' }}>
+              <X size={20} style={{ color: '#64748b' }} />
             </button>
           )}
         </div>
 
-        <div className="flex justify-center space-x-4 mb-8">
+        <div style={{ display: 'flex', justifyContent: 'center', gap: '16px', marginBottom: '32px' }}>
           {[...Array(maxLen)].map((_, i) => (
             <div 
               key={i} 
-              className={`w-4 h-4 rounded-full transition-all duration-200 ${
-                i < pin.length ? 'bg-slate-900 scale-110' : 'bg-slate-200'
-              }`}
+              style={{ 
+                width: '16px', 
+                height: '16px', 
+                borderRadius: '50%', 
+                transition: 'all 0.2s',
+                background: i < pin.length ? '#0f172a' : '#e2e8f0',
+                transform: i < pin.length ? 'scale(1.1)' : 'scale(1)'
+              }}
             />
           ))}
         </div>
 
         {error && (
-          <p className="text-red-500 text-center text-sm mb-4 font-medium animate-pulse">
+          <p style={{ color: '#ef4444', textAlign: 'center', fontSize: '14px', marginBottom: '16px', fontWeight: 500, margin: '0 0 16px' }}>
             {error}
           </p>
         )}
 
         {isLoading && (
-          <div className="flex justify-center mb-4">
-            <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary"></div>
+          <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '16px' }}>
+            <div style={{ animation: 'spin 1s linear infinite', borderRadius: '50%', height: '24px', width: '24px', borderBottom: '2px solid #0ea5e9' }}></div>
           </div>
         )}
 
-        <div className="grid grid-cols-3 gap-4 mb-4">
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '16px', marginBottom: '16px' }}>
           {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((num) => (
             <button
               key={num}
               onClick={() => handleNumberClick(num)}
               disabled={isLoading}
-              className="h-16 rounded-xl text-2xl font-semibold text-slate-700 hover:bg-slate-100 active:bg-slate-200 transition-colors disabled:opacity-50"
+              style={{ height: '64px', borderRadius: '12px', fontSize: '24px', fontWeight: 600, color: '#334155', background: 'transparent', border: 'none', cursor: isLoading ? 'not-allowed' : 'pointer', transition: 'background-color 0.2s', opacity: isLoading ? 0.5 : 1 }}
+              onMouseEnter={(e) => { if (!isLoading) e.currentTarget.style.backgroundColor = '#f1f5f9'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent'; }}
+              onMouseDown={(e) => { if (!isLoading) e.currentTarget.style.backgroundColor = '#e2e8f0'; }}
             >
               {num}
             </button>
           ))}
-          <div className="h-16"></div> {/* Spacer */}
+          <div style={{ height: '64px' }}></div>
           <button
             onClick={() => handleNumberClick(0)}
             disabled={isLoading}
-            className="h-16 rounded-xl text-2xl font-semibold text-slate-700 hover:bg-slate-100 active:bg-slate-200 transition-colors disabled:opacity-50"
+            style={{ height: '64px', borderRadius: '12px', fontSize: '24px', fontWeight: 600, color: '#334155', background: 'transparent', border: 'none', cursor: isLoading ? 'not-allowed' : 'pointer', transition: 'background-color 0.2s', opacity: isLoading ? 0.5 : 1 }}
+            onMouseEnter={(e) => { if (!isLoading) e.currentTarget.style.backgroundColor = '#f1f5f9'; }}
+            onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent'; }}
+            onMouseDown={(e) => { if (!isLoading) e.currentTarget.style.backgroundColor = '#e2e8f0'; }}
           >
             0
           </button>
           <button
             onClick={handleDelete}
             disabled={isLoading}
-            className="h-16 rounded-xl flex items-center justify-center text-slate-700 hover:bg-slate-100 active:bg-slate-200 transition-colors disabled:opacity-50"
+            style={{ height: '64px', borderRadius: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#334155', background: 'transparent', border: 'none', cursor: isLoading ? 'not-allowed' : 'pointer', transition: 'background-color 0.2s', opacity: isLoading ? 0.5 : 1 }}
+            onMouseEnter={(e) => { if (!isLoading) e.currentTarget.style.backgroundColor = '#f1f5f9'; }}
+            onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'transparent'; }}
+            onMouseDown={(e) => { if (!isLoading) e.currentTarget.style.backgroundColor = '#e2e8f0'; }}
           >
             <Delete size={24} />
           </button>

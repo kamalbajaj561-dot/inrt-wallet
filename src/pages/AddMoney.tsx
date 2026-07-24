@@ -5,7 +5,7 @@
  *   2. UPI QR Code — works right now, no gateway needed
  */
 
-import { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 

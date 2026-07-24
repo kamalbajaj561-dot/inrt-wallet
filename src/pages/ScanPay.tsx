@@ -7,7 +7,7 @@
  * Replace: src/pages/ScanPay.tsx
  */
 
-import { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useNavigate }       from 'react-router-dom';
 import { useAuth }           from '../context/AuthContext';
 import { doc, onSnapshot }   from 'firebase/firestore';
@@ -220,7 +220,7 @@ export default function ScanPay() {
   const inrtAddr= profile?.inrtAddress || '';
 
   return (
-    <div style={{ maxWidth:480, margin:'0 auto', minHeight:'100vh', background:T.card, fontFamily:"'Plus Jakarta Sans',sans-serif" }}>
+    <div style={{ width:'100%', minHeight:'100vh', background:T.card, fontFamily:"'Plus Jakarta Sans',sans-serif" }}>
       <div style={{ padding:'52px 20px 24px' }}>
         <button onClick={()=>navigate('/dashboard')} style={{ background:'none', border:'none', color:T.accent, cursor:'pointer', fontSize:14, fontWeight:700, padding:'0 0 16px', display:'block' }}>← Back</button>
         <h2 style={{ fontFamily:"'Plus Jakarta Sans',sans-serif", fontWeight:800, fontSize:24, color:T.text, marginBottom:16 }}>Scan & Pay</h2>

@@ -1,3 +1,5 @@
+import React from 'react';
+
 /**
  * INRT WALLET — PrivacyPolicy.tsx
  * Add route in App.tsx: <Route path="/privacy" element={<PrivacyPolicy />} />

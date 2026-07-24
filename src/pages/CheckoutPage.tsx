@@ -158,7 +158,7 @@ export default function CheckoutPage() {
 
   // ── Success screen ───────────────────────────────────────────
   if (success) return (
-    <div style={{ maxWidth:480, margin:'0 auto', minHeight:'100vh', background:T.bg, fontFamily:"'Plus Jakarta Sans',sans-serif", display:'flex', alignItems:'center', justifyContent:'center' }}>
+    <div style={{ width:'100%', minHeight:'100vh', background:T.bg, fontFamily:"'Plus Jakarta Sans',sans-serif", display:'flex', alignItems:'center', justifyContent:'center' }}>
       <div style={{ padding:'40px 24px', textAlign:'center' as const, width:'100%' }}>
         <div style={{ width:84, height:84, borderRadius:'50%', background:'rgba(0,200,83,0.12)', border:`2px solid ${T.green}`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:40, margin:'0 auto 24px' }}>
           {success.mode==='buy' ? '🪙' : '💸'}
@@ -194,7 +194,7 @@ export default function CheckoutPage() {
   );
 
   return (
-    <div style={{ maxWidth:480, margin:'0 auto', minHeight:'100vh', background:T.bg, fontFamily:"'Plus Jakarta Sans',sans-serif", paddingBottom:40 }}>
+    <div style={{ width:'100%', minHeight:'100vh', background:T.bg, fontFamily:"'Plus Jakarta Sans',sans-serif", paddingBottom:40 }}>
 
       {/* Header */}
       <div style={{ background:`linear-gradient(160deg,${T.inrt} 0%,#3D0D7B 60%,${T.bg} 100%)`, padding:'52px 20px 30px', position:'relative', overflow:'hidden' }}>

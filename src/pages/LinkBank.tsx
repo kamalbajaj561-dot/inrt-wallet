@@ -20,7 +20,7 @@ export default function LinkBank() {
   };
 
   return (
-    <div style={{ maxWidth:480,margin:'0 auto',minHeight:'100vh',background:'var(--bg)',fontFamily:'var(--f-body)' }}>
+    <div style={{ width:'100%',minHeight:'100vh',background:'var(--bg)',fontFamily:'var(--f-body)' }}>
       <div style={{ background:'linear-gradient(160deg,#050914,#0a1428)',padding:'52px 20px 20px' }}>
         <div style={{ display:'flex',alignItems:'center',gap:14 }}>
           <button onClick={()=>navigate('/dashboard')} className="back-btn">←</button>

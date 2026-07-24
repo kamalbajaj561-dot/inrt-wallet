@@ -32,14 +32,14 @@ export default function CibilPage() {
     {t:'Do not close old accounts',imp:'Medium',c:'#f4b942'},{t:'Avoid multiple loan applications',imp:'Low',c:'#00d68f'},
   ];
   if(loading) return (
-    <div style={{maxWidth:480,margin:'0 auto',minHeight:'100vh',background:'var(--bg)',display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column',gap:16}}>
+    <div style={{width:'100%',minHeight:'100vh',background:'var(--bg)',display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column',gap:16}}>
       <div style={{width:52,height:52,border:'4px solid var(--teal)',borderTopColor:'transparent',borderRadius:'50%',animation:'spin 0.8s linear infinite'}}/>
       <p style={{color:'var(--t2)',fontSize:14,fontFamily:'var(--f-body)'}}>Fetching your credit score…</p>
       <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
     </div>
   );
   return (
-    <div style={{maxWidth:480,margin:'0 auto',minHeight:'100vh',background:'var(--bg)',fontFamily:'var(--f-body)'}}>
+    <div style={{width:'100%',minHeight:'100vh',background:'var(--bg)',fontFamily:'var(--f-body)'}}>
       <div style={{background:'linear-gradient(160deg,#050914,#0a1428)',padding:'52px 20px 20px'}}>
         <div style={{display:'flex',alignItems:'center',gap:14}}>
           <button onClick={()=>navigate('/dashboard')} className="back-btn">←</button>

@@ -1,4 +1,4 @@
-import { Suspense, lazy } from 'react';
+import React, { Suspense, lazy } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
 
@@ -7,6 +7,7 @@ import LoginPage   from './pages/LoginPage';
 import Dashboard   from './pages/Dashboard';
 import AddMoney    from './pages/AddMoney';
 import SendMoney   from './pages/SendMoney';
+import ReceiveMoney from './pages/ReceiveMoney';
 import PrivacyPolicy      from './pages/PrivacyPolicy';
 import TermsAndConditions from './pages/TermsAndConditions';
 import RefundPolicy       from './pages/RefundPolicy';
@@ -81,6 +82,7 @@ export default function App() {
             {/* Core wallet */}
             <Route path="/add-money"  element={<Guard><AddMoney /></Guard>} />
             <Route path="/send"       element={<Guard><SendMoney /></Guard>} />
+            <Route path="/receive"    element={<Guard><ReceiveMoney /></Guard>} />
             <Route path="/request"    element={<Guard><Suspense fallback={<Loader/>}><RequestMoney /></Suspense></Guard>} />
             <Route path="/qr"         element={<Guard><Suspense fallback={<Loader/>}><QRPage /></Suspense></Guard>} />
             <Route path="/scan"       element={<Guard><Suspense fallback={<Loader/>}><ScanPay /></Suspense></Guard>} />

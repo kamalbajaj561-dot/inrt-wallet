@@ -92,3 +92,35 @@ export async function addNotification(uid: string, title: string, body: string, 
     createdAt: serverTimestamp(),
   });
 }
+
+// ── Bookings ─────────────────────────────────────────────────
+export async function createBooking(uid: string, data: {
+  type: 'movie' | 'train' | 'bus' | 'flight';
+  title: string;
+  date: string;
+  time?: string;
+  amount: number;
+  seats?: number;
+  passengers?: number;
+  from?: string;
+  to?: string;
+  status?: 'confirmed' | 'pending' | 'cancelled';
+}) {
+  return addDoc(collection(db, 'bookings'), {
+    uid, ...data,
+    status: data.status || 'confirmed',
+    createdAt: serverTimestamp(),
+  });
+}
+
+export function subscribeToBookings(uid: string, cb: (b: any[]) => void) {
+  const q = query(
+    collection(db, 'bookings'),
+    where('uid', '==', uid),
+    orderBy('createdAt', 'desc'),
+    limit(20),
+  );
+  return onSnapshot(q, (snap) =>
+    cb(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
+  );
+}

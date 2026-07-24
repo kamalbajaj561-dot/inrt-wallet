@@ -76,7 +76,7 @@ export default function GoldPage() {
   };
 
   return (
-    <div style={{maxWidth:480,margin:'0 auto',minHeight:'100vh',background:'var(--bg)',fontFamily:'var(--f-body)'}}>
+    <div style={{width:'100%',minHeight:'100vh',background:'var(--bg)',fontFamily:'var(--f-body)'}}>
       {toast&&<div className="toast">{toast}</div>}
       <div style={{background:'linear-gradient(160deg,#050914,#1a1208)',padding:'52px 20px 20px'}}>
         <div style={{display:'flex',alignItems:'center',gap:14,marginBottom:16}}>

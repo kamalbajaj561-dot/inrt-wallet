@@ -5,7 +5,7 @@
  * Fixed: direct Firestore subscription for live data
  */
 
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate }         from 'react-router-dom';
 import { useAuth }             from '../context/AuthContext';
 import { doc, onSnapshot, collection, query, where, orderBy, limit } from 'firebase/firestore';
@@ -78,9 +78,9 @@ export default function Dashboard() {
   // ── Quick actions (LAUNCH VERSION — UPI/Bank hidden pending payout approval)
   const ACTIONS = [
     { label:'Send INRT', icon:'📤', path:'/send',          color:T.inrt    },
-    { label:'Receive',   icon:'📥', path:'/crypto',        color:T.green   },
-    { label:'Buy INRT',  icon:'🪙', path:'/checkout',      color:T.inrt    },
-    { label:'Sell INRT', icon:'💸', path:'/checkout',      color:'#00897B' },
+    { label:'Receive',   icon:'📥', path:'/receive',       color:T.green   },
+    { label:'Buy INRT',  icon:'🪙', path:'/checkout',      color:T.inrt   , mode:'buy' },
+    { label:'Sell INRT', icon:'💸', path:'/checkout',      color:'#00897B', mode:'sell' },
     { label:'Scan',      icon:'📷', path:'/scan',          color:T.navy    },
     { label:'Recharge',  icon:'📱', path:'/recharge',      color:T.orange  },
     { label:'History',   icon:'📋', path:'/history',       color:T.muted   },
@@ -93,7 +93,7 @@ export default function Dashboard() {
   };
 
   if (!ready) return (
-    <div style={{ maxWidth:480, margin:'0 auto', minHeight:'100vh', background:'#F6F8FA', display:'flex', alignItems:'center', justifyContent:'center' }}>
+    <div style={{ width:'100%', minHeight:'100vh', background:'#F6F8FA', display:'flex', alignItems:'center', justifyContent:'center' }}>
       <div style={{ textAlign:'center' }}>
         <div style={{ width:44, height:44, border:`4px solid ${T.light}`, borderTopColor:T.navy, borderRadius:'50%', animation:'spin 0.8s linear infinite', margin:'0 auto 16px' }}/>
         <p style={{ color:T.muted, fontFamily:"'Plus Jakarta Sans',sans-serif", fontSize:14 }}>Loading your wallet…</p>
@@ -103,7 +103,7 @@ export default function Dashboard() {
   );
 
   return (
-    <div style={{ maxWidth:480, margin:'0 auto', minHeight:'100vh', background:'#F6F8FA', fontFamily:"'Plus Jakarta Sans',sans-serif", paddingBottom:80 }}>
+    <div style={{ width:'100%', minHeight:'100vh', background:'#F6F8FA', fontFamily:"'Plus Jakarta Sans',sans-serif", paddingBottom:80 }}>
 
       {/* ── HERO HEADER ───────────────────────────────────── */}
       <div style={{ background:`linear-gradient(145deg,${T.navy} 0%,#1565C0 100%)`, padding:'52px 20px 80px', position:'relative', overflow:'hidden' }}>
@@ -174,7 +174,7 @@ export default function Dashboard() {
         <div style={{ background:T.card, borderRadius:18, border:`1px solid ${T.border}`, padding:'18px 16px', boxShadow:'0 4px 24px rgba(10,37,64,0.10)' }}>
           <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:6 }}>
             {ACTIONS.map(a=>(
-              <button key={a.path} onClick={()=>navigate(a.path)}
+              <button key={a.path} onClick={()=>(a as any).mode ? navigate(a.path, { state: { mode: (a as any).mode } }) : navigate(a.path)}
                 style={{ background:'none', border:'none', cursor:'pointer', display:'flex', flexDirection:'column' as const, alignItems:'center', gap:6, padding:'8px 4px', borderRadius:12 }}>
                 <div style={{ width:46, height:46, borderRadius:13, background:a.color+'15', display:'flex', alignItems:'center', justifyContent:'center', fontSize:20, border:`1px solid ${a.color}25` }}>
                   {a.icon}
@@ -321,7 +321,7 @@ export default function Dashboard() {
       </div>
 
       {/* ── BOTTOM NAV ────────────────────────────────────── */}
-      <nav style={{ position:'fixed', bottom:0, left:'50%', transform:'translateX(-50%)', width:'100%', maxWidth:480, height:72, background:'rgba(255,255,255,0.97)', borderTop:`1px solid ${T.border}`, display:'flex', alignItems:'center', zIndex:200, padding:'0 8px 8px', backdropFilter:'blur(20px)' }}>
+      <nav style={{ position:'fixed', bottom:0, left:0, width:'100%', height:72, background:'rgba(255,255,255,0.97)', borderTop:`1px solid ${T.border}`, display:'flex', alignItems:'center', zIndex:200, padding:'0 8px 8px', backdropFilter:'blur(20px)' }}>
         {[
           { path:'/dashboard', icon:'🏠', label:'Home'    },
           { path:'/history',   icon:'📋', label:'History' },

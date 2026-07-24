@@ -9,7 +9,7 @@
  *   Step 4: Submitted — shows real-time status
  */
 
-import { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate }                  from 'react-router-dom';
 import { useAuth }                      from '../context/AuthContext';
 
@@ -477,7 +477,7 @@ export default function KYCPage() {
 }
 
 const S: Record<string,any> = {
-  page:      { maxWidth:480, margin:'0 auto', minHeight:'100vh', background:'#050914', fontFamily:"'Plus Jakarta Sans',sans-serif" },
+  page:      { width:'100%', minHeight:'100vh', background:'#050914', fontFamily:"'Plus Jakarta Sans',sans-serif" },
   header:    { background:'linear-gradient(160deg,#050914,#0a1428)', padding:'52px 20px 16px', display:'flex', alignItems:'center', gap:14, borderBottom:'1px solid rgba(255,255,255,0.06)' },
   backBtn:   { background:'none', border:'none', color:'#00e5cc', fontSize:22, cursor:'pointer', lineHeight:1, flexShrink:0 },
   title:     { fontFamily:"'Plus Jakarta Sans',sans-serif", fontWeight:800, fontSize:20, color:'#fff', margin:0 },

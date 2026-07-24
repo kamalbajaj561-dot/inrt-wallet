@@ -343,7 +343,7 @@ export default function SendMoney() {
 }
 
 const S: Record<string,any> = {
-  page:    { maxWidth:480, margin:'0 auto', minHeight:'100vh', background:'#fff', fontFamily:"'Plus Jakarta Sans',sans-serif" },
+  page:    { width:'100%', minHeight:'100vh', background:'#fff', fontFamily:"'Plus Jakarta Sans',sans-serif" },
   backLink:{ background:'none', border:'none', color:'#0070F3', cursor:'pointer', fontSize:14, fontWeight:700, padding:'0 0 16px', display:'block' },
   h2:      { fontFamily:"'Plus Jakarta Sans',sans-serif", fontWeight:800, fontSize:24, color:'#0A2540', margin:0 },
   label:   { fontSize:11, color:'#6B7C93', fontWeight:700, letterSpacing:0.5, margin:'0 0 8px' },

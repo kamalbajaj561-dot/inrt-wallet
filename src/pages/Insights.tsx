@@ -24,12 +24,12 @@ export default function Insights() {
     return acc;
   },{} as Record<string,number>);
 
-  const total = Object.values(cats).reduce((a,b)=>a+b,0);
+  const total = Object.values(cats).reduce((a:number,b:number)=>a+b,0);
   const CAT_COLORS: Record<string,string> = {
     recharge:'#f4b942',bills:'#00e5cc',crypto:'#f7931a',
     gold:'#f4b942',transfer:'#4d8af0',other:'#a78bfa'
   };
-  const sorted = Object.entries(cats).sort(([,a],[,b])=>b-a);
+  const sorted = Object.entries(cats).sort(([,a],[,b])=>(b as number)-(a as number));
 
   return (
     <div className="page">
@@ -42,7 +42,7 @@ export default function Insights() {
         <div className="card" style={{marginBottom:20}}>
           <p className="s-label">TOTAL SPENDING (LAST 50 TX)</p>
           <p style={{fontFamily:'var(--f-display)',fontWeight:700,fontSize:32,color:'var(--red)',marginTop:6}}>
-            ₹{total.toLocaleString('en-IN')}
+            ₹{(total as number).toLocaleString('en-IN')}
           </p>
         </div>
         {sorted.length === 0 ? (
@@ -52,7 +52,7 @@ export default function Insights() {
           </div>
         ) : (
           sorted.map(([cat, amt]) => {
-            const pct = total > 0 ? (amt/total)*100 : 0;
+            const pct = (total as number) > 0 ? ((amt as number)/(total as number))*100 : 0;
             const c   = CAT_COLORS[cat] || '#4d8af0';
             return (
               <div key={cat} style={{background:'var(--bg-card)',border:'1px solid var(--b1)',
@@ -60,7 +60,7 @@ export default function Insights() {
                 <div style={{display:'flex',justifyContent:'space-between',marginBottom:8}}>
                   <span style={{color:'var(--t1)',fontWeight:600,textTransform:'capitalize'}}>{cat}</span>
                   <div style={{textAlign:'right'}}>
-                    <span style={{color:'var(--t1)',fontWeight:700}}>₹{amt.toLocaleString('en-IN')}</span>
+                    <span style={{color:'var(--t1)',fontWeight:700}}>₹{(amt as number).toLocaleString('en-IN')}</span>
                     <span style={{color:'var(--t3)',fontSize:12,marginLeft:8}}>{pct.toFixed(1)}%</span>
                   </div>
                 </div>

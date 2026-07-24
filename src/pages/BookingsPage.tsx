@@ -31,8 +31,11 @@ export default function BookingsPage() {
     try {
       const id = await createBooking(user!.uid, {
         type: 'movie',
-        details: { title: selected.title, time: selectedTime, seats, price: selected.price },
+        title: selected.title,
+        date: new Date().toISOString().split('T')[0],
+        time: selectedTime,
         amount: total,
+        seats,
       });
       setSuccess({ id, title: selected.title, time: selectedTime, seats, total });
       setSelected(null);

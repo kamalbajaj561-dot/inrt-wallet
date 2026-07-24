@@ -1,3 +1,5 @@
+import React from 'react';
+
 /**
  * INRT WALLET — RefundPolicy.tsx
  * Add route in App.tsx: <Route path="/refund-policy" element={<RefundPolicy />} />
