@@ -126,6 +126,7 @@ export default function Dashboard() {
           <div style={{ display:'flex', gap:8 }}>
             <button onClick={()=>navigate('/scan')} style={{ background:'rgba(255,255,255,0.1)', border:'none', borderRadius:10, width:38, height:38, color:'#fff', cursor:'pointer', fontSize:16 }}>📷</button>
             <button onClick={()=>navigate('/notifications')} style={{ background:'rgba(255,255,255,0.1)', border:'none', borderRadius:10, width:38, height:38, color:'#fff', cursor:'pointer', fontSize:16 }}>🔔</button>
+            <button onClick={()=>navigate('/profile')} aria-label="Profile" style={{ background:'rgba(255,255,255,0.1)', border:'none', borderRadius:10, width:38, height:38, color:'#fff', cursor:'pointer', fontSize:16, display:'flex', alignItems:'center', justifyContent:'center' }}>👤</button>
           </div>
         </div>
 
