@@ -16,8 +16,8 @@ const T = {
   navy:'#0A2540', accent:'#0070F3', inrt:'#7B2FBE',
   green:'#00C853', greenL:'#E8FAF0', orange:'#FF9500',
   gold:'#FFD60A', red:'#FF3B30', teal:'#00e5cc',
-  border:'#E8ECF0', muted:'#6B7C93', light:'#F0F4F8',
-  text:'#0A2540', card:'#FFFFFF',
+  border:'rgba(255,255,255,0.1)', muted:'#8B9DB3', light:'#0D2A4A',
+  text:'#FFFFFF', card:'#0D2A4A',
 };
 
 function Chip({ children, color=T.accent, bg }: { children:React.ReactNode; color?:string; bg?:string }) {
@@ -93,7 +93,7 @@ export default function Dashboard() {
   };
 
   if (!ready) return (
-    <div style={{ width:'100%', minHeight:'100vh', background:'#F6F8FA', display:'flex', alignItems:'center', justifyContent:'center' }}>
+    <div style={{ width:'100%', minHeight:'100vh', background:T.navy, display:'flex', alignItems:'center', justifyContent:'center' }}>
       <div style={{ textAlign:'center' }}>
         <div style={{ width:44, height:44, border:`4px solid ${T.light}`, borderTopColor:T.navy, borderRadius:'50%', animation:'spin 0.8s linear infinite', margin:'0 auto 16px' }}/>
         <p style={{ color:T.muted, fontFamily:"'Plus Jakarta Sans',sans-serif", fontSize:14 }}>Loading your wallet…</p>
@@ -103,7 +103,7 @@ export default function Dashboard() {
   );
 
   return (
-    <div style={{ width:'100%', minHeight:'100vh', background:'#F6F8FA', fontFamily:"'Plus Jakarta Sans',sans-serif", paddingBottom:80 }}>
+    <div style={{ width:'100%', minHeight:'100vh', background:T.navy, fontFamily:"'Plus Jakarta Sans',sans-serif", paddingBottom:80 }}>
 
       {/* ── HERO HEADER ───────────────────────────────────── */}
       <div style={{ background:`linear-gradient(145deg,${T.navy} 0%,#1565C0 100%)`, padding:'52px 20px 80px', position:'relative', overflow:'hidden' }}>
@@ -171,7 +171,7 @@ export default function Dashboard() {
 
       {/* ── QUICK ACTIONS ──────────────────────────────────── */}
       <div style={{ margin:'0 16px', marginTop:-44, position:'relative', zIndex:10 }}>
-        <div style={{ background:T.card, borderRadius:18, border:`1px solid ${T.border}`, padding:'18px 16px', boxShadow:'0 4px 24px rgba(10,37,64,0.10)' }}>
+        <div style={{ background:T.card, borderRadius:18, border:`1px solid ${T.border}`, padding:'18px 16px', boxShadow:'0 4px 24px rgba(0,0,0,0.3)' }}>
           <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:6 }}>
             {ACTIONS.map(a=>(
               <button key={a.path} onClick={()=>(a as any).mode ? navigate(a.path, { state: { mode: (a as any).mode } }) : navigate(a.path)}
@@ -203,7 +203,7 @@ export default function Dashboard() {
         </div>
 
         {/* ── REWARDS PROGRESS ──────────────────────────── */}
-        <div style={{ background:T.card, borderRadius:18, border:`1px solid ${T.border}`, padding:'16px 18px', boxShadow:'0 2px 12px rgba(10,37,64,0.08)', marginBottom:16 }}>
+        <div style={{ background:T.card, borderRadius:18, border:`1px solid ${T.border}`, padding:'16px 18px', boxShadow:'0 2px 12px rgba(0,0,0,0.2)', marginBottom:16 }}>
           <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:10 }}>
             <div style={{ display:'flex', alignItems:'center', gap:8 }}>
               <span style={{ fontSize:20 }}>🏆</span>
@@ -238,7 +238,7 @@ export default function Dashboard() {
             { label:'Travel',    icon:'✈️', path:'/travel',     color:'#00BCD4' },
           ].map(s=>(
             <button key={s.path} onClick={()=>navigate(s.path)}
-              style={{ display:'flex', flexDirection:'column' as const, alignItems:'center', gap:6, background:T.card, border:`1px solid ${T.border}`, borderRadius:14, padding:'14px 8px', cursor:'pointer', boxShadow:'0 1px 6px rgba(10,37,64,0.06)' }}>
+              style={{ display:'flex', flexDirection:'column' as const, alignItems:'center', gap:6, background:T.card, border:`1px solid ${T.border}`, borderRadius:14, padding:'14px 8px', cursor:'pointer', boxShadow:'0 1px 6px rgba(0,0,0,0.15)' }}>
               <div style={{ width:42, height:42, borderRadius:11, background:s.color+'18', display:'flex', alignItems:'center', justifyContent:'center', fontSize:20, border:`1px solid ${s.color}25` }}>{s.icon}</div>
               <span style={{ fontSize:10, color:T.text, fontWeight:700, fontFamily:"'Plus Jakarta Sans',sans-serif", textAlign:'center' as const }}>{s.label}</span>
             </button>
@@ -252,13 +252,13 @@ export default function Dashboard() {
         </div>
 
         {txns.length===0 ? (
-          <div style={{ background:T.card, borderRadius:18, border:`1px solid ${T.border}`, padding:'40px 20px', textAlign:'center' as const, boxShadow:'0 2px 12px rgba(10,37,64,0.06)' }}>
+          <div style={{ background:T.card, borderRadius:18, border:`1px solid ${T.border}`, padding:'40px 20px', textAlign:'center' as const, boxShadow:'0 2px 12px rgba(0,0,0,0.2)' }}>
             <p style={{ fontSize:36, marginBottom:12 }}>💳</p>
             <p style={{ fontWeight:700, fontSize:15, color:T.text, margin:'0 0 4px' }}>No transactions yet</p>
             <p style={{ fontSize:13, color:T.muted, margin:0 }}>Start by adding money to your wallet</p>
           </div>
         ) : (
-          <div style={{ background:T.card, borderRadius:18, border:`1px solid ${T.border}`, padding:0, overflow:'hidden', boxShadow:'0 2px 12px rgba(10,37,64,0.06)' }}>
+          <div style={{ background:T.card, borderRadius:18, border:`1px solid ${T.border}`, padding:0, overflow:'hidden', boxShadow:'0 2px 12px rgba(0,0,0,0.2)' }}>
             {txns.map((tx,i)=>(
               <div key={tx.id} style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'13px 16px', borderBottom:i<txns.length-1?`1px solid ${T.border}`:'none' }}>
                 <div style={{ display:'flex', alignItems:'center', gap:12 }}>
@@ -290,7 +290,7 @@ export default function Dashboard() {
             { label:'Total Sent',     val:`₹${(profile?.totalSent||0).toLocaleString('en-IN')}`,     color:T.red   },
             { label:'INRT Balance',   val:points.toLocaleString(),                                     color:T.inrt  },
           ].map(s=>(
-            <div key={s.label} style={{ background:T.card, borderRadius:14, border:`1px solid ${T.border}`, padding:'12px 10px', textAlign:'center' as const, boxShadow:'0 1px 6px rgba(10,37,64,0.06)' }}>
+            <div key={s.label} style={{ background:T.card, borderRadius:14, border:`1px solid ${T.border}`, padding:'12px 10px', textAlign:'center' as const, boxShadow:'0 1px 6px rgba(0,0,0,0.15)' }}>
               <p style={{ color:s.color, fontWeight:800, fontSize:14, margin:'0 0 4px', fontFamily:"'Plus Jakarta Sans',sans-serif" }}>{s.val}</p>
               <p style={{ fontSize:10, color:T.muted, margin:0, fontWeight:600 }}>{s.label}</p>
             </div>
@@ -308,7 +308,7 @@ export default function Dashboard() {
               { label:'Admin Panel', path:'/admin/kyc'         },
             ].map(l=>(
               <button key={l.path} onClick={()=>navigate(l.path)}
-                style={{ padding:'7px 14px', borderRadius:20, border:`1px solid ${T.border}`, background:T.light, color:T.muted, fontSize:11, fontWeight:700, cursor:'pointer', fontFamily:"'Plus Jakarta Sans',sans-serif" }}>
+                style={{ padding:'7px 14px', borderRadius:20, border:`1px solid ${T.border}`, background:T.light, color:T.text, fontSize:11, fontWeight:700, cursor:'pointer', fontFamily:"'Plus Jakarta Sans',sans-serif" }}>
                 {l.label}
               </button>
             ))}
@@ -321,7 +321,7 @@ export default function Dashboard() {
       </div>
 
       {/* ── BOTTOM NAV ────────────────────────────────────── */}
-      <nav style={{ position:'fixed', bottom:0, left:0, width:'100%', height:72, background:'rgba(255,255,255,0.97)', borderTop:`1px solid ${T.border}`, display:'flex', alignItems:'center', zIndex:200, padding:'0 8px 8px', backdropFilter:'blur(20px)' }}>
+      <nav style={{ position:'fixed', bottom:0, left:0, width:'100%', height:72, background:'rgba(10,37,64,0.97)', borderTop:`1px solid ${T.border}`, display:'flex', alignItems:'center', zIndex:200, padding:'0 8px 8px', backdropFilter:'blur(20px)' }}>
         {[
           { path:'/dashboard', icon:'🏠', label:'Home'    },
           { path:'/history',   icon:'📋', label:'History' },
@@ -336,7 +336,7 @@ export default function Dashboard() {
             ) : (
               <>
                 <span style={{ fontSize:22, lineHeight:1 }}>{t.icon}</span>
-                <span style={{ fontSize:10, fontWeight:600, color:T.muted }}>{t.label}</span>
+                <span style={{ fontSize:10, fontWeight:600, color:T.text }}>{t.label}</span>
               </>
             )}
           </button>

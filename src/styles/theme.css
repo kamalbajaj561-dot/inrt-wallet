@@ -220,7 +220,6 @@ input, select, textarea { font-family: var(--f-body); }
   border-top: 1px solid var(--b1);
   display: flex; align-items: center;
   z-index: 200; padding: 0 8px 8px;
-  display: none; /* TEMPORARY TEST FOR SCROLL DEBUGGING */
 }
 .nav-btn {
   flex: 1; display: flex;
