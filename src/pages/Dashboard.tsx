@@ -107,18 +107,20 @@ export default function Dashboard() {
 
       {/* ── HERO HEADER ───────────────────────────────────── */}
       <div style={{ background:`linear-gradient(145deg,${T.navy} 0%,#1565C0 100%)`, padding:'52px 20px 80px', position:'relative', overflow:'hidden' }}>
-        <div style={{ position:'absolute', top:-60, right:-60, width:200, height:200, borderRadius:'50%', background:'rgba(255,255,255,0.04)' }}/>
-        <div style={{ position:'absolute', bottom:-40, left:-30, width:140, height:140, borderRadius:'50%', background:'rgba(255,255,255,0.03)' }}/>
+        <div style={{ position:'absolute', top:-60, right:-60, width:200, height:200, borderRadius:'50%', background:'radial-gradient(circle,rgba(0,229,204,0.06),transparent 70%)', pointerEvents:'none' }}/>
+        <div style={{ position:'absolute', bottom:-40, left:-30, width:140, height:140, borderRadius:'50%', background:'radial-gradient(circle,rgba(123,47,190,0.05),transparent 70%)', pointerEvents:'none' }}/>
 
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:22, position:'relative' }}>
+          {/* Logo */}
           <div style={{ display:'flex', alignItems:'center', gap:12 }}>
-            <button onClick={()=>navigate('/profile')}
-              style={{ width:44, height:44, borderRadius:'50%', background:'rgba(255,255,255,0.15)', border:'1.5px solid rgba(255,255,255,0.3)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:16, fontWeight:800, color:'#fff', fontFamily:"'Plus Jakarta Sans',sans-serif", cursor:'pointer' }}>
-              {initials}
-            </button>
+            <div style={{ width:36,height:36,borderRadius:12,
+                background:'linear-gradient(135deg,#00e5cc,#00b4a0)',
+                display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0 }}>
+              <span style={{ color:'#000',fontWeight:900,fontFamily:'Space Grotesk,sans-serif',fontSize:12 }}>IN</span>
+            </div>
             <div>
-              <p style={{ color:'rgba(255,255,255,0.6)', fontSize:12, margin:0 }}>Welcome back 👋</p>
-              <p style={{ color:'#fff', fontSize:16, fontWeight:800, margin:0, fontFamily:"'Plus Jakarta Sans',sans-serif" }}>{name.split(' ')[0]}</p>
+              <p style={{ color:'rgba(255,255,255,0.6)',fontSize:12,margin:0 }}>Welcome back 👋</p>
+              <p style={{ color:'#fff',fontSize:16,fontWeight:800,margin:0,fontFamily:"'Plus Jakarta Sans',sans-serif" }}>{name.split(' ')[0]}</p>
             </div>
           </div>
           <div style={{ display:'flex', gap:8 }}>
@@ -137,7 +139,7 @@ export default function Dashboard() {
         )}
 
         {/* Single INRT balance card */}
-        <div onClick={()=>navigate('/crypto')} style={{ background:'rgba(123,47,190,0.25)', borderRadius:20, padding:'20px', backdropFilter:'blur(10px)', border:'1px solid rgba(200,150,255,0.3)', cursor:'pointer', position:'relative' }}>
+        <div onClick={()=>navigate('/crypto')} style={{ background:'rgba(123,47,190,0.25)', borderRadius:20, padding:'20px', backdropFilter:'blur(10px)', border:'1px solid rgba(200,150,255,0.3)', cursor:'pointer', position:'relative', boxShadow:'0 8px 32px rgba(123,47,190,0.3)' }}>
           <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:12 }}>
             <div>
               <p style={{ color:'rgba(224,176,255,0.6)', fontSize:11, margin:'0 0 4px', letterSpacing:1 }}>INRT BALANCE</p>
@@ -171,7 +173,7 @@ export default function Dashboard() {
 
       {/* ── QUICK ACTIONS ──────────────────────────────────── */}
       <div style={{ margin:'0 16px', marginTop:-44, position:'relative', zIndex:10 }}>
-        <div style={{ background:T.card, borderRadius:18, border:`1px solid ${T.border}`, padding:'18px 16px', boxShadow:'0 4px 24px rgba(0,0,0,0.3)' }}>
+        <div style={{ background:T.card, borderRadius:20, border:`1px solid ${T.border}`, padding:'18px 16px', boxShadow:'0 4px 24px rgba(0,0,0,0.3)' }}>
           <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:6 }}>
             {ACTIONS.map(a=>(
               <button key={a.path} onClick={()=>(a as any).mode ? navigate(a.path, { state: { mode: (a as any).mode } }) : navigate(a.path)}
@@ -197,13 +199,13 @@ export default function Dashboard() {
             <p style={{ color:'rgba(255,255,255,0.6)', fontSize:12, margin:0 }}>Convert ₹ to INRT instantly → send globally</p>
           </div>
           <div style={{ textAlign:'center' as const }}>
-            <div style={{ fontSize:40 }}>🪙</div>
+            <div style={{ fontSize:48, marginBottom:12, filter:'drop-shadow(0 4px 8px rgba(123,47,190,0.3))' }}>🪙</div>
             <p style={{ color:T.teal, fontSize:13, fontWeight:700, margin:'4px 0 0' }}>Buy Now</p>
           </div>
         </div>
 
         {/* ── REWARDS PROGRESS ──────────────────────────── */}
-        <div style={{ background:T.card, borderRadius:18, border:`1px solid ${T.border}`, padding:'16px 18px', boxShadow:'0 2px 12px rgba(0,0,0,0.2)', marginBottom:16 }}>
+        <div style={{ background:T.card, borderRadius:20, border:`1px solid ${T.border}`, padding:'16px 18px', boxShadow:'0 2px 12px rgba(0,0,0,0.2)', marginBottom:16 }}>
           <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:10 }}>
             <div style={{ display:'flex', alignItems:'center', gap:8 }}>
               <span style={{ fontSize:20 }}>🏆</span>
@@ -238,7 +240,7 @@ export default function Dashboard() {
             { label:'Travel',    icon:'✈️', path:'/travel',     color:'#00BCD4' },
           ].map(s=>(
             <button key={s.path} onClick={()=>navigate(s.path)}
-              style={{ display:'flex', flexDirection:'column' as const, alignItems:'center', gap:6, background:T.card, border:`1px solid ${T.border}`, borderRadius:14, padding:'14px 8px', cursor:'pointer', boxShadow:'0 1px 6px rgba(0,0,0,0.15)' }}>
+              style={{ display:'flex', flexDirection:'column' as const, alignItems:'center', gap:6, background:T.card, border:`1px solid ${T.border}`, borderRadius:16, padding:'14px 8px', cursor:'pointer', boxShadow:'0 1px 6px rgba(0,0,0,0.15)' }}>
               <div style={{ width:42, height:42, borderRadius:11, background:s.color+'18', display:'flex', alignItems:'center', justifyContent:'center', fontSize:20, border:`1px solid ${s.color}25` }}>{s.icon}</div>
               <span style={{ fontSize:10, color:T.text, fontWeight:700, fontFamily:"'Plus Jakarta Sans',sans-serif", textAlign:'center' as const }}>{s.label}</span>
             </button>
@@ -252,13 +254,13 @@ export default function Dashboard() {
         </div>
 
         {txns.length===0 ? (
-          <div style={{ background:T.card, borderRadius:18, border:`1px solid ${T.border}`, padding:'40px 20px', textAlign:'center' as const, boxShadow:'0 2px 12px rgba(0,0,0,0.2)' }}>
+          <div style={{ background:T.card, borderRadius:20, border:`1px solid ${T.border}`, padding:'40px 20px', textAlign:'center' as const, boxShadow:'0 2px 12px rgba(0,0,0,0.2)' }}>
             <p style={{ fontSize:36, marginBottom:12 }}>💳</p>
             <p style={{ fontWeight:700, fontSize:15, color:T.text, margin:'0 0 4px' }}>No transactions yet</p>
             <p style={{ fontSize:13, color:T.muted, margin:0 }}>Start by adding money to your wallet</p>
           </div>
         ) : (
-          <div style={{ background:T.card, borderRadius:18, border:`1px solid ${T.border}`, padding:0, overflow:'hidden', boxShadow:'0 2px 12px rgba(0,0,0,0.2)' }}>
+          <div style={{ background:T.card, borderRadius:20, border:`1px solid ${T.border}`, padding:0, overflow:'hidden', boxShadow:'0 2px 12px rgba(0,0,0,0.2)' }}>
             {txns.map((tx,i)=>(
               <div key={tx.id} style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'13px 16px', borderBottom:i<txns.length-1?`1px solid ${T.border}`:'none' }}>
                 <div style={{ display:'flex', alignItems:'center', gap:12 }}>
@@ -290,7 +292,7 @@ export default function Dashboard() {
             { label:'Total Sent',     val:`₹${(profile?.totalSent||0).toLocaleString('en-IN')}`,     color:T.red   },
             { label:'INRT Balance',   val:points.toLocaleString(),                                     color:T.inrt  },
           ].map(s=>(
-            <div key={s.label} style={{ background:T.card, borderRadius:14, border:`1px solid ${T.border}`, padding:'12px 10px', textAlign:'center' as const, boxShadow:'0 1px 6px rgba(0,0,0,0.15)' }}>
+            <div key={s.label} style={{ background:T.card, borderRadius:16, border:`1px solid ${T.border}`, padding:'12px 10px', textAlign:'center' as const, boxShadow:'0 1px 6px rgba(0,0,0,0.15)' }}>
               <p style={{ color:s.color, fontWeight:800, fontSize:14, margin:'0 0 4px', fontFamily:"'Plus Jakarta Sans',sans-serif" }}>{s.val}</p>
               <p style={{ fontSize:10, color:T.muted, margin:0, fontWeight:600 }}>{s.label}</p>
             </div>
@@ -298,7 +300,7 @@ export default function Dashboard() {
         </div>
 
         {/* ── LEGAL FOOTER ──────────────────────────────── */}
-        <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:18, padding:'16px', marginBottom:16 }}>
+        <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:20, padding:'16px', marginBottom:16 }}>
           <p style={{ fontWeight:700, fontSize:13, color:T.text, margin:'0 0 12px', fontFamily:"'Plus Jakarta Sans',sans-serif" }}>INRT Wallet · INRTPay</p>
           <div style={{ display:'flex', flexWrap:'wrap' as const, gap:8, marginBottom:10 }}>
             {[
