@@ -67,7 +67,6 @@ body {
   color: var(--t1);
   min-height: 100vh;
   -webkit-font-smoothing: antialiased;
-  overscroll-behavior: none;
 }
 #root {
   width: 100%;
