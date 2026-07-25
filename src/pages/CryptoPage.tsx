@@ -290,7 +290,7 @@ export default function CryptoPage() {
 
   // ═══════════════════════════════════════════════════════════════
   return (
-    <div style={{ maxWidth: 480, margin: '0 auto', minHeight: '100vh', background: bg, fontFamily: "'Plus Jakarta Sans',sans-serif", paddingBottom: 40 }}>
+    <div style={{ width: '100%', minHeight: '100vh', background: bg, fontFamily: "'Plus Jakarta Sans',sans-serif", paddingBottom: 40 }}>
 
       {/* ── HEADER ──────────────────────────────────────────── */}
       <div style={{ background: 'linear-gradient(160deg,' + poly + ' 0%,' + purple + ' 55%,' + bg + ' 100%)', padding: '52px 20px 28px', position: 'relative', overflow: 'hidden' }}>

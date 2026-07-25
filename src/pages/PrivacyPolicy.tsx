@@ -157,7 +157,7 @@ export default function PrivacyPolicy() {
 }
 
 const S: Record<string, React.CSSProperties> = {
-  page:        { maxWidth: 480, margin: '0 auto', minHeight: '100vh', background: '#050914', fontFamily: "'Plus Jakarta Sans',sans-serif" },
+  page:        { width: '100%', minHeight: '100vh', background: '#050914', fontFamily: "'Plus Jakarta Sans',sans-serif" },
   header:      { background: 'linear-gradient(160deg,#050914,#0a1428)', padding: '52px 20px 20px', display: 'flex', alignItems: 'center', gap: 14, position: 'sticky', top: 0, zIndex: 100, borderBottom: '1px solid rgba(255,255,255,0.06)' },
   backBtn:     { background: 'none', border: 'none', color: '#00e5cc', fontSize: 22, cursor: 'pointer', lineHeight: 1, flexShrink: 0 },
   headerTitle: { fontFamily: "'Plus Jakarta Sans',sans-serif", fontWeight: 800, fontSize: 20, color: '#fff', margin: 0 },

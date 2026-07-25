@@ -154,7 +154,7 @@ export default function BookingsPage() {
 }
 
 const s: Record<string, React.CSSProperties> = {
-  page: { maxWidth: 480, margin: '0 auto', minHeight: '100vh', background: '#f8fafc', padding: '20px 16px 40px', fontFamily: "'DM Sans', sans-serif" },
+  page: { width: '100%', minHeight: '100vh', background: '#f8fafc', padding: '20px 16px 40px', fontFamily: "'DM Sans', sans-serif" },
   toast: { position: 'fixed', top: 20, left: '50%', transform: 'translateX(-50%)', background: '#111', color: '#fff', borderRadius: 14, padding: '12px 20px', fontSize: 14, fontWeight: 600, zIndex: 999 },
   header: { display: 'flex', alignItems: 'center', gap: 14, marginBottom: 20 },
   back: { background: '#fff', border: '2px solid #e5e7eb', borderRadius: 12, width: 40, height: 40, fontSize: 18, cursor: 'pointer' },
