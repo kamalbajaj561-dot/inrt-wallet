@@ -127,6 +127,40 @@ export async function recordSandboxPayment(uid: string, data: {
   return data.refId;
 }
 
+export async function recordSandboxSend(uid: string, data: {
+  amount: number;
+  method: string;
+  recipient: string;
+  success: boolean;
+  refId: string;
+}) {
+  await addDoc(collection(db, 'transactions'), {
+    uid,
+    type:      'debit',
+    amount:    data.amount,
+    note:      `[SANDBOX] Sent to ${data.recipient} via ${data.method}`,
+    cat:       'sandbox',
+    ref:       data.refId,
+    status:    data.success ? 'success' : 'failed',
+    createdAt: serverTimestamp(),
+  });
+  if (data.success) {
+    await updateBalance(uid, -data.amount);
+    await addNotification(
+      uid, '✅ Sandbox transfer sent',
+      `₹${data.amount} sent to ${data.recipient} — no real money moved.`,
+      'success',
+    );
+  } else {
+    await addNotification(
+      uid, '❌ Sandbox transfer failed',
+      `Test transfer of ₹${data.amount} to ${data.recipient} was simulated to fail.`,
+      'error',
+    );
+  }
+  return data.refId;
+}
+
 // ── Bookings ─────────────────────────────────────────────────
 export async function createBooking(uid: string, data: {
   type: 'movie' | 'train' | 'bus' | 'flight';

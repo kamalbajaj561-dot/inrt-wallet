@@ -14,6 +14,7 @@ import RefundPolicy       from './pages/RefundPolicy';
 import AdminKYC from './pages/AdminKYC';
 import CheckoutPage from './pages/CheckoutPage';
 import SandboxGateway from './pages/SandboxGateway';
+import SandboxSendMoney from './pages/SandboxSendMoney';
 import './styles/global.css';
 
 // ── Lazy ───────────────────────────────────────────────────────
@@ -125,6 +126,8 @@ export default function App() {
 <Route path="/checkout" element={<CheckoutPage />} />
 
 <Route path="/sandbox-pay" element={<Guard><SandboxGateway /></Guard>} />
+
+<Route path="/sandbox-send" element={<Guard><SandboxSendMoney /></Guard>} />
 
 <Route path="/privacy"       element={<PrivacyPolicy />} />
 <Route path="/terms"         element={<TermsAndConditions />} />
