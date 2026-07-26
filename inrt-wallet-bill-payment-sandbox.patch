@@ -1,0 +1,1147 @@
+diff --git a/inrt-wallet-sandbox-send.patch b/inrt-wallet-sandbox-send.patch
+deleted file mode 100644
+index c0701d5..0000000
+--- a/inrt-wallet-sandbox-send.patch
++++ /dev/null
+@@ -1,708 +0,0 @@
+-diff --git a/inrt-wallet-sandbox-gateway.patch b/inrt-wallet-sandbox-gateway.patch
+-deleted file mode 100644
+-index 8df0931..0000000
+---- a/inrt-wallet-sandbox-gateway.patch
+-+++ /dev/null
+-@@ -1,350 +0,0 @@
+--diff --git a/src/App.tsx b/src/App.tsx
+--index f166780..bf98959 100644
+----- a/src/App.tsx
+--+++ b/src/App.tsx
+--@@ -13,6 +13,7 @@ import TermsAndConditions from './pages/TermsAndConditions';
+-- import RefundPolicy       from './pages/RefundPolicy';
+-- import AdminKYC from './pages/AdminKYC';
+-- import CheckoutPage from './pages/CheckoutPage';
+--+import SandboxGateway from './pages/SandboxGateway';
+-- import './styles/global.css';
+-- 
+-- // ── Lazy ───────────────────────────────────────────────────────
+--@@ -123,6 +124,8 @@ export default function App() {
+-- 
+-- <Route path="/checkout" element={<CheckoutPage />} />
+-- 
+--+<Route path="/sandbox-pay" element={<Guard><SandboxGateway /></Guard>} />
+--+
+-- <Route path="/privacy"       element={<PrivacyPolicy />} />
+-- <Route path="/terms"         element={<TermsAndConditions />} />
+-- <Route path="/refund-policy" element={<RefundPolicy />} />
+--diff --git a/src/lib/db.ts b/src/lib/db.ts
+--index 944094c..8fd2949 100644
+----- a/src/lib/db.ts
+--+++ b/src/lib/db.ts
+--@@ -93,6 +93,40 @@ export async function addNotification(uid: string, title: string, body: string,
+--   });
+-- }
+-- 
+--+// ── Sandbox Payments (TEST MODE ONLY — no real money) ──────────
+--+export async function recordSandboxPayment(uid: string, data: {
+--+  amount: number;
+--+  method: string;
+--+  success: boolean;
+--+  refId: string;
+--+}) {
+--+  await addDoc(collection(db, 'transactions'), {
+--+    uid,
+--+    type:      'credit',
+--+    amount:    data.amount,
+--+    note:      `[SANDBOX] Payment via ${data.method}`,
+--+    cat:       'sandbox',
+--+    ref:       data.refId,
+--+    status:    data.success ? 'success' : 'failed',
+--+    createdAt: serverTimestamp(),
+--+  });
+--+  if (data.success) {
+--+    await updateBalance(uid, data.amount);
+--+    await addNotification(
+--+      uid, '✅ Sandbox payment received',
+--+      `₹${data.amount} added via test ${data.method} — no real money moved.`,
+--+      'success',
+--+    );
+--+  } else {
+--+    await addNotification(
+--+      uid, '❌ Sandbox payment failed',
+--+      `Test payment of ₹${data.amount} via ${data.method} was simulated to fail.`,
+--+      'error',
+--+    );
+--+  }
+--+  return data.refId;
+--+}
+--+
+-- // ── Bookings ─────────────────────────────────────────────────
+-- export async function createBooking(uid: string, data: {
+--   type: 'movie' | 'train' | 'bus' | 'flight';
+--diff --git a/src/pages/SandboxGateway.tsx b/src/pages/SandboxGateway.tsx
+--new file mode 100644
+--index 0000000..99af0a9
+----- /dev/null
+--+++ b/src/pages/SandboxGateway.tsx
+--@@ -0,0 +1,278 @@
+--+/**
+--+ * INRT WALLET — SandboxGateway.tsx
+--+ * A fully fake, self-contained payment gateway simulator.
+--+ *
+--+ * ⚠️ NO REAL MONEY EVER MOVES HERE. This does not talk to Razorpay,
+--+ * Cashfree, Setu, any bank, or any card network. It exists purely so
+--+ * the product/UX of a payment flow can be tested and demoed while
+--+ * real payment-aggregator integrations are still being sorted out.
+--+ *
+--+ * Route: /sandbox-pay
+--+ */
+--+import { useState } from 'react';
+--+import { useNavigate } from 'react-router-dom';
+--+import { useAuth } from '../context/AuthContext';
+--+import { recordSandboxPayment } from '../lib/db';
+--+
+--+const T = {
+--+  bg:'#0A2540', card:'#0D2A4A', border:'rgba(255,255,255,0.1)',
+--+  inrt:'#7B2FBE', teal:'#00e5cc', tealD:'#00b4a0',
+--+  green:'#00C853', red:'#FF3B30', gold:'#FFD60A',
+--+  text:'#fff', muted:'#8B9DB3',
+--+};
+--+
+--+type Step = 'amount' | 'method' | 'details' | 'processing' | 'result';
+--+type Method = 'upi' | 'card' | 'netbanking';
+--+
+--+const QUICK_AMOUNTS = [100, 250, 500, 1000, 2000, 5000];
+--+const BANKS = ['Test Bank of India', 'Sandbox National Bank', 'Fake Federal Bank', 'Mock HDFC'];
+--+
+--+function SandboxBanner() {
+--+  return (
+--+    <div style={{
+--+      background: 'rgba(255,214,10,0.12)', border: '1px solid rgba(255,214,10,0.35)',
+--+      borderRadius: 12, padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 10,
+--+      marginBottom: 20,
+--+    }}>
+--+      <span style={{ fontSize: 16 }}>🧪</span>
+--+      <span style={{ color: T.gold, fontSize: 12, fontWeight: 700, lineHeight: 1.4 }}>
+--+        SANDBOX MODE — this is a test payment simulator. No real bank, card, or UPI network is
+--+        contacted, and no real money moves.
+--+      </span>
+--+    </div>
+--+  );
+--+}
+--+
+--+export default function SandboxGateway() {
+--+  const { user } = useAuth();
+--+  const navigate = useNavigate();
+--+
+--+  const [step, setStep]         = useState<Step>('amount');
+--+  const [amount, setAmount]     = useState('');
+--+  const [method, setMethod]     = useState<Method | null>(null);
+--+  const [upiId, setUpiId]       = useState('');
+--+  const [cardNum, setCardNum]   = useState('');
+--+  const [cardExp, setCardExp]   = useState('');
+--+  const [cardCvv, setCardCvv]   = useState('');
+--+  const [bank, setBank]         = useState('');
+--+  const [forceFail, setForceFail] = useState(false);
+--+  const [progressMsg, setProgressMsg] = useState('');
+--+  const [result, setResult]     = useState<{ success: boolean; refId: string } | null>(null);
+--+  const [err, setErr]           = useState('');
+--+
+--+  const amt = Number(amount);
+--+  const validAmount = amt > 0 && amt <= 200000;
+--+
+--+  const detailsValid = () => {
+--+    if (method === 'upi')  return /^[\w.-]+@[\w.-]+$/.test(upiId.trim());
+--+    if (method === 'card') return /^\d{16}$/.test(cardNum.replace(/\s/g,'')) && /^\d{2}\/\d{2}$/.test(cardExp) && /^\d{3}$/.test(cardCvv);
+--+    if (method === 'netbanking') return !!bank;
+--+    return false;
+--+  };
+--+
+--+  const runProcessing = async () => {
+--+    setStep('processing');
+--+    setErr('');
+--+    const stages = [
+--+      'Connecting to sandbox gateway…',
+--+      'Simulating bank authentication…',
+--+      'Waiting for mock confirmation…',
+--+      'Finalising test transaction…',
+--+    ];
+--+    for (const s of stages) {
+--+      setProgressMsg(s);
+--+      await new Promise(r => setTimeout(r, 550));
+--+    }
+--+
+--+    // 90% success unless the tester explicitly wants to see a failure
+--+    const success = forceFail ? false : Math.random() > 0.1;
+--+    const refId = 'SANDBOX-' + Math.random().toString(36).slice(2, 10).toUpperCase();
+--+
+--+    try {
+--+      if (user?.uid) {
+--+        await recordSandboxPayment(user.uid, {
+--+          amount: amt,
+--+          method: method === 'upi' ? 'UPI' : method === 'card' ? 'Card' : 'Netbanking',
+--+          success,
+--+          refId,
+--+        });
+--+      }
+--+      setResult({ success, refId });
+--+      setStep('result');
+--+    } catch (e: any) {
+--+      setErr(e?.message || 'Something went wrong recording the sandbox transaction.');
+--+      setResult({ success: false, refId });
+--+      setStep('result');
+--+    }
+--+  };
+--+
+--+  const reset = () => {
+--+    setStep('amount'); setAmount(''); setMethod(null);
+--+    setUpiId(''); setCardNum(''); setCardExp(''); setCardCvv('');
+--+    setBank(''); setForceFail(false); setResult(null); setErr('');
+--+  };
+--+
+--+  return (
+--+    <div style={{
+--+      width: '100%', minHeight: '100vh', background: T.bg,
+--+      display: 'flex', flexDirection: 'column', alignItems: 'center',
+--+      padding: '24px 20px 40px', fontFamily: "'Plus Jakarta Sans',sans-serif",
+--+      boxSizing: 'border-box',
+--+    }}>
+--+      <div style={{ width: '100%', maxWidth: 460, display: 'flex', alignItems: 'center', gap: 14, marginBottom: 20 }}>
+--+        <button onClick={() => step === 'amount' ? navigate(-1) : reset()}
+--+          style={{ width: 38, height: 38, borderRadius: 10, background: 'rgba(255,255,255,0.08)', border: 'none', color: T.text, fontSize: 16, cursor: 'pointer' }}>←</button>
+--+        <h1 style={{ fontSize: 19, fontWeight: 800, color: T.text, margin: 0 }}>Sandbox Payment Gateway</h1>
+--+      </div>
+--+
+--+      <div style={{ width: '100%', maxWidth: 460 }}>
+--+        <SandboxBanner />
+--+
+--+        <div style={{
+--+          background: T.card, border: `1px solid ${T.border}`, borderRadius: 20,
+--+          padding: 24, boxShadow: '0 8px 32px rgba(123,47,190,0.12)',
+--+        }}>
+--+
+--+          {step === 'amount' && (
+--+            <>
+--+              <p style={{ color: T.muted, fontSize: 12, fontWeight: 700, letterSpacing: 0.5, margin: '0 0 10px' }}>TEST AMOUNT (₹)</p>
+--+              <input
+--+                type="number" value={amount} onChange={e => setAmount(e.target.value)}
+--+                placeholder="Enter amount"
+--+                style={{ width:'100%', background:'rgba(255,255,255,0.05)', border:`1.5px solid ${T.border}`, borderRadius:12, padding:'14px 16px', color:T.text, fontSize:20, fontWeight:700, outline:'none', boxSizing:'border-box', marginBottom:14 }}
+--+              />
+--+              <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:8, marginBottom:20 }}>
+--+                {QUICK_AMOUNTS.map(a => (
+--+                  <button key={a} onClick={() => setAmount(String(a))}
+--+                    style={{ background:'rgba(255,255,255,0.05)', border:`1px solid ${T.border}`, borderRadius:10, padding:'10px 0', color:T.text, fontSize:13, fontWeight:600, cursor:'pointer' }}>
+--+                    ₹{a}
+--+                  </button>
+--+                ))}
+--+              </div>
+--+              <button disabled={!validAmount} onClick={() => setStep('method')}
+--+                style={{ width:'100%', background: validAmount ? T.inrt : 'rgba(255,255,255,0.08)', color:'#fff', border:'none', borderRadius:12, padding:'15px', fontSize:15, fontWeight:700, cursor: validAmount ? 'pointer' : 'not-allowed' }}>
+--+                Continue
+--+              </button>
+--+            </>
+--+          )}
+--+
+--+          {step === 'method' && (
+--+            <>
+--+              <p style={{ color: T.muted, fontSize: 12, fontWeight: 700, letterSpacing: 0.5, margin: '0 0 14px' }}>
+--+                PAYING ₹{amt} · CHOOSE TEST METHOD
+--+              </p>
+--+              {([
+--+                ['upi', '📱', 'UPI (test)'],
+--+                ['card', '💳', 'Card (test)'],
+--+                ['netbanking', '🏦', 'Netbanking (test)'],
+--+              ] as [Method, string, string][]).map(([m, icon, label]) => (
+--+                <button key={m} onClick={() => { setMethod(m); setStep('details'); }}
+--+                  style={{ width:'100%', display:'flex', alignItems:'center', gap:12, background:'rgba(255,255,255,0.04)', border:`1px solid ${T.border}`, borderRadius:12, padding:'16px', marginBottom:10, cursor:'pointer', color:T.text, fontSize:15, fontWeight:600, textAlign:'left' }}>
+--+                  <span style={{ fontSize:20 }}>{icon}</span> {label}
+--+                  <span style={{ marginLeft:'auto', color:T.muted }}>→</span>
+--+                </button>
+--+              ))}
+--+            </>
+--+          )}
+--+
+--+          {step === 'details' && method && (
+--+            <>
+--+              <p style={{ color: T.muted, fontSize: 12, fontWeight: 700, letterSpacing: 0.5, margin: '0 0 14px' }}>
+--+                TEST {method.toUpperCase()} DETAILS — fake data only, nothing is verified
+--+              </p>
+--+
+--+              {method === 'upi' && (
+--+                <input placeholder="any-name@sandboxbank" value={upiId} onChange={e => setUpiId(e.target.value)}
+--+                  style={{ width:'100%', background:'rgba(255,255,255,0.05)', border:`1.5px solid ${T.border}`, borderRadius:12, padding:'13px 14px', color:T.text, fontSize:14, outline:'none', boxSizing:'border-box', marginBottom:14 }} />
+--+              )}
+--+
+--+              {method === 'card' && (
+--+                <>
+--+                  <input placeholder="4111 1111 1111 1111 (any 16 digits)" value={cardNum}
+--+                    onChange={e => setCardNum(e.target.value.replace(/[^\d ]/g,''))}
+--+                    style={{ width:'100%', background:'rgba(255,255,255,0.05)', border:`1.5px solid ${T.border}`, borderRadius:12, padding:'13px 14px', color:T.text, fontSize:14, outline:'none', boxSizing:'border-box', marginBottom:10, fontFamily:'monospace' }} />
+--+                  <div style={{ display:'flex', gap:10, marginBottom:14 }}>
+--+                    <input placeholder="MM/YY" value={cardExp} onChange={e => setCardExp(e.target.value)}
+--+                      style={{ flex:1, background:'rgba(255,255,255,0.05)', border:`1.5px solid ${T.border}`, borderRadius:12, padding:'13px 14px', color:T.text, fontSize:14, outline:'none', boxSizing:'border-box' }} />
+--+                    <input placeholder="CVV" value={cardCvv} onChange={e => setCardCvv(e.target.value.replace(/\D/g,''))}
+--+                      style={{ width:90, background:'rgba(255,255,255,0.05)', border:`1.5px solid ${T.border}`, borderRadius:12, padding:'13px 14px', color:T.text, fontSize:14, outline:'none', boxSizing:'border-box' }} />
+--+                  </div>
+--+                </>
+--+              )}
+--+
+--+              {method === 'netbanking' && (
+--+                <div style={{ marginBottom:14 }}>
+--+                  {BANKS.map(b => (
+--+                    <button key={b} onClick={() => setBank(b)}
+--+                      style={{ width:'100%', textAlign:'left', background: bank===b ? 'rgba(123,47,190,0.2)' : 'rgba(255,255,255,0.04)', border:`1.5px solid ${bank===b ? T.inrt : T.border}`, borderRadius:10, padding:'12px 14px', marginBottom:8, color:T.text, fontSize:13, fontWeight:600, cursor:'pointer' }}>
+--+                      🏦 {b}
+--+                    </button>
+--+                  ))}
+--+                </div>
+--+              )}
+--+
+--+              <label style={{ display:'flex', alignItems:'center', gap:8, marginBottom:16, cursor:'pointer' }}>
+--+                <input type="checkbox" checked={forceFail} onChange={e => setForceFail(e.target.checked)} />
+--+                <span style={{ color:T.muted, fontSize:12 }}>Simulate a failed payment (for testing error handling)</span>
+--+              </label>
+--+
+--+              <button disabled={!detailsValid()} onClick={runProcessing}
+--+                style={{ width:'100%', background: detailsValid() ? T.inrt : 'rgba(255,255,255,0.08)', color:'#fff', border:'none', borderRadius:12, padding:'15px', fontSize:15, fontWeight:700, cursor: detailsValid() ? 'pointer' : 'not-allowed' }}>
+--+                Pay ₹{amt} (test)
+--+              </button>
+--+            </>
+--+          )}
+--+
+--+          {step === 'processing' && (
+--+            <div style={{ textAlign:'center', padding:'30px 0' }}>
+--+              <div style={{
+--+                width:56, height:56, borderRadius:'50%', margin:'0 auto 20px',
+--+                border:`4px solid ${T.border}`, borderTopColor:T.teal,
+--+                animation:'sandboxSpin 0.8s linear infinite',
+--+              }} />
+--+              <style>{`@keyframes sandboxSpin { to { transform: rotate(360deg); } }`}</style>
+--+              <p style={{ color:T.text, fontSize:14, fontWeight:600 }}>{progressMsg}</p>
+--+              <p style={{ color:T.muted, fontSize:11, marginTop:8 }}>This is simulated — no real network call is happening.</p>
+--+            </div>
+--+          )}
+--+
+--+          {step === 'result' && result && (
+--+            <div style={{ textAlign:'center', padding:'10px 0' }}>
+--+              <div style={{
+--+                width:64, height:64, borderRadius:'50%', margin:'0 auto 16px',
+--+                background: result.success ? 'rgba(0,200,83,0.15)' : 'rgba(255,59,48,0.15)',
+--+                display:'flex', alignItems:'center', justifyContent:'center', fontSize:30,
+--+              }}>
+--+                {result.success ? '✅' : '❌'}
+--+              </div>
+--+              <p style={{ color:T.text, fontSize:18, fontWeight:800, margin:'0 0 6px' }}>
+--+                {result.success ? 'Test Payment Successful' : 'Test Payment Failed'}
+--+              </p>
+--+              <p style={{ color:T.muted, fontSize:13, margin:'0 0 20px' }}>
+--+                {result.success
+--+                  ? `₹${amt} was added to your sandbox balance.`
+--+                  : 'This was a simulated failure — no balance change occurred.'}
+--+              </p>
+--+              {err && <p style={{ color:T.red, fontSize:12, marginBottom:12 }}>{err}</p>}
+--+              <div style={{
+--+                background:'rgba(255,255,255,0.04)', border:`1px solid ${T.border}`, borderRadius:12,
+--+                padding:'14px', marginBottom:20, textAlign:'left',
+--+              }}>
+--+                <p style={{ color:T.muted, fontSize:11, margin:'0 0 4px' }}>REFERENCE ID</p>
+--+                <p style={{ color:T.teal, fontSize:13, fontFamily:'monospace', margin:0, wordBreak:'break-all' }}>{result.refId}</p>
+--+              </div>
+--+              <button onClick={reset}
+--+                style={{ width:'100%', background:T.inrt, color:'#fff', border:'none', borderRadius:12, padding:'14px', fontSize:14, fontWeight:700, cursor:'pointer', marginBottom:10 }}>
+--+                Run Another Test Payment
+--+              </button>
+--+              <button onClick={() => navigate('/dashboard')}
+--+                style={{ width:'100%', background:'transparent', color:T.muted, border:'none', padding:'10px', fontSize:13, cursor:'pointer' }}>
+--+                Back to Dashboard
+--+              </button>
+--+            </div>
+--+          )}
+--+        </div>
+--+      </div>
+--+    </div>
+--+  );
+--+}
+-diff --git a/src/App.tsx b/src/App.tsx
+-index bf98959..9b4f951 100644
+---- a/src/App.tsx
+-+++ b/src/App.tsx
+-@@ -14,6 +14,7 @@ import RefundPolicy       from './pages/RefundPolicy';
+- import AdminKYC from './pages/AdminKYC';
+- import CheckoutPage from './pages/CheckoutPage';
+- import SandboxGateway from './pages/SandboxGateway';
+-+import SandboxSendMoney from './pages/SandboxSendMoney';
+- import './styles/global.css';
+- 
+- // ── Lazy ───────────────────────────────────────────────────────
+-@@ -126,6 +127,8 @@ export default function App() {
+- 
+- <Route path="/sandbox-pay" element={<Guard><SandboxGateway /></Guard>} />
+- 
+-+<Route path="/sandbox-send" element={<Guard><SandboxSendMoney /></Guard>} />
+-+
+- <Route path="/privacy"       element={<PrivacyPolicy />} />
+- <Route path="/terms"         element={<TermsAndConditions />} />
+- <Route path="/refund-policy" element={<RefundPolicy />} />
+-diff --git a/src/lib/db.ts b/src/lib/db.ts
+-index 8fd2949..33130dc 100644
+---- a/src/lib/db.ts
+-+++ b/src/lib/db.ts
+-@@ -127,6 +127,40 @@ export async function recordSandboxPayment(uid: string, data: {
+-   return data.refId;
+- }
+- 
+-+export async function recordSandboxSend(uid: string, data: {
+-+  amount: number;
+-+  method: string;
+-+  recipient: string;
+-+  success: boolean;
+-+  refId: string;
+-+}) {
+-+  await addDoc(collection(db, 'transactions'), {
+-+    uid,
+-+    type:      'debit',
+-+    amount:    data.amount,
+-+    note:      `[SANDBOX] Sent to ${data.recipient} via ${data.method}`,
+-+    cat:       'sandbox',
+-+    ref:       data.refId,
+-+    status:    data.success ? 'success' : 'failed',
+-+    createdAt: serverTimestamp(),
+-+  });
+-+  if (data.success) {
+-+    await updateBalance(uid, -data.amount);
+-+    await addNotification(
+-+      uid, '✅ Sandbox transfer sent',
+-+      `₹${data.amount} sent to ${data.recipient} — no real money moved.`,
+-+      'success',
+-+    );
+-+  } else {
+-+    await addNotification(
+-+      uid, '❌ Sandbox transfer failed',
+-+      `Test transfer of ₹${data.amount} to ${data.recipient} was simulated to fail.`,
+-+      'error',
+-+    );
+-+  }
+-+  return data.refId;
+-+}
+-+
+- // ── Bookings ─────────────────────────────────────────────────
+- export async function createBooking(uid: string, data: {
+-   type: 'movie' | 'train' | 'bus' | 'flight';
+-diff --git a/src/pages/SandboxSendMoney.tsx b/src/pages/SandboxSendMoney.tsx
+-new file mode 100644
+-index 0000000..1f408bf
+---- /dev/null
+-+++ b/src/pages/SandboxSendMoney.tsx
+-@@ -0,0 +1,280 @@
+-+/**
+-+ * INRT WALLET — SandboxSendMoney.tsx
+-+ * A fully fake "pay anyone" simulator — UPI ID, mobile number, or card,
+-+ * styled after the standard UPI-app send-money confirmation pattern.
+-+ *
+-+ * ⚠️ NO REAL MONEY EVER MOVES HERE. No bank, UPI switch, or card network
+-+ * is contacted. Balance changes are internal test ledger entries only.
+-+ *
+-+ * Route: /sandbox-send
+-+ */
+-+import { useState } from 'react';
+-+import { useNavigate } from 'react-router-dom';
+-+import { useAuth } from '../context/AuthContext';
+-+import { recordSandboxSend } from '../lib/db';
+-+
+-+const T = {
+-+  bg:'#0A2540', card:'#0D2A4A', border:'rgba(255,255,255,0.1)',
+-+  inrt:'#7B2FBE', teal:'#00e5cc',
+-+  green:'#00C853', red:'#FF3B30', gold:'#FFD60A',
+-+  text:'#fff', muted:'#8B9DB3',
+-+};
+-+
+-+type Step = 'recipient' | 'amount' | 'method' | 'processing' | 'result';
+-+type Method = 'upi' | 'card' | 'netbanking';
+-+
+-+const QUICK_AMOUNTS = [50, 100, 250, 500, 1000];
+-+const BANKS = ['Test Bank of India', 'Sandbox National Bank', 'Fake Federal Bank', 'Mock HDFC'];
+-+
+-+function SandboxBanner() {
+-+  return (
+-+    <div style={{
+-+      background: 'rgba(255,214,10,0.12)', border: '1px solid rgba(255,214,10,0.35)',
+-+      borderRadius: 12, padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 10,
+-+      marginBottom: 20,
+-+    }}>
+-+      <span style={{ fontSize: 16 }}>🧪</span>
+-+      <span style={{ color: T.gold, fontSize: 12, fontWeight: 700, lineHeight: 1.4 }}>
+-+        SANDBOX MODE — this simulates sending money to anyone via UPI, card, or
+-+        netbanking. No real bank or network is contacted, and no real money moves.
+-+      </span>
+-+    </div>
+-+  );
+-+}
+-+
+-+export default function SandboxSendMoney() {
+-+  const { user } = useAuth();
+-+  const navigate = useNavigate();
+-+
+-+  const [step, setStep]           = useState<Step>('recipient');
+-+  const [recipientId, setRecipientId] = useState('');
+-+  const [recipientName, setRecipientName] = useState('');
+-+  const [amount, setAmount]       = useState('');
+-+  const [method, setMethod]       = useState<Method | null>(null);
+-+  const [cardNum, setCardNum]     = useState('');
+-+  const [cardExp, setCardExp]     = useState('');
+-+  const [cardCvv, setCardCvv]     = useState('');
+-+  const [bank, setBank]           = useState('');
+-+  const [forceFail, setForceFail] = useState(false);
+-+  const [progressMsg, setProgressMsg] = useState('');
+-+  const [result, setResult]       = useState<{ success: boolean; refId: string; time: string } | null>(null);
+-+
+-+  const amt = Number(amount);
+-+  const validAmount = amt > 0 && amt <= 100000;
+-+  const recipientValid = /^[\w.-]+@[\w.-]+$/.test(recipientId.trim()) || /^\d{10}$/.test(recipientId.trim());
+-+
+-+  const methodDetailsValid = () => {
+-+    if (method === 'upi') return true; // recipient ID already doubles as UPI collect target in this sim
+-+    if (method === 'card') return /^\d{16}$/.test(cardNum.replace(/\s/g,'')) && /^\d{2}\/\d{2}$/.test(cardExp) && /^\d{3}$/.test(cardCvv);
+-+    if (method === 'netbanking') return !!bank;
+-+    return false;
+-+  };
+-+
+-+  const runProcessing = async () => {
+-+    setStep('processing');
+-+    const stages = [
+-+      'Connecting to sandbox UPI switch…',
+-+      'Verifying recipient (test)…',
+-+      'Simulating bank debit…',
+-+      'Confirming test transfer…',
+-+    ];
+-+    for (const s of stages) {
+-+      setProgressMsg(s);
+-+      await new Promise(r => setTimeout(r, 500));
+-+    }
+-+
+-+    const success = forceFail ? false : Math.random() > 0.08;
+-+    const refId = String(Math.floor(100000000000 + Math.random() * 899999999999));
+-+    const time = new Date().toLocaleString('en-IN', { day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit' });
+-+
+-+    if (user?.uid) {
+-+      await recordSandboxSend(user.uid, {
+-+        amount: amt,
+-+        method: method === 'upi' ? 'UPI' : method === 'card' ? 'Card' : 'Netbanking',
+-+        recipient: recipientName || recipientId,
+-+        success,
+-+        refId,
+-+      });
+-+    }
+-+    setResult({ success, refId, time });
+-+    setStep('result');
+-+  };
+-+
+-+  const reset = () => {
+-+    setStep('recipient'); setRecipientId(''); setRecipientName(''); setAmount('');
+-+    setMethod(null); setCardNum(''); setCardExp(''); setCardCvv('');
+-+    setBank(''); setForceFail(false); setResult(null);
+-+  };
+-+
+-+  return (
+-+    <div style={{
+-+      width: '100%', minHeight: '100vh', background: T.bg,
+-+      display: 'flex', flexDirection: 'column', alignItems: 'center',
+-+      padding: '24px 20px 40px', fontFamily: "'Plus Jakarta Sans',sans-serif",
+-+      boxSizing: 'border-box',
+-+    }}>
+-+      <div style={{ width: '100%', maxWidth: 460, display: 'flex', alignItems: 'center', gap: 14, marginBottom: 20 }}>
+-+        <button onClick={() => step === 'recipient' ? navigate(-1) : reset()}
+-+          style={{ width: 38, height: 38, borderRadius: 10, background: 'rgba(255,255,255,0.08)', border: 'none', color: T.text, fontSize: 16, cursor: 'pointer' }}>←</button>
+-+        <h1 style={{ fontSize: 19, fontWeight: 800, color: T.text, margin: 0 }}>Sandbox Send Money</h1>
+-+      </div>
+-+
+-+      <div style={{ width: '100%', maxWidth: 460 }}>
+-+        <SandboxBanner />
+-+
+-+        <div style={{
+-+          background: T.card, border: `1px solid ${T.border}`, borderRadius: 20,
+-+          padding: 24, boxShadow: '0 8px 32px rgba(123,47,190,0.12)',
+-+        }}>
+-+
+-+          {step === 'recipient' && (
+-+            <>
+-+              <p style={{ color: T.muted, fontSize: 12, fontWeight: 700, letterSpacing: 0.5, margin: '0 0 10px' }}>PAY TO — UPI ID OR MOBILE NUMBER</p>
+-+              <input
+-+                value={recipientId} onChange={e => setRecipientId(e.target.value)}
+-+                placeholder="name@sandboxbank or 10-digit mobile"
+-+                style={{ width:'100%', background:'rgba(255,255,255,0.05)', border:`1.5px solid ${T.border}`, borderRadius:12, padding:'13px 14px', color:T.text, fontSize:15, outline:'none', boxSizing:'border-box', marginBottom:12 }}
+-+              />
+-+              <input
+-+                value={recipientName} onChange={e => setRecipientName(e.target.value)}
+-+                placeholder="Recipient name (optional, for display)"
+-+                style={{ width:'100%', background:'rgba(255,255,255,0.05)', border:`1.5px solid ${T.border}`, borderRadius:12, padding:'13px 14px', color:T.text, fontSize:14, outline:'none', boxSizing:'border-box', marginBottom:20 }}
+-+              />
+-+              <button disabled={!recipientValid} onClick={() => setStep('amount')}
+-+                style={{ width:'100%', background: recipientValid ? T.inrt : 'rgba(255,255,255,0.08)', color:'#fff', border:'none', borderRadius:12, padding:'15px', fontSize:15, fontWeight:700, cursor: recipientValid ? 'pointer' : 'not-allowed' }}>
+-+                Continue
+-+              </button>
+-+            </>
+-+          )}
+-+
+-+          {step === 'amount' && (
+-+            <>
+-+              <p style={{ color: T.muted, fontSize: 12, fontWeight: 700, letterSpacing: 0.5, margin: '0 0 10px' }}>
+-+                SENDING TO {recipientName || recipientId}
+-+              </p>
+-+              <input
+-+                type="number" value={amount} onChange={e => setAmount(e.target.value)}
+-+                placeholder="Enter amount"
+-+                style={{ width:'100%', background:'rgba(255,255,255,0.05)', border:`1.5px solid ${T.border}`, borderRadius:12, padding:'14px 16px', color:T.text, fontSize:20, fontWeight:700, outline:'none', boxSizing:'border-box', marginBottom:14 }}
+-+              />
+-+              <div style={{ display:'grid', gridTemplateColumns:'repeat(5,1fr)', gap:8, marginBottom:20 }}>
+-+                {QUICK_AMOUNTS.map(a => (
+-+                  <button key={a} onClick={() => setAmount(String(a))}
+-+                    style={{ background:'rgba(255,255,255,0.05)', border:`1px solid ${T.border}`, borderRadius:10, padding:'10px 0', color:T.text, fontSize:12, fontWeight:600, cursor:'pointer' }}>
+-+                    ₹{a}
+-+                  </button>
+-+                ))}
+-+              </div>
+-+              <button disabled={!validAmount} onClick={() => setStep('method')}
+-+                style={{ width:'100%', background: validAmount ? T.inrt : 'rgba(255,255,255,0.08)', color:'#fff', border:'none', borderRadius:12, padding:'15px', fontSize:15, fontWeight:700, cursor: validAmount ? 'pointer' : 'not-allowed' }}>
+-+                Continue
+-+              </button>
+-+            </>
+-+          )}
+-+
+-+          {step === 'method' && (
+-+            <>
+-+              <p style={{ color: T.muted, fontSize: 12, fontWeight: 700, letterSpacing: 0.5, margin: '0 0 14px' }}>
+-+                PAY ₹{amt} VIA
+-+              </p>
+-+              {([
+-+                ['upi', '📱', 'UPI'],
+-+                ['card', '💳', 'Debit Card'],
+-+                ['netbanking', '🏦', 'Netbanking'],
+-+              ] as [Method, string, string][]).map(([m, icon, label]) => (
+-+                <button key={m} onClick={() => setMethod(m)}
+-+                  style={{ width:'100%', display:'flex', alignItems:'center', gap:12, background: method===m ? 'rgba(123,47,190,0.2)' : 'rgba(255,255,255,0.04)', border:`1.5px solid ${method===m ? T.inrt : T.border}`, borderRadius:12, padding:'16px', marginBottom:10, cursor:'pointer', color:T.text, fontSize:15, fontWeight:600, textAlign:'left' }}>
+-+                  <span style={{ fontSize:20 }}>{icon}</span> {label}
+-+                </button>
+-+              ))}
+-+
+-+              {method === 'card' && (
+-+                <div style={{ marginTop:14 }}>
+-+                  <input placeholder="4111 1111 1111 1111 (any 16 digits)" value={cardNum}
+-+                    onChange={e => setCardNum(e.target.value.replace(/[^\d ]/g,''))}
+-+                    style={{ width:'100%', background:'rgba(255,255,255,0.05)', border:`1.5px solid ${T.border}`, borderRadius:12, padding:'13px 14px', color:T.text, fontSize:14, outline:'none', boxSizing:'border-box', marginBottom:10, fontFamily:'monospace' }} />
+-+                  <div style={{ display:'flex', gap:10 }}>
+-+                    <input placeholder="MM/YY" value={cardExp} onChange={e => setCardExp(e.target.value)}
+-+                      style={{ flex:1, background:'rgba(255,255,255,0.05)', border:`1.5px solid ${T.border}`, borderRadius:12, padding:'13px 14px', color:T.text, fontSize:14, outline:'none', boxSizing:'border-box' }} />
+-+                    <input placeholder="CVV" value={cardCvv} onChange={e => setCardCvv(e.target.value.replace(/\D/g,''))}
+-+                      style={{ width:90, background:'rgba(255,255,255,0.05)', border:`1.5px solid ${T.border}`, borderRadius:12, padding:'13px 14px', color:T.text, fontSize:14, outline:'none', boxSizing:'border-box' }} />
+-+                  </div>
+-+                </div>
+-+              )}
+-+
+-+              {method === 'netbanking' && (
+-+                <div style={{ marginTop:14 }}>
+-+                  {BANKS.map(b => (
+-+                    <button key={b} onClick={() => setBank(b)}
+-+                      style={{ width:'100%', textAlign:'left', background: bank===b ? 'rgba(123,47,190,0.2)' : 'rgba(255,255,255,0.04)', border:`1.5px solid ${bank===b ? T.inrt : T.border}`, borderRadius:10, padding:'12px 14px', marginBottom:8, color:T.text, fontSize:13, fontWeight:600, cursor:'pointer' }}>
+-+                      🏦 {b}
+-+                    </button>
+-+                  ))}
+-+                </div>
+-+              )}
+-+
+-+              {method && (
+-+                <>
+-+                  <label style={{ display:'flex', alignItems:'center', gap:8, margin:'16px 0', cursor:'pointer' }}>
+-+                    <input type="checkbox" checked={forceFail} onChange={e => setForceFail(e.target.checked)} />
+-+                    <span style={{ color:T.muted, fontSize:12 }}>Simulate a failed transfer (for testing error handling)</span>
+-+                  </label>
+-+                  <button disabled={!methodDetailsValid()} onClick={runProcessing}
+-+                    style={{ width:'100%', background: methodDetailsValid() ? T.inrt : 'rgba(255,255,255,0.08)', color:'#fff', border:'none', borderRadius:12, padding:'15px', fontSize:15, fontWeight:700, cursor: methodDetailsValid() ? 'pointer' : 'not-allowed' }}>
+-+                    Pay ₹{amt} (test)
+-+                  </button>
+-+                </>
+-+              )}
+-+            </>
+-+          )}
+-+
+-+          {step === 'processing' && (
+-+            <div style={{ textAlign:'center', padding:'30px 0' }}>
+-+              <div style={{
+-+                width:56, height:56, borderRadius:'50%', margin:'0 auto 20px',
+-+                border:`4px solid ${T.border}`, borderTopColor:T.teal,
+-+                animation:'sandboxSendSpin 0.8s linear infinite',
+-+              }} />
+-+              <style>{`@keyframes sandboxSendSpin { to { transform: rotate(360deg); } }`}</style>
+-+              <p style={{ color:T.text, fontSize:14, fontWeight:600 }}>{progressMsg}</p>
+-+              <p style={{ color:T.muted, fontSize:11, marginTop:8 }}>This is simulated — no real network call is happening.</p>
+-+            </div>
+-+          )}
+-+
+-+          {step === 'result' && result && (
+-+            <div style={{ textAlign:'center', padding:'10px 0' }}>
+-+              {/* Paytm-style confirmation card */}
+-+              <div style={{
+-+                background: result.success ? 'rgba(0,200,83,0.08)' : 'rgba(255,59,48,0.08)',
+-+                border: `1px solid ${result.success ? 'rgba(0,200,83,0.3)' : 'rgba(255,59,48,0.3)'}`,
+-+                borderRadius: 18, padding: '28px 20px', marginBottom: 20,
+-+              }}>
+-+                <div style={{ display:'flex', alignItems:'center', justifyContent:'center', gap:8, marginBottom:14 }}>
+-+                  <span style={{ fontSize:30, fontWeight:800, color:T.text }}>₹{amt}</span>
+-+                  <span style={{ fontSize:22 }}>{result.success ? '✅' : '❌'}</span>
+-+                </div>
+-+                <p style={{ color: result.success ? T.green : T.red, fontSize:16, fontWeight:800, margin:'0 0 18px' }}>
+-+                  {result.success ? 'Paid Successfully (Sandbox)' : 'Payment Failed (Sandbox)'}
+-+                </p>
+-+                <p style={{ color:T.text, fontSize:14, fontWeight:700, margin:'0 0 4px' }}>
+-+                  To {recipientName || recipientId}
+-+                </p>
+-+                <p style={{ color:T.muted, fontSize:12, margin:'0 0 4px' }}>{result.time}</p>
+-+                <p style={{ color:T.muted, fontSize:12, margin:0 }}>Sandbox Ref No. {result.refId}</p>
+-+              </div>
+-+
+-+              <button onClick={reset}
+-+                style={{ width:'100%', background:T.inrt, color:'#fff', border:'none', borderRadius:12, padding:'14px', fontSize:14, fontWeight:700, cursor:'pointer', marginBottom:10 }}>
+-+                Send Another Test Payment
+-+              </button>
+-+              <button onClick={() => navigate('/dashboard')}
+-+                style={{ width:'100%', background:'transparent', color:T.muted, border:'none', padding:'10px', fontSize:13, cursor:'pointer' }}>
+-+                Back to Dashboard
+-+              </button>
+-+            </div>
+-+          )}
+-+        </div>
+-+      </div>
+-+    </div>
+-+  );
+-+}
+diff --git a/src/components/SandboxPaymentSheet.tsx b/src/components/SandboxPaymentSheet.tsx
+new file mode 100644
+index 0000000..c7a6dc2
+--- /dev/null
++++ b/src/components/SandboxPaymentSheet.tsx
+@@ -0,0 +1,197 @@
++/**
++ * INRT WALLET — SandboxPaymentSheet.tsx
++ * Drop-in payment method sheet used across recharge/bills/gold/etc.
++ * Simulates method selection → bank processing → receipt, Paytm-style.
++ *
++ * ⚠️ NO REAL MONEY MOVES. No bank, UPI switch, or card network is
++ * contacted. This exists purely to give the payment UX a realistic
++ * feel for demos while real PA integrations are still in progress.
++ * Marked with a small "TEST MODE" badge — never hidden.
++ *
++ * Usage:
++ *   {showPay && (
++ *     <SandboxPaymentSheet
++ *       amount={amt}
++ *       itemLabel="Airtel Prepaid — 9876543210"
++ *       onCancel={() => setShowPay(false)}
++ *       onDone={(success, refId) => {
++ *         setShowPay(false);
++ *         if (success) doInternalDebitAndShowSuccess(refId);
++ *         else showToast('Payment failed — try again');
++ *       }}
++ *     />
++ *   )}
++ */
++import { useState } from 'react';
++
++const T = {
++  bg:'#0A2540', card:'#0D2A4A', border:'rgba(255,255,255,0.1)',
++  inrt:'#7B2FBE', teal:'#00e5cc',
++  green:'#00C853', red:'#FF3B30', gold:'#FFD60A',
++  text:'#fff', muted:'#8B9DB3',
++};
++
++type Step = 'method' | 'details' | 'processing' | 'result';
++type Method = 'upi' | 'card' | 'netbanking';
++
++const BANKS = ['Test Bank of India', 'Sandbox National Bank', 'Fake Federal Bank', 'Mock HDFC'];
++
++interface Props {
++  amount: number;
++  itemLabel: string;
++  onCancel: () => void;
++  onDone: (success: boolean, refId: string) => void;
++}
++
++export default function SandboxPaymentSheet({ amount, itemLabel, onCancel, onDone }: Props) {
++  const [step, setStep] = useState<Step>('method');
++  const [method, setMethod] = useState<Method | null>(null);
++  const [upiId, setUpiId] = useState('');
++  const [cardNum, setCardNum] = useState('');
++  const [cardExp, setCardExp] = useState('');
++  const [cardCvv, setCardCvv] = useState('');
++  const [bank, setBank] = useState('');
++  const [progressMsg, setProgressMsg] = useState('');
++  const [result, setResult] = useState<{ success: boolean; refId: string } | null>(null);
++
++  const detailsValid = () => {
++    if (method === 'upi') return /^[\w.-]+@[\w.-]+$/.test(upiId.trim());
++    if (method === 'card') return /^\d{16}$/.test(cardNum.replace(/\s/g,'')) && /^\d{2}\/\d{2}$/.test(cardExp) && /^\d{3}$/.test(cardCvv);
++    if (method === 'netbanking') return !!bank;
++    return false;
++  };
++
++  const runProcessing = async () => {
++    setStep('processing');
++    const stages = ['Connecting to payment gateway…', 'Authenticating…', 'Confirming payment…'];
++    for (const s of stages) {
++      setProgressMsg(s);
++      await new Promise(r => setTimeout(r, 500));
++    }
++    const success = Math.random() > 0.06;
++    const refId = 'TXN' + Math.random().toString(36).slice(2, 11).toUpperCase();
++    setResult({ success, refId });
++    setStep('result');
++  };
++
++  return (
++    <div style={{
++      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 1000,
++      display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
++    }}>
++      <div style={{
++        width: '100%', maxWidth: 460, background: T.card,
++        borderRadius: '24px 24px 0 0', padding: '20px 20px 28px',
++        boxSizing: 'border-box', position: 'relative',
++        boxShadow: '0 -8px 40px rgba(0,0,0,0.4)',
++        maxHeight: '88vh', overflowY: 'auto',
++      }}>
++        {/* Small, unobtrusive test-mode badge — always visible, never hidden */}
++        <div style={{
++          position: 'absolute', top: 14, right: 14,
++          background: 'rgba(255,214,10,0.15)', border: '1px solid rgba(255,214,10,0.4)',
++          borderRadius: 20, padding: '4px 10px', display: 'flex', alignItems: 'center', gap: 4,
++        }}>
++          <span style={{ fontSize: 10 }}>🧪</span>
++          <span style={{ color: T.gold, fontSize: 10, fontWeight: 800, letterSpacing: 0.4 }}>TEST MODE</span>
++        </div>
++
++        {/* Drag handle */}
++        <div style={{ width: 40, height: 4, borderRadius: 4, background: T.border, margin: '0 auto 18px' }} />
++
++        {step === 'method' && (
++          <>
++            <p style={{ color: T.muted, fontSize: 12, margin: '0 0 2px' }}>{itemLabel}</p>
++            <p style={{ color: T.text, fontSize: 24, fontWeight: 800, margin: '0 0 20px' }}>₹{amount}</p>
++            <p style={{ color: T.muted, fontSize: 12, fontWeight: 700, letterSpacing: 0.5, margin: '0 0 12px' }}>CHOOSE PAYMENT METHOD</p>
++            {([
++              ['upi', '📱', 'UPI'],
++              ['card', '💳', 'Debit / Credit Card'],
++              ['netbanking', '🏦', 'Netbanking'],
++            ] as [Method, string, string][]).map(([m, icon, label]) => (
++              <button key={m} onClick={() => { setMethod(m); setStep('details'); }}
++                style={{ width:'100%', display:'flex', alignItems:'center', gap:12, background:'rgba(255,255,255,0.04)', border:`1px solid ${T.border}`, borderRadius:12, padding:'15px', marginBottom:10, cursor:'pointer', color:T.text, fontSize:14, fontWeight:600, textAlign:'left' }}>
++                <span style={{ fontSize:18 }}>{icon}</span> {label}
++                <span style={{ marginLeft:'auto', color:T.muted }}>→</span>
++              </button>
++            ))}
++            <button onClick={onCancel} style={{ width:'100%', background:'transparent', color:T.muted, border:'none', padding:'12px', fontSize:13, cursor:'pointer', marginTop:6 }}>
++              Cancel
++            </button>
++          </>
++        )}
++
++        {step === 'details' && method && (
++          <>
++            <p style={{ color: T.muted, fontSize: 12, fontWeight: 700, letterSpacing: 0.5, margin: '0 0 14px' }}>
++              TEST {method.toUpperCase()} DETAILS — nothing here is verified
++            </p>
++            {method === 'upi' && (
++              <input placeholder="any-name@sandboxbank" value={upiId} onChange={e => setUpiId(e.target.value)}
++                style={{ width:'100%', background:'rgba(255,255,255,0.05)', border:`1.5px solid ${T.border}`, borderRadius:12, padding:'13px 14px', color:T.text, fontSize:14, outline:'none', boxSizing:'border-box', marginBottom:16 }} />
++            )}
++            {method === 'card' && (
++              <>
++                <input placeholder="4111 1111 1111 1111" value={cardNum}
++                  onChange={e => setCardNum(e.target.value.replace(/[^\d ]/g,''))}
++                  style={{ width:'100%', background:'rgba(255,255,255,0.05)', border:`1.5px solid ${T.border}`, borderRadius:12, padding:'13px 14px', color:T.text, fontSize:14, outline:'none', boxSizing:'border-box', marginBottom:10, fontFamily:'monospace' }} />
++                <div style={{ display:'flex', gap:10, marginBottom:16 }}>
++                  <input placeholder="MM/YY" value={cardExp} onChange={e => setCardExp(e.target.value)}
++                    style={{ flex:1, background:'rgba(255,255,255,0.05)', border:`1.5px solid ${T.border}`, borderRadius:12, padding:'13px 14px', color:T.text, fontSize:14, outline:'none', boxSizing:'border-box' }} />
++                  <input placeholder="CVV" value={cardCvv} onChange={e => setCardCvv(e.target.value.replace(/\D/g,''))}
++                    style={{ width:90, background:'rgba(255,255,255,0.05)', border:`1.5px solid ${T.border}`, borderRadius:12, padding:'13px 14px', color:T.text, fontSize:14, outline:'none', boxSizing:'border-box' }} />
++                </div>
++              </>
++            )}
++            {method === 'netbanking' && (
++              <div style={{ marginBottom:16 }}>
++                {BANKS.map(b => (
++                  <button key={b} onClick={() => setBank(b)}
++                    style={{ width:'100%', textAlign:'left', background: bank===b ? 'rgba(123,47,190,0.2)' : 'rgba(255,255,255,0.04)', border:`1.5px solid ${bank===b ? T.inrt : T.border}`, borderRadius:10, padding:'12px 14px', marginBottom:8, color:T.text, fontSize:13, fontWeight:600, cursor:'pointer' }}>
++                    🏦 {b}
++                  </button>
++                ))}
++              </div>
++            )}
++            <button disabled={!detailsValid()} onClick={runProcessing}
++              style={{ width:'100%', background: detailsValid() ? T.inrt : 'rgba(255,255,255,0.08)', color:'#fff', border:'none', borderRadius:12, padding:'15px', fontSize:15, fontWeight:700, cursor: detailsValid() ? 'pointer' : 'not-allowed' }}>
++              Pay ₹{amount}
++            </button>
++          </>
++        )}
++
++        {step === 'processing' && (
++          <div style={{ textAlign:'center', padding:'30px 0' }}>
++            <div style={{
++              width:52, height:52, borderRadius:'50%', margin:'0 auto 18px',
++              border:`4px solid ${T.border}`, borderTopColor:T.teal,
++              animation:'sandboxSheetSpin 0.8s linear infinite',
++            }} />
++            <style>{`@keyframes sandboxSheetSpin { to { transform: rotate(360deg); } }`}</style>
++            <p style={{ color:T.text, fontSize:14, fontWeight:600 }}>{progressMsg}</p>
++          </div>
++        )}
++
++        {step === 'result' && result && (
++          <div style={{ textAlign:'center', padding:'6px 0' }}>
++            <div style={{
++              width:56, height:56, borderRadius:'50%', margin:'0 auto 14px',
++              background: result.success ? 'rgba(0,200,83,0.15)' : 'rgba(255,59,48,0.15)',
++              display:'flex', alignItems:'center', justifyContent:'center', fontSize:26,
++            }}>
++              {result.success ? '✅' : '❌'}
++            </div>
++            <p style={{ color:T.text, fontSize:16, fontWeight:800, margin:'0 0 4px' }}>
++              {result.success ? 'Payment Successful' : 'Payment Failed'}
++            </p>
++            <p style={{ color:T.muted, fontSize:12, margin:'0 0 18px' }}>Ref: {result.refId}</p>
++            <button onClick={() => onDone(result.success, result.refId)}
++              style={{ width:'100%', background:T.inrt, color:'#fff', border:'none', borderRadius:12, padding:'14px', fontSize:14, fontWeight:700, cursor:'pointer' }}>
++              Done
++            </button>
++          </div>
++        )}
++      </div>
++    </div>
++  );
++}
+diff --git a/src/pages/BillPayments.tsx b/src/pages/BillPayments.tsx
+index 50b5caf..c98d221 100644
+--- a/src/pages/BillPayments.tsx
++++ b/src/pages/BillPayments.tsx
+@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
+ import { useAuth } from '../context/AuthContext';
+ import { doc, updateDoc, increment, serverTimestamp, collection, addDoc } from 'firebase/firestore';
+ import { db } from '../lib/firebase';
++import SandboxPaymentSheet from '../components/SandboxPaymentSheet';
+ import '../styles/theme.css';
+ 
+ const CATEGORIES = [
+@@ -45,23 +46,32 @@ export default function BillPayments() {
+     setLoading(false);
+   };
+ 
++  const [showPaySheet, setShowPaySheet] = useState(false);
++
+   const handlePay = async () => {
+     const amt = parseFloat(amount);
+     if(!amt||amt<1) return setError('Invalid amount');
+     if(amt>bal)     return setError(`Insufficient balance. You have ₹${bal}`);
++    setError('');
++    setShowPaySheet(true);
++  };
++
++  const completeSandboxBillPayment = async (success: boolean, refId: string) => {
++    setShowPaySheet(false);
++    const amt = parseFloat(amount);
++    if (!success) { setError('Payment failed — please try again'); return; }
+     setLoading(true); setError('');
+     try {
+-      const ref = `BP${Date.now()}${Math.random().toString(36).slice(2,5).toUpperCase()}`;
+       await updateDoc(doc(db,'users',user!.uid),{
+         balance:increment(-amt),cashback:increment(Math.floor(amt*0.02)),
+         rewardPoints:increment(Math.floor(amt/10)),updatedAt:serverTimestamp(),
+       });
+       await addDoc(collection(db,'transactions'),{
+         uid:user!.uid,type:'debit',amount:amt,cat:'bills',
+-        note:`${category.label} — ${provider}`,ref,status:'success',
++        note:`[SANDBOX] ${category.label} — ${provider}`,ref:refId,status:'success',
+         billRef,accountNo,provider,createdAt:serverTimestamp(),
+       });
+-      setTxId(ref); await refreshProfile(); setStep('success');
++      setTxId(refId); await refreshProfile(); setStep('success');
+     } catch(e:any){ setError(e.message||'Payment failed'); }
+     setLoading(false);
+   };
+@@ -176,6 +186,15 @@ export default function BillPayments() {
+           </div>
+         )}
+       </div>
++
++      {showPaySheet && (
++        <SandboxPaymentSheet
++          amount={parseFloat(amount)}
++          itemLabel={`${category.label} — ${provider}`}
++          onCancel={() => setShowPaySheet(false)}
++          onDone={completeSandboxBillPayment}
++        />
++      )}
+     </div>
+   );
+ }
+diff --git a/src/pages/GoldPage.tsx b/src/pages/GoldPage.tsx
+index ad93c5a..704d09c 100644
+--- a/src/pages/GoldPage.tsx
++++ b/src/pages/GoldPage.tsx
+@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
+ import { useAuth } from '../context/AuthContext';
+ import { doc, updateDoc, increment, serverTimestamp, collection, addDoc, getDoc } from 'firebase/firestore';
+ import { db } from '../lib/firebase';
++import SandboxPaymentSheet from '../components/SandboxPaymentSheet';
+ import '../styles/theme.css';
+ 
+ async function fetchGoldPrice() {
+@@ -38,10 +39,19 @@ export default function GoldPage() {
+   const currentVal = holdings.grams * gold.price;
+   const pnl = currentVal - holdings.invested;
+ 
++  const [showPaySheet, setShowPaySheet] = useState(false);
++
+   const handleBuy = async () => {
+     const amt=parseFloat(amount);
+     if(!amt||amt<10) return showToast('Minimum ₹10');
+     if(amt>bal) return showToast(`Insufficient balance. You have ₹${bal}`);
++    setShowPaySheet(true);
++  };
++
++  const completeSandboxGoldBuy = async (success: boolean, refId: string) => {
++    setShowPaySheet(false);
++    if (!success) { showToast('❌ Payment failed — try again'); return; }
++    const amt=parseFloat(amount);
+     setLoading(true);
+     try {
+       const g = amt/gold.price;
+@@ -49,7 +59,7 @@ export default function GoldPage() {
+         balance:increment(-amt),goldGrams:increment(g),goldInvested:increment(amt),
+         rewardPoints:increment(Math.floor(amt/10)),updatedAt:serverTimestamp(),
+       });
+-      await addDoc(collection(db,'transactions'),{uid:user!.uid,type:'debit',amount:amt,note:`Gold purchase ${g.toFixed(4)}g`,cat:'gold',status:'success',createdAt:serverTimestamp()});
++      await addDoc(collection(db,'transactions'),{uid:user!.uid,type:'debit',amount:amt,note:`[SANDBOX] Gold purchase ${g.toFixed(4)}g`,ref:refId,cat:'gold',status:'success',createdAt:serverTimestamp()});
+       await refreshProfile();
+       showToast(`✅ Bought ${g.toFixed(4)}g of 24K gold!`);
+       setAmount('');
+@@ -167,6 +177,15 @@ export default function GoldPage() {
+           )
+         )}
+       </div>
++
++      {showPaySheet && (
++        <SandboxPaymentSheet
++          amount={parseFloat(amount)}
++          itemLabel="24K Digital Gold Purchase"
++          onCancel={() => setShowPaySheet(false)}
++          onDone={completeSandboxGoldBuy}
++        />
++      )}
+     </div>
+   );
+ }
+diff --git a/src/pages/RechargePage.tsx b/src/pages/RechargePage.tsx
+index 3e30273..b31bf33 100644
+--- a/src/pages/RechargePage.tsx
++++ b/src/pages/RechargePage.tsx
+@@ -7,6 +7,8 @@
+ import React, { useState, useEffect, useRef } from 'react';
+ import { useNavigate } from 'react-router-dom';
+ import { useAuth } from '../context/AuthContext';
++import SandboxPaymentSheet from '../components/SandboxPaymentSheet';
++import { addTransaction, updateBalance } from '../lib/db';
+ import '../styles/theme.css';
+ 
+ const API = import.meta.env.VITE_API_URL || '';
+@@ -121,55 +123,39 @@ export default function RechargePage() {
+   };
+ 
+   // ── Process recharge ──────────────────────────────────────
++  const [showPaySheet, setShowPaySheet] = useState(false);
++
+   const handlePay = async () => {
+     if (!plan || !user) return;
+     const amt = plan.amount;
+     if (amt > bal) return setErr(`Insufficient balance. You have ₹${bal.toLocaleString('en-IN')}`);
+-    setLoading(true); setErr(''); setStep('processing');
++    setErr('');
++    setShowPaySheet(true);
++  };
+ 
++  const completeSandboxRecharge = async (success: boolean, refId: string) => {
++    setShowPaySheet(false);
++    if (!plan || !user) return;
++    setStep('processing');
++    setLoading(true);
+     try {
+-      const r = await fetch(`${API}/recharge/do`, {
+-        method: 'POST',
+-        headers: { 'Content-Type': 'application/json' },
+-        body: JSON.stringify({
+-          userId:       user.uid,
+-          mobile:       mobile.replace(/\D/g, ''),
+-          operator,
+-          amount:       amt,
+-          rechargeType: type === 'dth' ? 'D' : type === 'postpaid' ? 'T' : 'P',
+-        }),
+-      });
+-      const d = await r.json();
+-
+-      if (!r.ok) throw new Error(d.error || 'Recharge failed');
+-
+-      await refreshProfile();
+-
+-      if (d.success) {
+-        setTxResult(d); setStep('success');
+-      } else if (d.pending) {
+-        setTxResult(d); setStep('processing');
+-        // Poll for status every 5 seconds
+-        pollRef.current = setInterval(async () => {
+-          try {
+-            const sr = await fetch(`${API}/recharge/status/${d.orderId}`);
+-            const sd = await sr.json();
+-            if (sd.status === 'success') {
+-              clearInterval(pollRef.current);
+-              await refreshProfile();
+-              setTxResult({ ...d, ...sd }); setStep('success');
+-            } else if (sd.status === 'failed') {
+-              clearInterval(pollRef.current);
+-              await refreshProfile();
+-              setTxResult({ ...d, ...sd }); setStep('failed');
+-            }
+-          } catch { /* keep polling */ }
+-        }, 5000);
++      if (success) {
++        await updateBalance(user.uid, -plan.amount);
++        await addTransaction(user.uid, {
++          type: 'debit',
++          amount: plan.amount,
++          note: `[SANDBOX] ${OPERATOR_DISPLAY[operator] || operator} ${type.toUpperCase()} — ${mobile}`,
++          cat: 'recharge',
++          ref: refId,
++        });
++        await refreshProfile();
++        setTxResult({ success: true, orderId: refId });
++        setStep('success');
+       } else {
+-        setTxResult(d); setStep('failed');
++        setTxResult({ success: false, orderId: refId, error: 'Sandbox payment declined' });
++        setStep('failed');
+       }
+     } catch (e: any) {
+-      await refreshProfile();
+       setErr(e.message || 'Recharge failed');
+       setStep('confirm');
+     }
+@@ -486,6 +472,15 @@ export default function RechargePage() {
+         )}
+       </div>
+       <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
++
++      {showPaySheet && plan && (
++        <SandboxPaymentSheet
++          amount={plan.amount}
++          itemLabel={`${OPERATOR_DISPLAY[operator] || operator} ${type.toUpperCase()} — ${mobile}`}
++          onCancel={() => setShowPaySheet(false)}
++          onDone={completeSandboxRecharge}
++        />
++      )}
+     </div>
+   );
+ }

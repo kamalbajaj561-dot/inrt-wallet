@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { doc, updateDoc, increment, serverTimestamp, collection, addDoc } from 'firebase/firestore';
 import { db } from '../lib/firebase';
+import SandboxPaymentSheet from '../components/SandboxPaymentSheet';
 import '../styles/theme.css';
 
 const CATEGORIES = [
@@ -45,23 +46,32 @@ export default function BillPayments() {
     setLoading(false);
   };
 
+  const [showPaySheet, setShowPaySheet] = useState(false);
+
   const handlePay = async () => {
     const amt = parseFloat(amount);
     if(!amt||amt<1) return setError('Invalid amount');
     if(amt>bal)     return setError(`Insufficient balance. You have ₹${bal}`);
+    setError('');
+    setShowPaySheet(true);
+  };
+
+  const completeSandboxBillPayment = async (success: boolean, refId: string) => {
+    setShowPaySheet(false);
+    const amt = parseFloat(amount);
+    if (!success) { setError('Payment failed — please try again'); return; }
     setLoading(true); setError('');
     try {
-      const ref = `BP${Date.now()}${Math.random().toString(36).slice(2,5).toUpperCase()}`;
       await updateDoc(doc(db,'users',user!.uid),{
         balance:increment(-amt),cashback:increment(Math.floor(amt*0.02)),
         rewardPoints:increment(Math.floor(amt/10)),updatedAt:serverTimestamp(),
       });
       await addDoc(collection(db,'transactions'),{
         uid:user!.uid,type:'debit',amount:amt,cat:'bills',
-        note:`${category.label} — ${provider}`,ref,status:'success',
+        note:`[SANDBOX] ${category.label} — ${provider}`,ref:refId,status:'success',
         billRef,accountNo,provider,createdAt:serverTimestamp(),
       });
-      setTxId(ref); await refreshProfile(); setStep('success');
+      setTxId(refId); await refreshProfile(); setStep('success');
     } catch(e:any){ setError(e.message||'Payment failed'); }
     setLoading(false);
   };
@@ -176,6 +186,15 @@ export default function BillPayments() {
           </div>
         )}
       </div>
+
+      {showPaySheet && (
+        <SandboxPaymentSheet
+          amount={parseFloat(amount)}
+          itemLabel={`${category.label} — ${provider}`}
+          onCancel={() => setShowPaySheet(false)}
+          onDone={completeSandboxBillPayment}
+        />
+      )}
     </div>
   );
 }

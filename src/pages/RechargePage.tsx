@@ -7,6 +7,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import SandboxPaymentSheet from '../components/SandboxPaymentSheet';
+import { addTransaction, updateBalance } from '../lib/db';
 import '../styles/theme.css';
 
 const API = import.meta.env.VITE_API_URL || '';
@@ -121,55 +123,39 @@ export default function RechargePage() {
   };
 
   // ── Process recharge ──────────────────────────────────────
+  const [showPaySheet, setShowPaySheet] = useState(false);
+
   const handlePay = async () => {
     if (!plan || !user) return;
     const amt = plan.amount;
     if (amt > bal) return setErr(`Insufficient balance. You have ₹${bal.toLocaleString('en-IN')}`);
-    setLoading(true); setErr(''); setStep('processing');
+    setErr('');
+    setShowPaySheet(true);
+  };
 
+  const completeSandboxRecharge = async (success: boolean, refId: string) => {
+    setShowPaySheet(false);
+    if (!plan || !user) return;
+    setStep('processing');
+    setLoading(true);
     try {
-      const r = await fetch(`${API}/recharge/do`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          userId:       user.uid,
-          mobile:       mobile.replace(/\D/g, ''),
-          operator,
-          amount:       amt,
-          rechargeType: type === 'dth' ? 'D' : type === 'postpaid' ? 'T' : 'P',
-        }),
-      });
-      const d = await r.json();
-
-      if (!r.ok) throw new Error(d.error || 'Recharge failed');
-
-      await refreshProfile();
-
-      if (d.success) {
-        setTxResult(d); setStep('success');
-      } else if (d.pending) {
-        setTxResult(d); setStep('processing');
-        // Poll for status every 5 seconds
-        pollRef.current = setInterval(async () => {
-          try {
-            const sr = await fetch(`${API}/recharge/status/${d.orderId}`);
-            const sd = await sr.json();
-            if (sd.status === 'success') {
-              clearInterval(pollRef.current);
-              await refreshProfile();
-              setTxResult({ ...d, ...sd }); setStep('success');
-            } else if (sd.status === 'failed') {
-              clearInterval(pollRef.current);
-              await refreshProfile();
-              setTxResult({ ...d, ...sd }); setStep('failed');
-            }
-          } catch { /* keep polling */ }
-        }, 5000);
+      if (success) {
+        await updateBalance(user.uid, -plan.amount);
+        await addTransaction(user.uid, {
+          type: 'debit',
+          amount: plan.amount,
+          note: `[SANDBOX] ${OPERATOR_DISPLAY[operator] || operator} ${type.toUpperCase()} — ${mobile}`,
+          cat: 'recharge',
+          ref: refId,
+        });
+        await refreshProfile();
+        setTxResult({ success: true, orderId: refId });
+        setStep('success');
       } else {
-        setTxResult(d); setStep('failed');
+        setTxResult({ success: false, orderId: refId, error: 'Sandbox payment declined' });
+        setStep('failed');
       }
     } catch (e: any) {
-      await refreshProfile();
       setErr(e.message || 'Recharge failed');
       setStep('confirm');
     }
@@ -486,6 +472,15 @@ export default function RechargePage() {
         )}
       </div>
       <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
+
+      {showPaySheet && plan && (
+        <SandboxPaymentSheet
+          amount={plan.amount}
+          itemLabel={`${OPERATOR_DISPLAY[operator] || operator} ${type.toUpperCase()} — ${mobile}`}
+          onCancel={() => setShowPaySheet(false)}
+          onDone={completeSandboxRecharge}
+        />
+      )}
     </div>
   );
 }

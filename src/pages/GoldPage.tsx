@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { doc, updateDoc, increment, serverTimestamp, collection, addDoc, getDoc } from 'firebase/firestore';
 import { db } from '../lib/firebase';
+import SandboxPaymentSheet from '../components/SandboxPaymentSheet';
 import '../styles/theme.css';
 
 async function fetchGoldPrice() {
@@ -38,10 +39,19 @@ export default function GoldPage() {
   const currentVal = holdings.grams * gold.price;
   const pnl = currentVal - holdings.invested;
 
+  const [showPaySheet, setShowPaySheet] = useState(false);
+
   const handleBuy = async () => {
     const amt=parseFloat(amount);
     if(!amt||amt<10) return showToast('Minimum ₹10');
     if(amt>bal) return showToast(`Insufficient balance. You have ₹${bal}`);
+    setShowPaySheet(true);
+  };
+
+  const completeSandboxGoldBuy = async (success: boolean, refId: string) => {
+    setShowPaySheet(false);
+    if (!success) { showToast('❌ Payment failed — try again'); return; }
+    const amt=parseFloat(amount);
     setLoading(true);
     try {
       const g = amt/gold.price;
@@ -49,7 +59,7 @@ export default function GoldPage() {
         balance:increment(-amt),goldGrams:increment(g),goldInvested:increment(amt),
         rewardPoints:increment(Math.floor(amt/10)),updatedAt:serverTimestamp(),
       });
-      await addDoc(collection(db,'transactions'),{uid:user!.uid,type:'debit',amount:amt,note:`Gold purchase ${g.toFixed(4)}g`,cat:'gold',status:'success',createdAt:serverTimestamp()});
+      await addDoc(collection(db,'transactions'),{uid:user!.uid,type:'debit',amount:amt,note:`[SANDBOX] Gold purchase ${g.toFixed(4)}g`,ref:refId,cat:'gold',status:'success',createdAt:serverTimestamp()});
       await refreshProfile();
       showToast(`✅ Bought ${g.toFixed(4)}g of 24K gold!`);
       setAmount('');
@@ -167,6 +177,15 @@ export default function GoldPage() {
           )
         )}
       </div>
+
+      {showPaySheet && (
+        <SandboxPaymentSheet
+          amount={parseFloat(amount)}
+          itemLabel="24K Digital Gold Purchase"
+          onCancel={() => setShowPaySheet(false)}
+          onDone={completeSandboxGoldBuy}
+        />
+      )}
     </div>
   );
 }
