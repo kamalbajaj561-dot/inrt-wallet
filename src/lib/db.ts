@@ -93,6 +93,40 @@ export async function addNotification(uid: string, title: string, body: string, 
   });
 }
 
+// ── Sandbox Payments (TEST MODE ONLY — no real money) ──────────
+export async function recordSandboxPayment(uid: string, data: {
+  amount: number;
+  method: string;
+  success: boolean;
+  refId: string;
+}) {
+  await addDoc(collection(db, 'transactions'), {
+    uid,
+    type:      'credit',
+    amount:    data.amount,
+    note:      `[SANDBOX] Payment via ${data.method}`,
+    cat:       'sandbox',
+    ref:       data.refId,
+    status:    data.success ? 'success' : 'failed',
+    createdAt: serverTimestamp(),
+  });
+  if (data.success) {
+    await updateBalance(uid, data.amount);
+    await addNotification(
+      uid, '✅ Sandbox payment received',
+      `₹${data.amount} added via test ${data.method} — no real money moved.`,
+      'success',
+    );
+  } else {
+    await addNotification(
+      uid, '❌ Sandbox payment failed',
+      `Test payment of ₹${data.amount} via ${data.method} was simulated to fail.`,
+      'error',
+    );
+  }
+  return data.refId;
+}
+
 // ── Bookings ─────────────────────────────────────────────────
 export async function createBooking(uid: string, data: {
   type: 'movie' | 'train' | 'bus' | 'flight';

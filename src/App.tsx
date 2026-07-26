@@ -13,6 +13,7 @@ import TermsAndConditions from './pages/TermsAndConditions';
 import RefundPolicy       from './pages/RefundPolicy';
 import AdminKYC from './pages/AdminKYC';
 import CheckoutPage from './pages/CheckoutPage';
+import SandboxGateway from './pages/SandboxGateway';
 import './styles/global.css';
 
 // ── Lazy ───────────────────────────────────────────────────────
@@ -122,6 +123,8 @@ export default function App() {
 <Route path="/admin/kyc" element={<AdminKYC />} />
 
 <Route path="/checkout" element={<CheckoutPage />} />
+
+<Route path="/sandbox-pay" element={<Guard><SandboxGateway /></Guard>} />
 
 <Route path="/privacy"       element={<PrivacyPolicy />} />
 <Route path="/terms"         element={<TermsAndConditions />} />
