@@ -3,9 +3,9 @@
  *
  * LAUNCH VERSION:
  *  - INRT Global Transfer: ACTIVE ✅
- *  - UPI / Bank Transfer:  HIDDEN (coming soon — pending payout approval)
- *
- * To re-enable UPI/Bank: remove the HIDDEN comments below
+ *  - UPI / Card / Netbanking: ACTIVE in TEST MODE ✅ (routes to
+ *    /sandbox-send — a working simulator, not a real payment gateway.
+ *    Real UPI/bank transfers still require a live PA integration.)
  */
 
 import { useState, useEffect } from 'react';
@@ -252,12 +252,17 @@ export default function SendMoney() {
         <h2 style={{ ...S.h2, marginBottom:4 }}>Send Money</h2>
         <p style={{ color:T.muted, fontSize:13, margin:'0 0 20px' }}>Send INRT to anyone in the world instantly</p>
 
-        {/* ── COMING SOON BANNER for UPI/Bank ─────────────── */}
-        <div style={{ background:'rgba(255,149,0,0.06)', border:'1px solid rgba(255,149,0,0.2)', borderRadius:14, padding:'14px 16px', marginBottom:20 }}>
-          <p style={{ color:'#FF9500', fontWeight:700, fontSize:13, margin:'0 0 4px' }}>🏦 UPI & Bank Transfers — Coming Soon</p>
-          <p style={{ color:T.muted, fontSize:12, margin:0, lineHeight:1.6 }}>
-            Direct UPI and bank transfers are pending payment gateway approval. For now, use INRT for instant global transfers — same value, zero fees.
+        {/* ── SEND METHOD SELECTOR ─────────────────────────── */}
+        <div style={{ background:'rgba(0,229,204,0.06)', border:'1px solid rgba(0,229,204,0.25)', borderRadius:14, padding:'14px 16px', marginBottom:20 }}>
+          <p style={{ color:T.teal, fontWeight:700, fontSize:13, margin:'0 0 4px' }}>📱 Prefer UPI, Card, or Netbanking?</p>
+          <p style={{ color:T.muted, fontSize:12, margin:'0 0 10px', lineHeight:1.6 }}>
+            Send to anyone via UPI ID, mobile number, or card — currently running in test mode
+            while our payment gateway integration is finalized.
           </p>
+          <button onClick={() => navigate('/sandbox-send')}
+            style={{ width:'100%', background:'rgba(0,229,204,0.15)', border:`1px solid ${T.teal}`, color:T.teal, borderRadius:10, padding:'10px 0', fontSize:13, fontWeight:700, cursor:'pointer' }}>
+            Send via UPI / Card (Test Mode) →
+          </button>
         </div>
 
         {/* ── INRT BALANCE ─────────────────────────────────── */}
