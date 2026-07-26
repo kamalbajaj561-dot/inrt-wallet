@@ -23,6 +23,7 @@
  *   )}
  */
 import { useState } from 'react';
+import type { PaymentSheetProps } from '../lib/payments/types';
 
 const T = {
   bg:'#0A2540', card:'#0D2A4A', border:'rgba(255,255,255,0.1)',
@@ -36,14 +37,7 @@ type Method = 'upi' | 'card' | 'netbanking';
 
 const BANKS = ['Test Bank of India', 'Sandbox National Bank', 'Fake Federal Bank', 'Mock HDFC'];
 
-interface Props {
-  amount: number;
-  itemLabel: string;
-  onCancel: () => void;
-  onDone: (success: boolean, refId: string) => void;
-}
-
-export default function SandboxPaymentSheet({ amount, itemLabel, onCancel, onDone }: Props) {
+export default function SandboxPaymentSheet({ amount, itemLabel, onCancel, onDone }: PaymentSheetProps) {
   const [step, setStep] = useState<Step>('method');
   const [method, setMethod] = useState<Method | null>(null);
   const [upiId, setUpiId] = useState('');

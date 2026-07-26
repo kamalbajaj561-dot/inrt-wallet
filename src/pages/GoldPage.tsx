@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { doc, updateDoc, increment, serverTimestamp, collection, addDoc, getDoc } from 'firebase/firestore';
 import { db } from '../lib/firebase';
-import SandboxPaymentSheet from '../components/SandboxPaymentSheet';
+import PaymentSheet from '../components/PaymentSheet';
 import '../styles/theme.css';
 
 async function fetchGoldPrice() {
@@ -179,7 +179,7 @@ export default function GoldPage() {
       </div>
 
       {showPaySheet && (
-        <SandboxPaymentSheet
+        <PaymentSheet
           amount={parseFloat(amount)}
           itemLabel="24K Digital Gold Purchase"
           onCancel={() => setShowPaySheet(false)}

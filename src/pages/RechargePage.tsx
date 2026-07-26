@@ -7,7 +7,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import SandboxPaymentSheet from '../components/SandboxPaymentSheet';
+import PaymentSheet from '../components/PaymentSheet';
 import { addTransaction, updateBalance } from '../lib/db';
 import '../styles/theme.css';
 
@@ -474,7 +474,7 @@ export default function RechargePage() {
       <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
 
       {showPaySheet && plan && (
-        <SandboxPaymentSheet
+        <PaymentSheet
           amount={plan.amount}
           itemLabel={`${OPERATOR_DISPLAY[operator] || operator} ${type.toUpperCase()} — ${mobile}`}
           onCancel={() => setShowPaySheet(false)}

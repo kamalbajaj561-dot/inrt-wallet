@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { doc, updateDoc, increment, serverTimestamp, collection, addDoc } from 'firebase/firestore';
 import { db } from '../lib/firebase';
-import SandboxPaymentSheet from '../components/SandboxPaymentSheet';
+import PaymentSheet from '../components/PaymentSheet';
 import '../styles/theme.css';
 
 const CATEGORIES = [
@@ -188,7 +188,7 @@ export default function BillPayments() {
       </div>
 
       {showPaySheet && (
-        <SandboxPaymentSheet
+        <PaymentSheet
           amount={parseFloat(amount)}
           itemLabel={`${category.label} — ${provider}`}
           onCancel={() => setShowPaySheet(false)}
