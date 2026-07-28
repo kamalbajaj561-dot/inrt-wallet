@@ -84,6 +84,14 @@ export async function updateBalance(uid: string, delta: number) {
   });
 }
 
+// ── App Mode (National / International) ─────────────────────
+export async function setAppMode(uid: string, mode: 'national' | 'international') {
+  await updateDoc(doc(db, 'users', uid), {
+    appMode:   mode,
+    updatedAt: serverTimestamp(),
+  });
+}
+
 // ── Notifications ─────────────────────────────────────────────
 export async function addNotification(uid: string, title: string, body: string, type = 'info') {
   await addDoc(collection(db, 'notifications'), {

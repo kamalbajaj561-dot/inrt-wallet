@@ -1,6 +1,7 @@
 import React, { Suspense, lazy } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
+import { AppModeProvider } from './context/AppModeContext';
 
 // ── Eager ──────────────────────────────────────────────────────
 import LoginPage   from './pages/LoginPage';
@@ -73,6 +74,7 @@ export default function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
+        <AppModeProvider>
         <Suspense fallback={<Loader />}>
           <Routes>
             {/* Public */}
@@ -138,6 +140,7 @@ export default function App() {
             <Route path="*"  element={<Navigate to="/dashboard" replace />} />
           </Routes>
         </Suspense>
+        </AppModeProvider>
       </AuthProvider>
     </BrowserRouter>
   );
