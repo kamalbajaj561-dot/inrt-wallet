@@ -17,6 +17,27 @@ export default function SplitBill() {
     setSplit(members.map(() => each));
   };
 
+  const handleShare = async () => {
+    const shareText = `Bill: ${title}\nTotal: ₹${total}\nSplit: ₹${(parseFloat(total) / members.length).toFixed(2)} per person\n\n${members.map((m, i) => `${i + 1}. ${m.name || 'Person ' + (i + 1)}: ₹${split[i]?.toFixed(2) || '0'}`).join('\n')}`;
+    
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: `${title} - Split Bill`,
+          text: shareText,
+        });
+      } catch (err) {
+        // User cancelled or error - fallback to clipboard
+        await navigator.clipboard.writeText(shareText);
+        alert('Split details copied to clipboard!');
+      }
+    } else {
+      // Fallback for browsers without Web Share API
+      await navigator.clipboard.writeText(shareText);
+      alert('Split details copied to clipboard!');
+    }
+  };
+
   return (
     <div style={{width:'100%',minHeight:'100vh',background:'var(--bg)',fontFamily:'var(--f-body)'}}>
       <div style={{background:'linear-gradient(160deg,#050914,#0a1428)',padding:'52px 20px 20px'}}>
@@ -51,7 +72,7 @@ export default function SplitBill() {
         <button className="btn-primary" onClick={calculate}>Calculate Split</button>
         {split.length>0 && (
           <div style={{marginTop:16}}>
-            <button className="btn-outline" style={{marginTop:10}}>📤 Share with everyone</button>
+            <button className="btn-outline" style={{marginTop:10}} onClick={handleShare}>📤 Share with everyone</button>
           </div>
         )}
       </div>

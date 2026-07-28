@@ -214,7 +214,7 @@ export default function Dashboard() {
                 <p style={{ fontWeight:800, fontSize:14, margin:0, color:T.text }}>
                   INRT Level — {points>=5000?'Platinum':points>=1000?'Gold':'Silver'}
                 </p>
-                <p style={{ fontSize:12, color:T.muted, margin:0 }}>{points.toLocaleString()} INRT</p>
+                <p style={{ fontSize:12, color:T.muted, margin:0 }}>{points.toLocaleString('en-IN')} INRT</p>
               </div>
             </div>
             <Chip color={T.gold} bg={T.gold+'18'}>+{Math.floor(points*0.1)} {month}</Chip>
@@ -223,7 +223,7 @@ export default function Dashboard() {
             <div style={{ height:'100%', width:`${Math.min((points/5000)*100,100)}%`, background:`linear-gradient(90deg,${T.gold},${T.orange})`, borderRadius:10 }}/>
           </div>
           <p style={{ fontSize:11, color:T.muted, margin:'6px 0 0' }}>
-            {points>=5000 ? 'Platinum member 🎉' : `${(5000-points).toLocaleString()} more INRT to reach Platinum`}
+            {points>=5000 ? 'Platinum member 🎉' : `${(5000-points).toLocaleString('en-IN')} more INRT to reach Platinum`}
           </p>
         </div>
 
@@ -291,7 +291,7 @@ export default function Dashboard() {
           {[
             { label:'Total Received', val:`₹${(profile?.totalReceived||0).toLocaleString('en-IN')}`, color:T.green },
             { label:'Total Sent',     val:`₹${(profile?.totalSent||0).toLocaleString('en-IN')}`,     color:T.red   },
-            { label:'INRT Balance',   val:points.toLocaleString(),                                     color:T.inrt  },
+            { label:'INRT Balance',   val:points.toLocaleString('en-IN'),                                     color:T.inrt  },
           ].map(s=>(
             <div key={s.label} style={{ background:T.card, borderRadius:16, border:`1px solid ${T.border}`, padding:'12px 10px', textAlign:'center' as const, boxShadow:'0 1px 6px rgba(0,0,0,0.15)' }}>
               <p style={{ color:s.color, fontWeight:800, fontSize:14, margin:'0 0 4px', fontFamily:"'Plus Jakarta Sans',sans-serif" }}>{s.val}</p>

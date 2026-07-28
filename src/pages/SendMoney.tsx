@@ -116,7 +116,10 @@ export default function SendMoney() {
           clearInterval(timer); clearInterval(poll);
           setStep('failed');
         }
-      } catch {}
+      } catch (e) {
+        console.error('Polling error:', e);
+        // Don't fail silently - user will see the original error if transfer fails
+      }
     }, 300);
   };
 
@@ -145,7 +148,7 @@ export default function SendMoney() {
       <div style={{ padding:'60px 24px', textAlign:'center' as const }}>
         <div style={{ width:84, height:84, borderRadius:'50%', background:'rgba(0,200,83,0.1)', border:`3px solid ${T.green}`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:40, margin:'0 auto 20px' }}>✅</div>
         <h2 style={S.h2}>INRT Sent!</h2>
-        <p style={{ color:T.muted, fontSize:14, margin:'0 0 20px' }}>{amt.toLocaleString()} INRT delivered to {recipient?.name}</p>
+        <p style={{ color:T.muted, fontSize:14, margin:'0 0 20px' }}>{amt.toLocaleString('en-IN')} INRT delivered to {recipient?.name}</p>
         {durationMs > 0 && (
           <div style={{ background:'rgba(0,229,204,0.08)', border:`1px solid ${T.teal}30`, borderRadius:14, padding:'16px', marginBottom:20 }}>
             <p style={{ color:T.muted, fontSize:11, margin:'0 0 4px', letterSpacing:1 }}>⚡ DELIVERED IN</p>
@@ -153,7 +156,7 @@ export default function SendMoney() {
           </div>
         )}
         <div style={{ background:T.light, borderRadius:14, padding:'14px 16px', marginBottom:20, textAlign:'left' as const }}>
-          {[['Reference', txRef],['To', toAddress],['Amount', `${amt.toLocaleString()} INRT`],['Status','✅ Delivered']].map(([k,v])=>(
+          {[['Reference', txRef],['To', toAddress],['Amount', `${amt.toLocaleString('en-IN')} INRT`],['Status','✅ Delivered']].map(([k,v])=>(
             <div key={k} style={{ display:'flex', justifyContent:'space-between', padding:'6px 0', borderBottom:`1px solid ${T.border}` }}>
               <span style={{ color:T.muted, fontSize:12 }}>{k}</span>
               <span style={{ color:T.text, fontWeight:700, fontSize:12, fontFamily:k==='Reference'||k==='To'?'monospace':'inherit', maxWidth:'60%', textAlign:'right' as const, wordBreak:'break-all' as const }}>{v}</span>
@@ -189,8 +192,8 @@ export default function SendMoney() {
         <button onClick={()=>setStep('review')} style={S.backLink}>← Back</button>
         <div style={{ background:'rgba(123,47,190,0.06)', border:`1px solid ${T.inrt}20`, borderRadius:14, padding:'16px', marginBottom:24, textAlign:'center' as const }}>
           <p style={{ color:T.muted, fontSize:12, margin:'0 0 4px' }}>Sending</p>
-          <p style={{ color:T.text, fontWeight:800, fontSize:28, margin:'0 0 2px', fontFamily:"'Plus Jakarta Sans',sans-serif" }}>{amt.toLocaleString()} INRT</p>
-          <p style={{ color:T.muted, fontSize:13, margin:0 }}>to {recipient?.name} · ≈ ₹{amt.toLocaleString()}</p>
+          <p style={{ color:T.text, fontWeight:800, fontSize:28, margin:'0 0 2px', fontFamily:"'Plus Jakarta Sans',sans-serif" }}>{amt.toLocaleString('en-IN')} INRT</p>
+          <p style={{ color:T.muted, fontSize:13, margin:0 }}>to {recipient?.name} · ≈ ₹{amt.toLocaleString('en-IN')}</p>
         </div>
         <PinPad onComplete={handleSend} onCancel={()=>setStep('review')}/>
         {err && <p style={{ color:T.red, fontSize:13, marginTop:12, textAlign:'center' as const }}>{err}</p>}
@@ -206,14 +209,14 @@ export default function SendMoney() {
         <button onClick={()=>setStep('form')} style={S.backLink}>← Back</button>
         <h2 style={{ ...S.h2, marginBottom:20 }}>Confirm Transfer</h2>
         <div style={{ textAlign:'center' as const, marginBottom:20 }}>
-          <p style={{ color:T.text, fontSize:36, fontWeight:800, margin:0, fontFamily:"'Plus Jakarta Sans',sans-serif" }}>{amt.toLocaleString()} <span style={{ fontSize:18, color:T.inrt }}>INRT</span></p>
-          <p style={{ color:T.muted, fontSize:13, margin:'4px 0 0' }}>≈ ₹{amt.toLocaleString()} · 1 INRT = ₹1</p>
+          <p style={{ color:T.text, fontSize:36, fontWeight:800, margin:0, fontFamily:"'Plus Jakarta Sans',sans-serif" }}>{amt.toLocaleString('en-IN')} <span style={{ fontSize:18, color:T.inrt }}>INRT</span></p>
+          <p style={{ color:T.muted, fontSize:13, margin:'4px 0 0' }}>≈ ₹{amt.toLocaleString('en-IN')} · 1 INRT = ₹1</p>
         </div>
         <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:16, padding:'14px 16px', marginBottom:16 }}>
           {[
             ['To', recipient?.name || ''],
             ['INRT Address', toAddress],
-            ['Amount', `${amt.toLocaleString()} INRT`],
+            ['Amount', `${amt.toLocaleString('en-IN')} INRT`],
             ['Network Fee', '₹0 (Free)'],
             ['Est. Delivery', '2-4 seconds'],
             ...(note ? [['Note', note]] : []),
@@ -269,10 +272,10 @@ export default function SendMoney() {
         <div style={{ background:'rgba(123,47,190,0.06)', border:`1px solid ${T.inrt}25`, borderRadius:14, padding:'14px 16px', marginBottom:20, display:'flex', justifyContent:'space-between', alignItems:'center' }}>
           <div>
             <p style={{ color:T.muted, fontSize:11, fontWeight:700, margin:'0 0 2px', letterSpacing:0.5 }}>YOUR INRT BALANCE</p>
-            <p style={{ color:T.inrt, fontSize:22, fontWeight:800, margin:0, fontFamily:"'Plus Jakarta Sans',sans-serif" }}>{inrtBal.toLocaleString()} INRT</p>
+            <p style={{ color:T.inrt, fontSize:22, fontWeight:800, margin:0, fontFamily:"'Plus Jakarta Sans',sans-serif" }}>{inrtBal.toLocaleString('en-IN')} INRT</p>
           </div>
           <div style={{ textAlign:'right' as const }}>
-            <p style={{ color:T.muted, fontSize:11, margin:'0 0 2px' }}>≈ ₹{inrtBal.toLocaleString()}</p>
+            <p style={{ color:T.muted, fontSize:11, margin:'0 0 2px' }}>≈ ₹{inrtBal.toLocaleString('en-IN')}</p>
             <button onClick={()=>navigate('/checkout')} style={{ background:T.inrt, border:'none', borderRadius:8, padding:'6px 12px', color:'#fff', fontSize:11, fontWeight:700, cursor:'pointer' }}>Buy INRT +</button>
           </div>
         </div>
@@ -303,7 +306,7 @@ export default function SendMoney() {
           <input type="number" value={amount} onChange={e=>setAmount(e.target.value)} placeholder="0"
             style={{ flex:1, background:'none', border:'none', outline:'none', fontFamily:"'Plus Jakarta Sans',sans-serif", fontWeight:800, fontSize:28, color:T.text }}/>
         </div>
-        <p style={{ color:T.muted, fontSize:12, margin:'0 0 12px' }}>= ₹{amt ? amt.toLocaleString() : '0'} · No fees</p>
+        <p style={{ color:T.muted, fontSize:12, margin:'0 0 12px' }}>= ₹{amt ? amt.toLocaleString('en-IN') : '0'} · No fees</p>
 
         {/* Quick amounts */}
         <div style={{ display:'flex', gap:8, marginBottom:16 }}>

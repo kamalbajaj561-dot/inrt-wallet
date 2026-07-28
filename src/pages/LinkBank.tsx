@@ -34,6 +34,12 @@ export default function LinkBank() {
             🔒 Bank-grade security · UPI 2.0 · Instant verification
           </p>
         </div>
+        <div style={{ background:'rgba(255,214,10,0.06)',border:'1px solid rgba(255,214,10,0.15)',
+                       borderRadius:'var(--r2)',padding:'12px 16px',marginBottom:20 }}>
+          <p style={{ color:'var(--gold)',fontSize:12,fontWeight:700,margin:0 }}>
+            ⚠️ Demo only — not yet connected to a real bank
+          </p>
+        </div>
         {BANKS.map(bank => (
           <div key={bank} style={{ background:'var(--bg-card)',border:`1px solid ${linked.includes(bank)?'var(--teal)':'var(--b1)'}`,
                                     borderRadius:'var(--r2)',padding:'16px',marginBottom:10,

@@ -416,14 +416,14 @@ export default function CryptoPage() {
               <div style={{ background: 'rgba(130,71,229,0.12)', border: '1px solid rgba(130,71,229,0.3)', borderRadius: 16, padding: '16px' }}>
                 <p style={{ color: purpleL, fontSize: 10, margin: '0 0 6px', letterSpacing: 0.5, fontWeight: 700 }}>ON-CHAIN INRT</p>
                 <p style={{ color: white, fontSize: 22, fontWeight: 800, margin: '0 0 2px', fontFamily: "'Plus Jakarta Sans',sans-serif" }}>
-                  {balLoading ? '…' : onChainBal !== null ? onChainBal.toLocaleString() : '—'}
+                  {balLoading ? '…' : onChainBal !== null ? onChainBal.toLocaleString('en-IN') : '—'}
                 </p>
                 <p style={{ color: dim, fontSize: 10, margin: 0 }}>On Polygon</p>
               </div>
               <div style={{ background: card, border: '1px solid ' + border, borderRadius: 16, padding: '16px' }}>
                 <p style={{ color: muted, fontSize: 10, margin: '0 0 6px', letterSpacing: 0.5, fontWeight: 700 }}>INTERNAL INRT</p>
                 <p style={{ color: white, fontSize: 22, fontWeight: 800, margin: '0 0 2px', fontFamily: "'Plus Jakarta Sans',sans-serif" }}>
-                  {inrtBal.toLocaleString()}
+                  {inrtBal.toLocaleString('en-IN')}
                 </p>
                 <p style={{ color: dim, fontSize: 10, margin: 0 }}>In-app balance</p>
               </div>
@@ -498,7 +498,7 @@ export default function CryptoPage() {
             {sendStep === 'form' && (
               <div style={{ background: card, border: '1px solid ' + border, borderRadius: 18, padding: '18px 16px' }}>
                 <p style={{ color: muted, fontSize: 12, margin: '0 0 4px' }}>
-                  {sendMode === 'inrt' ? 'Balance: ' + inrtBal.toLocaleString() + ' INRT' : hasWallet ? 'Your wallet: ' + short(polygonWallet) : 'Create a wallet first'}
+                  {sendMode === 'inrt' ? 'Balance: ' + inrtBal.toLocaleString('en-IN') + ' INRT' : hasWallet ? 'Your wallet: ' + short(polygonWallet) : 'Create a wallet first'}
                 </p>
 
                 {sendMode === 'inrt' ? (
@@ -545,7 +545,7 @@ export default function CryptoPage() {
                   <input type="number" value={sendAmt} onChange={e => setSendAmt(e.target.value)} placeholder="0"
                     style={{ flex: 1, background: 'none', border: 'none', outline: 'none', fontFamily: "'Plus Jakarta Sans',sans-serif", fontWeight: 800, fontSize: 28, color: white }} />
                 </div>
-                <p style={{ color: muted, fontSize: 12, margin: '0 0 12px' }}>≈ ₹{parseFloat(sendAmt || '0').toLocaleString()} · No fees</p>
+                <p style={{ color: muted, fontSize: 12, margin: '0 0 12px' }}>≈ ₹{parseFloat(sendAmt || '0').toLocaleString('en-IN')} · No fees</p>
 
                 <input value={sendNote} onChange={e => setSendNote(e.target.value)} placeholder="Note (optional)"
                   style={{ width: '100%', background: 'rgba(255,255,255,0.04)', border: '1px solid ' + border, borderRadius: 12, padding: '12px 14px', color: white, fontSize: 14, outline: 'none', boxSizing: 'border-box' as const, marginBottom: 14, fontFamily: "'Plus Jakarta Sans',sans-serif" }} />
@@ -572,8 +572,8 @@ export default function CryptoPage() {
               <div style={{ background: card, border: '1px solid ' + border, borderRadius: 18, padding: '18px 16px' }}>
                 <p style={{ color: white, fontWeight: 800, fontSize: 15, margin: '0 0 16px', fontFamily: "'Plus Jakarta Sans',sans-serif" }}>Confirm Transfer</p>
                 <div style={{ textAlign: 'center' as const, marginBottom: 16 }}>
-                  <p style={{ color: white, fontSize: 38, fontWeight: 800, margin: '0 0 4px', fontFamily: "'Plus Jakarta Sans',sans-serif" }}>{parseFloat(sendAmt).toLocaleString()} <span style={{ fontSize: 18, color: purpleL }}>INRT</span></p>
-                  <p style={{ color: muted, fontSize: 13, margin: 0 }}>≈ ₹{parseFloat(sendAmt).toLocaleString()}</p>
+                  <p style={{ color: white, fontSize: 38, fontWeight: 800, margin: '0 0 4px', fontFamily: "'Plus Jakarta Sans',sans-serif" }}>{parseFloat(sendAmt).toLocaleString('en-IN')} <span style={{ fontSize: 18, color: purpleL }}>INRT</span></p>
+                  <p style={{ color: muted, fontSize: 13, margin: 0 }}>≈ ₹{parseFloat(sendAmt).toLocaleString('en-IN')}</p>
                 </div>
                 {[
                   ['To', sendMode === 'inrt' ? (recipient?.name || toAddress) : short(toAddress)],
@@ -628,7 +628,7 @@ export default function CryptoPage() {
               <div style={{ background: card, border: '1px solid rgba(0,200,83,0.25)', borderRadius: 18, padding: '30px 16px', textAlign: 'center' as const }}>
                 <div style={{ width: 72, height: 72, borderRadius: '50%', background: 'rgba(0,200,83,0.1)', border: '2px solid ' + green, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 32, margin: '0 auto 16px' }}>✅</div>
                 <p style={{ color: white, fontWeight: 800, fontSize: 20, margin: '0 0 6px', fontFamily: "'Plus Jakarta Sans',sans-serif" }}>Transfer Complete!</p>
-                <p style={{ color: muted, fontSize: 13, margin: '0 0 16px' }}>{parseFloat(sendAmt).toLocaleString()} INRT sent</p>
+                <p style={{ color: muted, fontSize: 13, margin: '0 0 16px' }}>{parseFloat(sendAmt).toLocaleString('en-IN')} INRT sent</p>
                 <div style={{ background: 'rgba(0,229,204,0.08)', border: '1px solid rgba(0,229,204,0.25)', borderRadius: 12, padding: '14px', marginBottom: 14 }}>
                   <p style={{ color: dim, fontSize: 10, margin: '0 0 4px', letterSpacing: 1 }}>⚡ DELIVERED IN</p>
                   <p style={{ color: teal, fontSize: 28, fontWeight: 800, margin: 0, fontFamily: 'monospace' }}>{fmtMs(durationMs || elapsed)}</p>
@@ -736,7 +736,7 @@ export default function CryptoPage() {
                       </div>
                       <div style={{ textAlign: 'right' as const }}>
                         <p style={{ color: tx.type === 'credit' ? green : white, fontWeight: 800, fontSize: 13, margin: 0 }}>
-                          {tx.type === 'credit' ? '+' : tx.type === 'debit' ? '−' : ''}{tx.amount?.toLocaleString() || (tx.value ? (parseInt(tx.value) / 1e18).toFixed(2) : '')} INRT
+                          {tx.type === 'credit' ? '+' : tx.type === 'debit' ? '−' : ''}{tx.amount?.toLocaleString('en-IN') || (tx.value ? (parseInt(tx.value) / 1e18).toFixed(2) : '')} INRT
                         </p>
                         {(tx.hash || tx.txHash) && (
                           <a href={'https://polygonscan.com/tx/' + (tx.hash || tx.txHash)} target="_blank" rel="noopener noreferrer"
@@ -765,7 +765,7 @@ export default function CryptoPage() {
                 ['Standard', 'ERC-20'],
                 ['Peg', '1 INRT = ₹1 always'],
                 ['Decimals', '18'],
-                ['Total Supply', totalSupply !== null ? totalSupply.toLocaleString() + ' INRT' : 'Loading…'],
+                ['Total Supply', totalSupply !== null ? totalSupply.toLocaleString('en-IN') + ' INRT' : 'Loading…'],
               ].map(([k, v]) => (
                 <div key={k} style={{ display: 'flex', justifyContent: 'space-between', padding: '9px 0', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
                   <span style={{ color: muted, fontSize: 13 }}>{k}</span>

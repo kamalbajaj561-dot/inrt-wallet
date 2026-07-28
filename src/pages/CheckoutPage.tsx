@@ -168,8 +168,8 @@ export default function CheckoutPage() {
         </h2>
         <p style={{ color:T.muted, fontSize:15, margin:'0 0 24px', lineHeight:1.6 }}>
           {success.mode==='buy'
-            ? `${success.amount.toLocaleString()} INRT has been credited to your wallet.`
-            : `${success.amount.toLocaleString()} INRT converted to ₹${success.amount.toLocaleString()} in your wallet.`}
+            ? `${success.amount.toLocaleString('en-IN')} INRT has been credited to your wallet.`
+            : `${success.amount.toLocaleString('en-IN')} INRT converted to ₹${success.amount.toLocaleString('en-IN')} in your wallet.`}
         </p>
 
         {success.mode==='buy' && (
@@ -253,7 +253,7 @@ export default function CheckoutPage() {
                 <input type="number" value={amount} onChange={e=>setAmount(e.target.value)} placeholder="0"
                   style={{ flex:1, background:'none', border:'none', outline:'none', fontSize:36, fontWeight:800, color:'#fff', fontFamily:"'Plus Jakarta Sans',sans-serif" }}/>
               </div>
-              {amt>0 && <p style={{ color:T.teal, fontSize:13, margin:'0 0 4px' }}>= {amt.toLocaleString()} INRT you receive</p>}
+              {amt>0 && <p style={{ color:T.teal, fontSize:13, margin:'0 0 4px' }}>= {amt.toLocaleString('en-IN')} INRT you receive</p>}
               <p style={{ color:T.dim, fontSize:11, margin:0 }}>No fees · 1:1 rate · Instant credit</p>
             </>
           )}
@@ -266,8 +266,8 @@ export default function CheckoutPage() {
                 <input type="number" value={amount} onChange={e=>setAmount(e.target.value)} placeholder="0"
                   style={{ flex:1, background:'none', border:'none', outline:'none', fontSize:36, fontWeight:800, color:'#fff', fontFamily:"'Plus Jakarta Sans',sans-serif" }}/>
               </div>
-              {amt>0 && <p style={{ color:T.teal, fontSize:13, margin:'0 0 4px' }}>= ₹{amt.toLocaleString()} added to your ₹ wallet</p>}
-              <p style={{ color:T.dim, fontSize:11, margin:0 }}>Available: {inrtBal.toLocaleString()} INRT · No fees</p>
+              {amt>0 && <p style={{ color:T.teal, fontSize:13, margin:'0 0 4px' }}>= ₹{amt.toLocaleString('en-IN')} added to your ₹ wallet</p>}
+              <p style={{ color:T.dim, fontSize:11, margin:0 }}>Available: {inrtBal.toLocaleString('en-IN')} INRT · No fees</p>
             </>
           )}
         </div>
@@ -299,8 +299,8 @@ export default function CheckoutPage() {
           }}>
           {loading ? '⏳ Processing…'
           : mode==='buy'
-            ? amt>=10 ? `Buy ${amt.toLocaleString()} INRT for ₹${amt.toLocaleString()} →` : 'Enter amount (min ₹10)'
-            : amt>=1  ? `Sell ${amt.toLocaleString()} INRT → ₹${amt.toLocaleString()} →` : 'Enter INRT amount'}
+            ? amt>=10 ? `Buy ${amt.toLocaleString('en-IN')} INRT for ₹${amt.toLocaleString('en-IN')} →` : 'Enter amount (min ₹10)'
+            : amt>=1  ? `Sell ${amt.toLocaleString('en-IN')} INRT → ₹${amt.toLocaleString('en-IN')} →` : 'Enter INRT amount'}
         </button>
 
         {mode==='buy' && amt>=10 && (

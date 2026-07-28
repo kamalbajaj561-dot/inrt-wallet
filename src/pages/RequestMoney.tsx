@@ -17,6 +17,22 @@ export default function RequestMoney() {
     setCopied(true); setTimeout(() => setCopied(false), 2000);
   };
 
+  const shareViaWhatsApp = () => {
+    const text = `Please send ₹${amount || 'any amount'} via INRT Wallet: ${link}`;
+    window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
+  };
+
+  const shareViaSMS = () => {
+    const text = `Please send ₹${amount || 'any amount'} via INRT Wallet: ${link}`;
+    window.open(`sms:?body=${encodeURIComponent(text)}`, '_blank');
+  };
+
+  const shareViaEmail = () => {
+    const subject = `Payment Request - ₹${amount || 'any amount'}`;
+    const body = `Please send ₹${amount || 'any amount'} via INRT Wallet using this link: ${link}`;
+    window.open(`mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`, '_blank');
+  };
+
   return (
     <div style={{ width:'100%',minHeight:'100vh',background:'var(--bg)',fontFamily:'var(--f-body)' }}>
       <div style={{ background:'linear-gradient(160deg,#050914,#0a1428)',padding:'52px 20px 20px' }}>
@@ -50,11 +66,15 @@ export default function RequestMoney() {
         <div className="card">
           <p className="s-label">SHARE VIA</p>
           <div style={{ display:'flex',gap:10 }}>
-            {['WhatsApp','SMS','Email'].map(m => (
-              <button key={m} className="btn-outline" style={{ flex:1,fontSize:12,padding:'10px 0' }}>
-                {m}
-              </button>
-            ))}
+            <button className="btn-outline" style={{ flex:1,fontSize:12,padding:'10px 0' }} onClick={shareViaWhatsApp}>
+              WhatsApp
+            </button>
+            <button className="btn-outline" style={{ flex:1,fontSize:12,padding:'10px 0' }} onClick={shareViaSMS}>
+              SMS
+            </button>
+            <button className="btn-outline" style={{ flex:1,fontSize:12,padding:'10px 0' }} onClick={shareViaEmail}>
+              Email
+            </button>
           </div>
         </div>
       </div>

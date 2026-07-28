@@ -1,53 +1,20 @@
-import { useEffect, useRef } from 'react';
+import { useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { QRCodeCanvas } from 'qrcode.react';
 import '../styles/theme.css';
 
 export default function QRPage() {
   const { userProfile } = useAuth();
   const navigate = useNavigate();
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const qrRef = useRef<HTMLCanvasElement>(null);
   const upiId = `${userProfile?.phone || ''}@inrt`;
-
-  useEffect(() => {
-    if (!canvasRef.current) return;
-    const canvas = canvasRef.current;
-    const ctx = canvas.getContext('2d')!;
-    const size = 280;
-    canvas.width = size; canvas.height = size;
-    // Simple QR visual placeholder
-    ctx.fillStyle = '#0d1528';
-    ctx.fillRect(0, 0, size, size);
-    ctx.fillStyle = '#00e5cc';
-    const cell = size / 25;
-    for (let i = 0; i < 25; i++) {
-      for (let j = 0; j < 25; j++) {
-        if (Math.random() > 0.5 || (i<7&&j<7) || (i>17&&j<7) || (i<7&&j>17)) {
-          ctx.fillRect(i * cell + 2, j * cell + 2, cell - 2, cell - 2);
-        }
-      }
-    }
-    ctx.fillStyle = '#0d1528';
-    ctx.fillRect(cell, cell, 5*cell, 5*cell);
-    ctx.fillRect(19*cell, cell, 5*cell, 5*cell);
-    ctx.fillRect(cell, 19*cell, 5*cell, 5*cell);
-    ctx.fillStyle = '#00e5cc';
-    ctx.fillRect(2*cell, 2*cell, 3*cell, 3*cell);
-    ctx.fillRect(20*cell, 2*cell, 3*cell, 3*cell);
-    ctx.fillRect(2*cell, 20*cell, 3*cell, 3*cell);
-    // Logo center
-    ctx.fillStyle = '#050914';
-    ctx.fillRect(10*cell, 10*cell, 5*cell, 5*cell);
-    ctx.fillStyle = '#00e5cc';
-    ctx.font = `bold ${cell*2}px Space Grotesk`;
-    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText('IN', size/2, size/2);
-  }, []);
+  const upiString = `upi://pay?pa=${upiId}&pn=${encodeURIComponent(userProfile?.name || 'INRT User')}&cu=INR`;
 
   const download = () => {
-    if (!canvasRef.current) return;
+    if (!qrRef.current) return;
     const a = document.createElement('a');
-    a.href = canvasRef.current.toDataURL();
+    a.href = qrRef.current.toDataURL();
     a.download = `inrt-qr-${userProfile?.phone}.png`;
     a.click();
   };
@@ -63,7 +30,14 @@ export default function QRPage() {
       <div style={{ display:'flex',flexDirection:'column',alignItems:'center',padding:'32px 24px' }}>
         <div style={{ background:'var(--bg-card)',border:'1px solid var(--b1)',borderRadius:'var(--r3)',
                        padding:28,marginBottom:20,boxShadow:'var(--s2)' }}>
-          <canvas ref={canvasRef} style={{ display:'block',borderRadius:'var(--r2)' }} />
+          <QRCodeCanvas 
+            ref={qrRef}
+            value={upiString}
+            size={220}
+            bgColor="#ffffff"
+            fgColor="#050914"
+            style={{ display:'block',borderRadius:'var(--r2)' }}
+          />
         </div>
         <p style={{ fontFamily:'var(--f-display)',fontWeight:700,fontSize:18,color:'var(--t1)',marginBottom:4 }}>
           {userProfile?.name}

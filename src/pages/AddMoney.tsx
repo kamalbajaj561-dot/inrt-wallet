@@ -71,7 +71,10 @@ export default function AddMoney() {
           setPolling(false);
           setStep('failed');
         }
-      } catch { /* keep polling */ }
+      } catch (e) {
+        console.error('Polling error:', e);
+        // Keep polling as before, but log for debugging
+      }
     }, 4000);
   };
 
@@ -91,7 +94,10 @@ export default function AddMoney() {
           setQrData(null);
           setErr('QR expired. Generate a new one.');
         }
-      } catch { /* keep polling */ }
+      } catch (e) {
+        console.error('Polling error:', e);
+        // Keep polling as before, but log for debugging
+      }
     }, 3000);
   };
 

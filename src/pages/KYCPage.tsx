@@ -92,7 +92,10 @@ export default function KYCPage() {
           await refreshProfile();
           setStep('rejected');
         }
-      } catch { /* keep polling */ }
+      } catch (e) {
+        console.error('KYC status polling error:', e);
+        // Keep polling as before, but log for debugging
+      }
     }, 15000);
   };
 

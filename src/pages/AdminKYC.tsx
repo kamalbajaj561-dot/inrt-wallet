@@ -202,10 +202,10 @@ export default function AdminKYC() {
       {stats?.earnings && (
         <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:10, marginBottom:20 }}>
           {[
-            { label:'Total Earned',    val:`₹${stats.earnings.total.toLocaleString()}` },
-            { label:'Transfer Comm.',  val:`₹${stats.earnings.transferEarnings.toLocaleString()}` },
-            { label:'Recharge Comm.', val:`₹${stats.earnings.rechargeEarnings.toLocaleString()}` },
-            { label:'Bills Comm.',     val:`₹${stats.earnings.billsEarnings.toLocaleString()}` },
+            { label:'Total Earned',    val:`₹${stats.earnings.total.toLocaleString('en-IN')}` },
+            { label:'Transfer Comm.',  val:`₹${stats.earnings.transferEarnings.toLocaleString('en-IN')}` },
+            { label:'Recharge Comm.', val:`₹${stats.earnings.rechargeEarnings.toLocaleString('en-IN')}` },
+            { label:'Bills Comm.',     val:`₹${stats.earnings.billsEarnings.toLocaleString('en-IN')}` },
           ].map(s=>(
             <div key={s.label} style={{ background:'#fff', borderRadius:14, padding:'12px 14px', boxShadow:'0 1px 6px rgba(0,0,0,0.05)', border:'1px solid #E8ECF0' }}>
               <p style={{ color:'#6B7C93', fontSize:10, fontWeight:600, margin:'0 0 4px' }}>{s.label.toUpperCase()}</p>

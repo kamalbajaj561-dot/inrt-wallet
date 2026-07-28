@@ -16,14 +16,14 @@ export default function SettingsPage() {
     ]},
     { title:'App', items:[
       {icon:'🔔',label:'Notifications',  path:'/notifications'},
-      {icon:'🌙',label:'Appearance',     path:null},
-      {icon:'🌐',label:'Language',       path:null},
+      {icon:'🌙',label:'Appearance',     path:null, comingSoon:true},
+      {icon:'🌐',label:'Language',       path:null, comingSoon:true},
     ]},
     { title:'Support', items:[
-      {icon:'💬',label:'Help & Support', path:null},
-      {icon:'⭐',label:'Rate the App',   path:null},
-      {icon:'📋',label:'Terms of Service',path:null},
-      {icon:'🔒',label:'Privacy Policy', path:null},
+      {icon:'💬',label:'Help & Support', path:'mailto:admin@inrtwallet.in', external:true},
+      {icon:'⭐',label:'Rate the App',   path:null, comingSoon:true},
+      {icon:'📋',label:'Terms of Service',path:'/terms'},
+      {icon:'🔒',label:'Privacy Policy', path:'/privacy'},
     ]},
   ];
 
@@ -41,14 +41,22 @@ export default function SettingsPage() {
             <div className="card" style={{padding:0,overflow:'hidden'}}>
               {sec.items.map((item,i)=>(
                 <button key={item.label}
-                  onClick={()=>item.path?navigate(item.path):{}}
+                  onClick={()=>{
+                    if (item.external) {
+                      window.open(item.path, '_blank');
+                    } else if (item.path) {
+                      navigate(item.path);
+                    }
+                  }}
                   style={{width:'100%',display:'flex',alignItems:'center',gap:14,padding:'16px 20px',
-                            background:'none',border:'none',cursor:item.path?'pointer':'default',
+                            background:'none',border:'none',cursor:(item.path || item.external)?'pointer':'default',
                             borderBottom:i<sec.items.length-1?'1px solid var(--b1)':'none',
-                            textAlign:'left' as const}}>
+                            textAlign:'left' as const, opacity:item.comingSoon?0.6:1}}>
                   <span style={{fontSize:20,flexShrink:0}}>{item.icon}</span>
                   <span style={{flex:1,color:'var(--t1)',fontWeight:500,fontSize:15}}>{item.label}</span>
-                  {item.path && <span style={{color:'var(--t3)',fontSize:16}}>›</span>}
+                  {item.comingSoon && <span style={{color:'var(--t3)',fontSize:10,fontWeight:700}}>Coming Soon</span>}
+                  {(item.path && !item.comingSoon && !item.external) && <span style={{color:'var(--t3)',fontSize:16}}>›</span>}
+                  {item.external && <span style={{color:'var(--t3)',fontSize:16}}>↗</span>}
                 </button>
               ))}
             </div>

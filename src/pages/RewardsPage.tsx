@@ -58,14 +58,14 @@ export default function RewardsPage() {
         </div>
         <div style={{background:'rgba(255,255,255,0.03)',border:'1px solid rgba(244,185,66,0.2)',borderRadius:'var(--r3)',padding:'20px'}}>
           <p style={{color:'rgba(244,185,66,0.6)',fontSize:10,fontWeight:700,letterSpacing:1}}>YOUR POINTS</p>
-          <p style={{fontFamily:'var(--f-display)',fontWeight:700,fontSize:44,color:'var(--gold)',lineHeight:1,marginTop:4}}>{pts.toLocaleString()}</p>
+          <p style={{fontFamily:'var(--f-display)',fontWeight:700,fontSize:44,color:'var(--gold)',lineHeight:1,marginTop:4}}>{pts.toLocaleString('en-IN')}</p>
           <p style={{color:'var(--t3)',fontSize:13,marginTop:4}}>≈ ₹{(pts*0.25).toFixed(0)} cashback value</p>
           <div style={{display:'flex',alignItems:'center',gap:10,marginTop:14,paddingTop:14,borderTop:'1px solid rgba(255,255,255,0.06)'}}>
             <span style={{fontSize:20}}>{tier.icon}</span>
             <div style={{flex:1}}>
               <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
                 <span style={{color:tier.color,fontSize:12,fontWeight:700}}>{tier.name}</span>
-                {next&&<span style={{color:'var(--t3)',fontSize:11}}>{(next.min-pts).toLocaleString()} to {next.name}</span>}
+                {next&&<span style={{color:'var(--t3)',fontSize:11}}>{(next.min-pts).toLocaleString('en-IN')} to {next.name}</span>}
               </div>
               <div style={{background:'rgba(255,255,255,0.06)',borderRadius:8,height:6,overflow:'hidden'}}>
                 <div style={{width:`${Math.min(prog,100)}%`,height:'100%',background:tier.color,borderRadius:8}}/>
