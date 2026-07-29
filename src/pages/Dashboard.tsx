@@ -77,7 +77,6 @@ export default function Dashboard() {
     return () => { unsubUser(); unsubTxns(); };
   }, [user?.uid]);
 
-  const bal            = Number(profile?.balance      ?? 0);
   const inrtBal         = Number(profile?.inrtBalance ?? 0);
   const points           = Number(profile?.rewardPoints ?? 0);
   const name             = profile?.name     || user?.displayName || 'User';
@@ -102,10 +101,10 @@ export default function Dashboard() {
   const NATIONAL_ACTIONS = [
     { label:'Send Money',  icon:'📤', path:'/send'                         },
     { label:'Scan & Pay',  icon:'📷', path:'/scan'                         },
-    { label:'Add Money',   icon:'➕', path:'/add-money'                    },
     { label:'Recharge',    icon:'📱', path:'/recharge'                     },
     { label:'Electricity', icon:'⚡', path:'/bill-payments', cat:'electricity' },
     { label:'DTH',         icon:'📡', path:'/bill-payments', cat:'dth'     },
+    { label:'Gas',         icon:'🔥', path:'/bill-payments', cat:'gas'     },
     { label:'Insurance',   icon:'🛡️', path:'/bill-payments', cat:'insurance' },
     { label:'History',     icon:'📋', path:'/history'                      },
   ];
@@ -146,7 +145,7 @@ export default function Dashboard() {
       </div>
 
       {/* ── HERO HEADER ───────────────────────────────────── */}
-      <div style={{ background:T.headerGrad, padding:'20px 20px 80px', position:'relative', overflow:'hidden' }}>
+      <div style={{ background:T.headerGrad, padding: isIntl ? '20px 20px 80px' : '20px 20px 24px', position:'relative', overflow:'hidden' }}>
         {isIntl && <>
           <div style={{ position:'absolute', top:-60, right:-60, width:200, height:200, borderRadius:'50%', background:'radial-gradient(circle,rgba(0,229,204,0.06),transparent 70%)', pointerEvents:'none' }}/>
           <div style={{ position:'absolute', bottom:-40, left:-30, width:140, height:140, borderRadius:'50%', background:'radial-gradient(circle,rgba(123,47,190,0.05),transparent 70%)', pointerEvents:'none' }}/>
@@ -225,42 +224,7 @@ export default function Dashboard() {
               </button>
             </div>
           </div>
-        ) : (
-          /* ── NATIONAL HERO — INRT: India's Complete UPI Solution ── */
-          <div className="inrt-hero">
-            <div className="inrt-hero-glow inrt-hero-glow-1" />
-            <div className="inrt-hero-glow inrt-hero-glow-2" />
-            <div className="inrt-hero-shine" />
-
-            <div className="inrt-hero-badge">⚡ India's Complete UPI Solution</div>
-            <h1 className="inrt-hero-title">INRT</h1>
-            <p className="inrt-hero-sub">Send money, pay bills, recharge & more — all in one app.</p>
-
-            <div className="inrt-balance-pill">
-              <div>
-                <p className="inrt-balance-label">WALLET BALANCE</p>
-                <p className="inrt-balance-amount">
-                  {balVis ? `₹${bal.toLocaleString('en-IN')}` : '₹••••••'}
-                </p>
-              </div>
-              <button className="inrt-eye-btn" onClick={()=>setBalVis(!balVis)}>
-                {balVis?'👁️':'🙈'}
-              </button>
-            </div>
-
-            <div className="inrt-hero-actions">
-              <button className="inrt-hero-btn inrt-hero-btn-primary" onClick={()=>navigate('/send')}>
-                📤 Send Money
-              </button>
-              <button className="inrt-hero-btn" onClick={()=>navigate('/add-money')}>
-                ➕ Add Money
-              </button>
-              <button className="inrt-hero-btn" onClick={()=>navigate('/history')}>
-                📊 History
-              </button>
-            </div>
-          </div>
-        )}
+        ) : null}
       </div>
 
       {isIntl ? (
@@ -299,7 +263,7 @@ export default function Dashboard() {
         </>
       ) : (
         /* ══════════════ NATIONAL CONTENT — Paytm-style ══════════════ */
-        <div style={{ margin:'0 16px', marginTop:-44, position:'relative', zIndex:10 }}>
+        <div style={{ margin:'0 16px', marginTop:8, position:'relative', zIndex:10 }}>
           <div style={{ background:T.card, borderRadius:20, border:`1px solid ${T.border}`, padding:'20px 16px', boxShadow:'0 4px 24px rgba(0,0,0,0.1)' }}>
             <h3 style={{ fontWeight:800, fontSize:15, color:T.navy, margin:'0 0 14px' }}>Recharge & Pay Bills</h3>
             <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:6, marginBottom:18 }}>
@@ -483,14 +447,14 @@ export default function Dashboard() {
         {[
           { path:'/dashboard', icon:'🏠', label:'Home'    },
           { path:'/history',   icon:'📋', label:'History' },
-          { path:'/add-money', icon:'+',  label:'Add',    special:true },
+          { path:'/scan',       icon:'📷', label:'Scan',    special:true },
           { path:'/rewards',   icon:'🎁', label:'Rewards' },
           { path:'/profile',   icon:'👤', label:'Profile' },
         ].map(t=>(
           <button key={t.path} onClick={()=>navigate(t.path)}
             style={{ flex:1, display:'flex', flexDirection:'column' as const, alignItems:'center', gap:(t as any).special?0:3, cursor:'pointer', background:'none', border:'none', padding:'6px 0' }}>
             {(t as any).special ? (
-              <div style={{ width:44, height:44, borderRadius:'50%', background: isIntl ? `linear-gradient(135deg,${T.teal},#00b4a0)` : T.headerGrad, display:'flex', alignItems:'center', justifyContent:'center', color: isIntl ? '#000' : '#fff', fontSize:24, fontWeight:900, boxShadow: isIntl ? '0 4px 16px rgba(0,229,204,0.4)' : '0 4px 16px rgba(0,46,110,0.35)', marginTop:-8 }}>+</div>
+              <div style={{ width:44, height:44, borderRadius:'50%', background: isIntl ? `linear-gradient(135deg,${T.teal},#00b4a0)` : T.headerGrad, display:'flex', alignItems:'center', justifyContent:'center', color: isIntl ? '#000' : '#fff', fontSize:19, boxShadow: isIntl ? '0 4px 16px rgba(0,229,204,0.4)' : '0 4px 16px rgba(0,46,110,0.35)', marginTop:-8 }}>📷</div>
             ) : (
               <>
                 <span style={{ fontSize:22, lineHeight:1 }}>{t.icon}</span>
@@ -509,87 +473,6 @@ export default function Dashboard() {
         button:active { transform: scale(0.97) !important; }
         @keyframes spin { to { transform: rotate(360deg); } }
 
-        .inrt-hero {
-          position: relative;
-          background: linear-gradient(135deg, #002E6E 0%, #0057B8 55%, #00BAF2 100%);
-          border-radius: 24px;
-          padding: 28px 22px 22px;
-          overflow: hidden;
-          box-shadow: 0 12px 40px rgba(0,46,110,0.35);
-          font-family: 'Plus Jakarta Sans', sans-serif;
-        }
-        .inrt-hero-glow {
-          position: absolute;
-          border-radius: 50%;
-          filter: blur(2px);
-          pointer-events: none;
-          animation: inrtFloat 7s ease-in-out infinite;
-        }
-        .inrt-hero-glow-1 { top: -70px; right: -50px; width: 220px; height: 220px; background: radial-gradient(circle, rgba(0,255,225,0.28), transparent 70%); }
-        .inrt-hero-glow-2 { bottom: -60px; left: -40px; width: 180px; height: 180px; background: radial-gradient(circle, rgba(255,255,255,0.14), transparent 70%); animation-delay: 2.2s; }
-        @keyframes inrtFloat {
-          0%, 100% { transform: translateY(0) scale(1); }
-          50%      { transform: translateY(-14px) scale(1.06); }
-        }
-        .inrt-hero-shine {
-          position: absolute; top: 0; left: -60%; width: 40%; height: 100%;
-          background: linear-gradient(120deg, transparent, rgba(255,255,255,0.16), transparent);
-          transform: skewX(-18deg);
-          animation: inrtShine 5s ease-in-out infinite;
-          pointer-events: none;
-        }
-        @keyframes inrtShine {
-          0%   { left: -60%; }
-          40%  { left: 130%; }
-          100% { left: 130%; }
-        }
-        .inrt-hero-badge {
-          display: inline-block; position: relative;
-          background: rgba(255,255,255,0.16); border: 1px solid rgba(255,255,255,0.3);
-          color: #fff; font-size: 11px; font-weight: 700; letter-spacing: 0.3px;
-          padding: 6px 13px; border-radius: 20px; margin-bottom: 12px;
-        }
-        .inrt-hero-title {
-          position: relative; color: #fff; font-size: 40px; font-weight: 900;
-          margin: 0 0 4px; letter-spacing: 1px; line-height: 1;
-          text-shadow: 0 2px 16px rgba(0,0,0,0.15);
-        }
-        .inrt-hero-sub {
-          position: relative; color: rgba(255,255,255,0.82); font-size: 13px;
-          margin: 0 0 20px; font-weight: 500;
-        }
-        .inrt-balance-pill {
-          position: relative;
-          display: flex; justify-content: space-between; align-items: center;
-          background: rgba(255,255,255,0.14);
-          backdrop-filter: blur(14px);
-          border: 1px solid rgba(255,255,255,0.28);
-          border-radius: 16px; padding: 14px 16px; margin-bottom: 14px;
-          transition: background 0.2s;
-        }
-        .inrt-balance-pill:hover { background: rgba(255,255,255,0.2); }
-        .inrt-balance-label { color: rgba(255,255,255,0.75); font-size: 10px; font-weight: 700; letter-spacing: 1px; margin: 0 0 2px; }
-        .inrt-balance-amount { color: #fff; font-size: 30px; font-weight: 800; margin: 0; line-height: 1; }
-        .inrt-eye-btn {
-          background: rgba(255,255,255,0.18); border: none; border-radius: 10px;
-          width: 36px; height: 36px; color: #fff; font-size: 15px; cursor: pointer;
-          display: flex; align-items: center; justify-content: center;
-          transition: transform 0.15s, background 0.15s;
-        }
-        .inrt-eye-btn:hover { background: rgba(255,255,255,0.28); transform: scale(1.08); }
-
-        .inrt-hero-actions { position: relative; display: flex; gap: 8px; }
-        .inrt-hero-btn {
-          flex: 1; padding: 12px 0; border-radius: 12px; border: 1.5px solid rgba(255,255,255,0.35);
-          background: rgba(255,255,255,0.1); color: #fff; font-weight: 700; font-size: 12.5px;
-          cursor: pointer; transition: transform 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
-        }
-        .inrt-hero-btn:hover { transform: translateY(-3px); background: rgba(255,255,255,0.18); box-shadow: 0 6px 16px rgba(0,0,0,0.18); }
-        .inrt-hero-btn-primary {
-          background: linear-gradient(135deg, #ffffff, #E3F6FF); color: #002E6E; border: none;
-          box-shadow: 0 4px 14px rgba(0,0,0,0.15);
-        }
-        .inrt-hero-btn-primary:hover { transform: translateY(-3px); box-shadow: 0 8px 22px rgba(0,0,0,0.22); }
       `}</style>
     </div>
   );
