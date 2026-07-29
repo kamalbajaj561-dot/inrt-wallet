@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { doc, updateDoc, increment, serverTimestamp, collection, addDoc } from 'firebase/firestore';
 import { db } from '../lib/firebase';
@@ -22,9 +22,13 @@ type FlowStep = 'category'|'details'|'confirm'|'success';
 export default function BillPayments() {
   const { user, userProfile, refreshProfile } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
 
-  const [step,     setStep]     = useState<FlowStep>('category');
-  const [category, setCategory] = useState(CATEGORIES[0]);
+  const deepLinkCategoryId = (location.state as any)?.category as string | undefined;
+  const initialCategory = CATEGORIES.find(c => c.id === deepLinkCategoryId) || CATEGORIES[0];
+
+  const [step,     setStep]     = useState<FlowStep>(deepLinkCategoryId ? 'details' : 'category');
+  const [category, setCategory] = useState(initialCategory);
   const [provider, setProvider] = useState('');
   const [accountNo,setAccountNo]= useState('');
   const [amount,   setAmount]   = useState('');
