@@ -226,27 +226,36 @@ export default function Dashboard() {
             </div>
           </div>
         ) : (
-          /* ── NATIONAL BALANCE CARD — pure ₹ wallet, no INRT ── */
-          <div style={{ background:'rgba(255,255,255,0.97)', borderRadius:20, padding:'20px', border:'1px solid rgba(255,255,255,0.5)', position:'relative', boxShadow:'0 8px 32px rgba(0,46,110,0.25)' }}>
-            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:16 }}>
+          /* ── NATIONAL HERO — INRT: India's Complete UPI Solution ── */
+          <div className="inrt-hero">
+            <div className="inrt-hero-glow inrt-hero-glow-1" />
+            <div className="inrt-hero-glow inrt-hero-glow-2" />
+            <div className="inrt-hero-shine" />
+
+            <div className="inrt-hero-badge">⚡ India's Complete UPI Solution</div>
+            <h1 className="inrt-hero-title">INRT</h1>
+            <p className="inrt-hero-sub">Send money, pay bills, recharge & more — all in one app.</p>
+
+            <div className="inrt-balance-pill">
               <div>
-                <p style={{ color:T.muted, fontSize:11, margin:'0 0 4px', letterSpacing:1, fontWeight:700 }}>WALLET BALANCE</p>
-                <p style={{ color:T.navy, fontSize:38, fontWeight:800, margin:0, fontFamily:"'Plus Jakarta Sans',sans-serif", lineHeight:1 }}>
+                <p className="inrt-balance-label">WALLET BALANCE</p>
+                <p className="inrt-balance-amount">
                   {balVis ? `₹${bal.toLocaleString('en-IN')}` : '₹••••••'}
                 </p>
               </div>
-              <button onClick={()=>setBalVis(!balVis)} style={{ background:T.light, border:'none', borderRadius:8, width:34, height:34, color:T.navy, cursor:'pointer', fontSize:14, display:'flex', alignItems:'center', justifyContent:'center' }}>
+              <button className="inrt-eye-btn" onClick={()=>setBalVis(!balVis)}>
                 {balVis?'👁️':'🙈'}
               </button>
             </div>
-            <div style={{ display:'flex', gap:8 }}>
-              <button onClick={()=>navigate('/send')} style={{ flex:1, padding:'11px', borderRadius:10, border:'none', background:T.headerGrad, color:'#fff', fontWeight:700, fontSize:12, cursor:'pointer' }}>
+
+            <div className="inrt-hero-actions">
+              <button className="inrt-hero-btn inrt-hero-btn-primary" onClick={()=>navigate('/send')}>
                 📤 Send Money
               </button>
-              <button onClick={()=>navigate('/add-money')} style={{ flex:1, padding:'11px', borderRadius:10, border:`1.5px solid ${T.border}`, background:'#fff', color:T.navy, fontWeight:700, fontSize:12, cursor:'pointer' }}>
+              <button className="inrt-hero-btn" onClick={()=>navigate('/add-money')}>
                 ➕ Add Money
               </button>
-              <button onClick={()=>navigate('/history')} style={{ flex:1, padding:'11px', borderRadius:10, border:`1.5px solid ${T.border}`, background:'#fff', color:T.navy, fontWeight:700, fontSize:12, cursor:'pointer' }}>
+              <button className="inrt-hero-btn" onClick={()=>navigate('/history')}>
                 📊 History
               </button>
             </div>
@@ -495,10 +504,92 @@ export default function Dashboard() {
       <ModeDrawer open={drawerOpen} onClose={()=>setDrawerOpen(false)} />
 
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800;900&display=swap');
         * { -webkit-tap-highlight-color: transparent; }
         button:active { transform: scale(0.97) !important; }
         @keyframes spin { to { transform: rotate(360deg); } }
+
+        .inrt-hero {
+          position: relative;
+          background: linear-gradient(135deg, #002E6E 0%, #0057B8 55%, #00BAF2 100%);
+          border-radius: 24px;
+          padding: 28px 22px 22px;
+          overflow: hidden;
+          box-shadow: 0 12px 40px rgba(0,46,110,0.35);
+          font-family: 'Plus Jakarta Sans', sans-serif;
+        }
+        .inrt-hero-glow {
+          position: absolute;
+          border-radius: 50%;
+          filter: blur(2px);
+          pointer-events: none;
+          animation: inrtFloat 7s ease-in-out infinite;
+        }
+        .inrt-hero-glow-1 { top: -70px; right: -50px; width: 220px; height: 220px; background: radial-gradient(circle, rgba(0,255,225,0.28), transparent 70%); }
+        .inrt-hero-glow-2 { bottom: -60px; left: -40px; width: 180px; height: 180px; background: radial-gradient(circle, rgba(255,255,255,0.14), transparent 70%); animation-delay: 2.2s; }
+        @keyframes inrtFloat {
+          0%, 100% { transform: translateY(0) scale(1); }
+          50%      { transform: translateY(-14px) scale(1.06); }
+        }
+        .inrt-hero-shine {
+          position: absolute; top: 0; left: -60%; width: 40%; height: 100%;
+          background: linear-gradient(120deg, transparent, rgba(255,255,255,0.16), transparent);
+          transform: skewX(-18deg);
+          animation: inrtShine 5s ease-in-out infinite;
+          pointer-events: none;
+        }
+        @keyframes inrtShine {
+          0%   { left: -60%; }
+          40%  { left: 130%; }
+          100% { left: 130%; }
+        }
+        .inrt-hero-badge {
+          display: inline-block; position: relative;
+          background: rgba(255,255,255,0.16); border: 1px solid rgba(255,255,255,0.3);
+          color: #fff; font-size: 11px; font-weight: 700; letter-spacing: 0.3px;
+          padding: 6px 13px; border-radius: 20px; margin-bottom: 12px;
+        }
+        .inrt-hero-title {
+          position: relative; color: #fff; font-size: 40px; font-weight: 900;
+          margin: 0 0 4px; letter-spacing: 1px; line-height: 1;
+          text-shadow: 0 2px 16px rgba(0,0,0,0.15);
+        }
+        .inrt-hero-sub {
+          position: relative; color: rgba(255,255,255,0.82); font-size: 13px;
+          margin: 0 0 20px; font-weight: 500;
+        }
+        .inrt-balance-pill {
+          position: relative;
+          display: flex; justify-content: space-between; align-items: center;
+          background: rgba(255,255,255,0.14);
+          backdrop-filter: blur(14px);
+          border: 1px solid rgba(255,255,255,0.28);
+          border-radius: 16px; padding: 14px 16px; margin-bottom: 14px;
+          transition: background 0.2s;
+        }
+        .inrt-balance-pill:hover { background: rgba(255,255,255,0.2); }
+        .inrt-balance-label { color: rgba(255,255,255,0.75); font-size: 10px; font-weight: 700; letter-spacing: 1px; margin: 0 0 2px; }
+        .inrt-balance-amount { color: #fff; font-size: 30px; font-weight: 800; margin: 0; line-height: 1; }
+        .inrt-eye-btn {
+          background: rgba(255,255,255,0.18); border: none; border-radius: 10px;
+          width: 36px; height: 36px; color: #fff; font-size: 15px; cursor: pointer;
+          display: flex; align-items: center; justify-content: center;
+          transition: transform 0.15s, background 0.15s;
+        }
+        .inrt-eye-btn:hover { background: rgba(255,255,255,0.28); transform: scale(1.08); }
+
+        .inrt-hero-actions { position: relative; display: flex; gap: 8px; }
+        .inrt-hero-btn {
+          flex: 1; padding: 12px 0; border-radius: 12px; border: 1.5px solid rgba(255,255,255,0.35);
+          background: rgba(255,255,255,0.1); color: #fff; font-weight: 700; font-size: 12.5px;
+          cursor: pointer; transition: transform 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
+        }
+        .inrt-hero-btn:hover { transform: translateY(-3px); background: rgba(255,255,255,0.18); box-shadow: 0 6px 16px rgba(0,0,0,0.18); }
+        .inrt-hero-btn-primary {
+          background: linear-gradient(135deg, #ffffff, #E3F6FF); color: #002E6E; border: none;
+          box-shadow: 0 4px 14px rgba(0,0,0,0.15);
+        }
+        .inrt-hero-btn-primary:hover { transform: translateY(-3px); box-shadow: 0 8px 22px rgba(0,0,0,0.22); }
       `}</style>
     </div>
   );
