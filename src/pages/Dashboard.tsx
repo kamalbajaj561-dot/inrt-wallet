@@ -19,17 +19,6 @@ import { db as firestoreDb }   from '../lib/firebase';
 import ModeDrawer              from '../components/ModeDrawer';
 import '../styles/theme.css';
 
-const CARD_GRADIENTS = [
-  'linear-gradient(135deg,#1B2A4A,#3D5A99)',
-  'linear-gradient(135deg,#4A2545,#8B3A6B)',
-  'linear-gradient(135deg,#1F3A34,#2E7D6B)',
-  'linear-gradient(135deg,#3A2A1F,#B8763E)',
-  'linear-gradient(135deg,#2A1F3A,#6B4A9E)',
-  'linear-gradient(135deg,#1F2A3A,#3E7DB8)',
-  'linear-gradient(135deg,#3A1F2A,#B83E5C)',
-  'linear-gradient(135deg,#232B23,#4A6A4A)',
-];
-
 const NATIONAL_PHOTOS: Record<string,string> = {
   'Send Money':  'https://images.unsplash.com/photo-1571867424488-4565932edb41?w=400&q=80&fit=crop',
   'Scan & Pay':  'https://images.unsplash.com/photo-1595079676714-d804bc1095b4?w=400&q=80&fit=crop',
@@ -39,6 +28,24 @@ const NATIONAL_PHOTOS: Record<string,string> = {
   'Gas':         'https://images.unsplash.com/photo-1610528599036-3f5d7104d96e?w=400&q=80&fit=crop',
   'Insurance':   'https://images.unsplash.com/photo-1694538347217-f49f5d73b20b?w=400&q=80&fit=crop',
   'History':     'https://images.unsplash.com/photo-1751320864289-13004d320905?w=400&q=80&fit=crop',
+};
+
+const TRAVEL_PHOTOS: Record<string,string> = {
+  'Flights':      'https://images.unsplash.com/photo-1542336423-e251474b8a4a?w=400&q=80&fit=crop',
+  'Bus':          'https://images.unsplash.com/photo-1718345735410-1db1c0a04af9?w=400&q=80&fit=crop',
+  'Trains':       'https://images.unsplash.com/photo-1564129001438-f9dc119cdd54?w=400&q=80&fit=crop',
+  'Intl Flights': 'https://images.unsplash.com/photo-1565211807786-26ea9332906d?w=400&q=80&fit=crop',
+};
+
+const ALL_SERVICES_PHOTOS: Record<string,string> = {
+  'Stocks':    'https://images.unsplash.com/photo-1611974789855-9c2a0a7236a3?w=400&q=80&fit=crop',
+  'Gold':      'https://images.unsplash.com/photo-1718752773179-34c02d4dda5f?w=400&q=80&fit=crop',
+  'Insurance': 'https://images.unsplash.com/photo-1694538347217-f49f5d73b20b?w=400&q=80&fit=crop',
+  'Loans':     'https://images.unsplash.com/photo-1549923746-c502d488b3ea?w=400&q=80&fit=crop',
+  'CIBIL':     'https://images.unsplash.com/photo-1710492341412-8b3aee7e70a6?w=400&q=80&fit=crop',
+  'Split':     'https://images.unsplash.com/photo-1723744909898-4a1ce8922699?w=400&q=80&fit=crop',
+  'Movies':    'https://images.unsplash.com/photo-1517486518908-97a5f91b325f?w=400&q=80&fit=crop',
+  'Travel':    'https://images.unsplash.com/photo-1542336423-e251474b8a4a?w=400&q=80&fit=crop',
 };
 
 const NATIONAL_SUBS: Record<string,string> = {
@@ -324,19 +331,17 @@ export default function Dashboard() {
           <h3 style={{ fontWeight:800, fontSize:16, color:T.navy, margin:'0 0 12px' }}>Book Travel</h3>
           <div className="svc-row" style={{ marginBottom:16 }}>
             {[
-              { label:'Flights',      icon:'✈️', sub:'Domestic fares' },
-              { label:'Bus',          icon:'🚌', sub:'1000+ routes'   },
-              { label:'Trains',       icon:'🚆', sub:'IRCTC booking'  },
-              { label:'Intl Flights', icon:'🌍', sub:'Fly worldwide'  },
-            ].map((tItem,i)=>(
+              { label:'Flights',      sub:'Domestic fares' },
+              { label:'Bus',          sub:'1000+ routes'   },
+              { label:'Trains',       sub:'IRCTC booking'  },
+              { label:'Intl Flights', sub:'Fly worldwide'  },
+            ].map((tItem)=>(
               <button key={tItem.label} onClick={()=>navigate('/travel')}
-                className="svc-card" style={{ background:CARD_GRADIENTS[(i+3)%CARD_GRADIENTS.length] }}>
-                <span className="svc-card-icon">{tItem.icon}</span>
-                <div>
-                  <p className="svc-card-title">{tItem.label}</p>
-                  <p className="svc-card-sub">{tItem.sub}</p>
-                </div>
-                <span className="svc-card-arrow">→</span>
+                className="svc-photo-card" style={{ backgroundImage:`url(${TRAVEL_PHOTOS[tItem.label]})` }}>
+                <div className="svc-photo-tint" />
+                <p className="svc-photo-title">{tItem.label}</p>
+                <p className="svc-photo-sub">{tItem.sub}</p>
+                <span className="svc-photo-arrow">→</span>
               </button>
             ))}
           </div>
@@ -371,23 +376,21 @@ export default function Dashboard() {
         <h3 style={{ fontWeight:800, fontSize:16, color:isIntl?T.text:T.navy, margin:'0 0 12px' }}>All Services</h3>
         <div className="svc-row" style={{ marginBottom:16 }}>
           {[
-            { label:'Stocks',    icon:'📈', path:'/stocks',     sub:'Invest in equity'   },
-            { label:'Gold',      icon:'🥇', path:'/gold',       sub:'24K digital gold'   },
-            { label:'Insurance', icon:'🛡️', path:'/insurance',  sub:'Life & health'      },
-            { label:'Loans',     icon:'💸', path:'/loans',      sub:'Instant approval'   },
-            { label:'CIBIL',     icon:'📊', path:'/cibil',      sub:'Check your score'   },
-            { label:'Split',     icon:'÷',  path:'/split-bill', sub:'Split with friends' },
-            { label:'Movies',    icon:'🎬', path:'/movies',     sub:'Book tickets'       },
-            { label:'Travel',    icon:'✈️', path:'/travel',     sub:'Flights & more'     },
-          ].map((s,i)=>(
+            { label:'Stocks',    path:'/stocks',     sub:'Invest in equity'   },
+            { label:'Gold',      path:'/gold',       sub:'24K digital gold'   },
+            { label:'Insurance', path:'/insurance',  sub:'Life & health'      },
+            { label:'Loans',     path:'/loans',      sub:'Instant approval'   },
+            { label:'CIBIL',     path:'/cibil',      sub:'Check your score'   },
+            { label:'Split',     path:'/split-bill', sub:'Split with friends' },
+            { label:'Movies',    path:'/movies',     sub:'Book tickets'       },
+            { label:'Travel',    path:'/travel',     sub:'Flights & more'     },
+          ].map((s)=>(
             <button key={s.path} onClick={()=>navigate(s.path)}
-              className="svc-card" style={{ background:CARD_GRADIENTS[i%CARD_GRADIENTS.length] }}>
-              <span className="svc-card-icon">{s.icon}</span>
-              <div>
-                <p className="svc-card-title">{s.label}</p>
-                <p className="svc-card-sub">{s.sub}</p>
-              </div>
-              <span className="svc-card-arrow">→</span>
+              className="svc-photo-card" style={{ backgroundImage:`url(${ALL_SERVICES_PHOTOS[s.label]})` }}>
+              <div className="svc-photo-tint" />
+              <p className="svc-photo-title">{s.label}</p>
+              <p className="svc-photo-sub">{s.sub}</p>
+              <span className="svc-photo-arrow">→</span>
             </button>
           ))}
         </div>
