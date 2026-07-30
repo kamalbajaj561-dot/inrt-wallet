@@ -30,6 +30,17 @@ const CARD_GRADIENTS = [
   'linear-gradient(135deg,#232B23,#4A6A4A)',
 ];
 
+const NATIONAL_PHOTOS: Record<string,string> = {
+  'Send Money':  'https://images.unsplash.com/photo-1571867424488-4565932edb41?w=400&q=80&fit=crop',
+  'Scan & Pay':  'https://images.unsplash.com/photo-1595079676714-d804bc1095b4?w=400&q=80&fit=crop',
+  'Recharge':    'https://images.unsplash.com/photo-1753036051291-cfc20d052c24?w=400&q=80&fit=crop',
+  'Electricity': 'https://images.unsplash.com/photo-1713857600361-146f62e4d90e?w=400&q=80&fit=crop',
+  'DTH':         'https://images.unsplash.com/photo-1522869635100-9f4c5e86aa37?w=400&q=80&fit=crop',
+  'Gas':         'https://images.unsplash.com/photo-1610528599036-3f5d7104d96e?w=400&q=80&fit=crop',
+  'Insurance':   'https://images.unsplash.com/photo-1694538347217-f49f5d73b20b?w=400&q=80&fit=crop',
+  'History':     'https://images.unsplash.com/photo-1751320864289-13004d320905?w=400&q=80&fit=crop',
+};
+
 const NATIONAL_SUBS: Record<string,string> = {
   'Send Money':'Instant UPI transfer', 'Scan & Pay':'Scan any QR code',
   'Recharge':'Prepaid & postpaid', 'Electricity':'Pay any board',
@@ -169,35 +180,30 @@ export default function Dashboard() {
           <div style={{ position:'absolute', bottom:-40, left:-30, width:140, height:140, borderRadius:'50%', background:'radial-gradient(circle,rgba(123,47,190,0.05),transparent 70%)', pointerEvents:'none' }}/>
         </>}
 
-        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:22, position:'relative' }}>
+        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:22, position:'relative' }}>
           <div style={{ display:'flex', alignItems:'center', gap:12 }}>
             <button onClick={()=>setDrawerOpen(true)} aria-label="Menu"
-              style={{ background:'rgba(255,255,255,0.15)', border:'none', borderRadius:10, width:38, height:38, color:'#fff', cursor:'pointer', fontSize:16, display:'flex', alignItems:'center', justifyContent:'center' }}>
+              style={{ background:'rgba(255,255,255,0.15)', border:'none', borderRadius:10, width:38, height:38, color:'#fff', cursor:'pointer', fontSize:16, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
               ☰
             </button>
-            {isIntl ? (
-              <div style={{ width:36,height:36,borderRadius:12,
-                  background:'linear-gradient(135deg,#00e5cc,#00b4a0)',
-                  display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0 }}>
-                <span style={{ color:'#000',fontWeight:900,fontFamily:'Space Grotesk,sans-serif',fontSize:12 }}>IN</span>
-              </div>
-            ) : (
-              <div style={{ width:36,height:36,borderRadius:12,
-                  background:'rgba(255,255,255,0.2)',
-                  display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0 }}>
-                <span style={{ color:'#fff',fontWeight:900,fontFamily:'Space Grotesk,sans-serif',fontSize:16 }}>₹</span>
-              </div>
-            )}
             <div>
-              <p style={{ color:'rgba(255,255,255,0.7)',fontSize:12,margin:0 }}>Welcome back 👋</p>
-              <p style={{ color:'#fff',fontSize:16,fontWeight:800,margin:0,fontFamily:"'Plus Jakarta Sans',sans-serif" }}>{name.split(' ')[0]}</p>
+              <h1 style={{ color:'#fff', fontSize: isIntl?26:30, fontWeight:900, margin:0, letterSpacing:1, lineHeight:1 }}>
+                {isIntl ? 'INRT Wallet' : 'INRT'}
+              </h1>
+              <p style={{ color:'rgba(255,255,255,0.7)', fontSize:10, margin:'3px 0 0', fontWeight:600 }}>
+                {isIntl ? 'Global Crypto & Payments' : "India's Complete UPI Solution"}
+              </p>
             </div>
           </div>
-          <div style={{ display:'flex', gap:8 }}>
+          <div style={{ display:'flex', gap:8, flexShrink:0 }}>
             <button onClick={()=>navigate('/notifications')} style={{ background:'rgba(255,255,255,0.15)', border:'none', borderRadius:10, width:38, height:38, color:'#fff', cursor:'pointer', fontSize:16 }}>🔔</button>
             <button onClick={()=>navigate('/profile')} aria-label="Profile" style={{ background:'rgba(255,255,255,0.15)', border:'none', borderRadius:10, width:38, height:38, color:'#fff', cursor:'pointer', fontSize:16, display:'flex', alignItems:'center', justifyContent:'center' }}>👤</button>
           </div>
         </div>
+
+        <p style={{ color:'rgba(255,255,255,0.55)', fontSize:12, margin:'-12px 0 18px 50px', position:'relative' }}>
+          Welcome back 👋 <span style={{ color:'#fff', fontWeight:700 }}>{name.split(' ')[0]}</span>
+        </p>
 
         {kyc !== 'verified' && (
           <button onClick={()=>navigate('/kyc')}
@@ -284,15 +290,13 @@ export default function Dashboard() {
         <div style={{ margin:'0 16px', marginTop:8, position:'relative', zIndex:10 }}>
           <h3 style={{ fontWeight:800, fontSize:16, color:T.navy, margin:'0 0 12px' }}>Recharge & Pay Bills</h3>
           <div className="svc-row">
-            {NATIONAL_ACTIONS.map((a,i)=>(
+            {NATIONAL_ACTIONS.map((a)=>(
               <button key={a.label} onClick={()=>(a as any).cat ? goBill((a as any).cat) : navigate(a.path)}
-                className="svc-card" style={{ background:CARD_GRADIENTS[i%CARD_GRADIENTS.length] }}>
-                <span className="svc-card-icon">{a.icon}</span>
-                <div>
-                  <p className="svc-card-title">{a.label}</p>
-                  <p className="svc-card-sub">{NATIONAL_SUBS[a.label]||'Quick & secure'}</p>
-                </div>
-                <span className="svc-card-arrow">→</span>
+                className="svc-photo-card" style={{ backgroundImage:`url(${NATIONAL_PHOTOS[a.label]})` }}>
+                <div className="svc-photo-tint" />
+                <p className="svc-photo-title">{a.label}</p>
+                <p className="svc-photo-sub">{NATIONAL_SUBS[a.label]||'Quick & secure'}</p>
+                <span className="svc-photo-arrow">→</span>
               </button>
             ))}
           </div>
@@ -494,6 +498,27 @@ export default function Dashboard() {
         @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800;900&display=swap');
         * { -webkit-tap-highlight-color: transparent; }
         button:active { transform: scale(0.97) !important; }
+
+        .svc-photo-card {
+          flex: 0 0 128px; height: 158px; border-radius: 18px; padding: 0;
+          border: none; cursor: pointer; position: relative; overflow: hidden;
+          background-size: cover; background-position: center;
+          box-shadow: 0 6px 18px rgba(0,0,0,0.25);
+          transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+        .svc-photo-card:hover { transform: translateY(-5px); box-shadow: 0 12px 26px rgba(0,0,0,0.35); }
+        .svc-photo-tint { position: absolute; inset: 0; background: linear-gradient(180deg, rgba(10,20,35,0.55) 0%, rgba(10,20,35,0.15) 40%, rgba(10,20,35,0.5) 100%); }
+        .svc-photo-title { position: absolute; top: 12px; left: 12px; right: 36px; color: #fff; font-weight: 800; font-size: 12.5px; margin: 0; text-shadow: 0 2px 6px rgba(0,0,0,0.5); text-align: left; }
+        .svc-photo-sub { position: absolute; top: 32px; left: 12px; right: 36px; color: rgba(255,255,255,0.85); font-size: 9.5px; margin: 0; text-shadow: 0 1px 4px rgba(0,0,0,0.5); text-align: left; }
+        .svc-photo-arrow {
+          position: absolute; bottom: 10px; right: 10px;
+          width: 26px; height: 26px; border-radius: 50%;
+          background: rgba(255,255,255,0.95); color: #0A2540;
+          display: flex; align-items: center; justify-content: center;
+          font-size: 13px; font-weight: 700;
+          transition: background 0.2s ease, transform 0.2s ease;
+        }
+        .svc-photo-card:hover .svc-photo-arrow { transform: translateX(2px); }
 
         .svc-row {
           display: flex; gap: 12px; overflow-x: auto; padding-bottom: 4px;
