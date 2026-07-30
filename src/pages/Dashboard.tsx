@@ -19,6 +19,24 @@ import { db as firestoreDb }   from '../lib/firebase';
 import ModeDrawer              from '../components/ModeDrawer';
 import '../styles/theme.css';
 
+const CARD_GRADIENTS = [
+  'linear-gradient(135deg,#1B2A4A,#3D5A99)',
+  'linear-gradient(135deg,#4A2545,#8B3A6B)',
+  'linear-gradient(135deg,#1F3A34,#2E7D6B)',
+  'linear-gradient(135deg,#3A2A1F,#B8763E)',
+  'linear-gradient(135deg,#2A1F3A,#6B4A9E)',
+  'linear-gradient(135deg,#1F2A3A,#3E7DB8)',
+  'linear-gradient(135deg,#3A1F2A,#B83E5C)',
+  'linear-gradient(135deg,#232B23,#4A6A4A)',
+];
+
+const NATIONAL_SUBS: Record<string,string> = {
+  'Send Money':'Instant UPI transfer', 'Scan & Pay':'Scan any QR code',
+  'Recharge':'Prepaid & postpaid', 'Electricity':'Pay any board',
+  'DTH':'All operators', 'Gas':'LPG & piped gas',
+  'Insurance':'Life & health premium', 'History':'View past payments',
+};
+
 const THEMES = {
   national: {
     bg:'#F5F7FA', card:'#FFFFFF', border:'#E8ECF0', text:'#0A2540', muted:'#6B7C93', light:'#F0F4F8',
@@ -264,58 +282,59 @@ export default function Dashboard() {
       ) : (
         /* ══════════════ NATIONAL CONTENT — Paytm-style ══════════════ */
         <div style={{ margin:'0 16px', marginTop:8, position:'relative', zIndex:10 }}>
-          <div style={{ background:T.card, borderRadius:20, border:`1px solid ${T.border}`, padding:'20px 16px', boxShadow:'0 4px 24px rgba(0,0,0,0.1)' }}>
-            <h3 style={{ fontWeight:800, fontSize:15, color:T.navy, margin:'0 0 14px' }}>Recharge & Pay Bills</h3>
-            <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:6, marginBottom:18 }}>
-              {NATIONAL_ACTIONS.map(a=>(
-                <button key={a.label} onClick={()=>(a as any).cat ? goBill((a as any).cat) : navigate(a.path)}
-                  style={{ background:'none', border:'none', cursor:'pointer', display:'flex', flexDirection:'column' as const, alignItems:'center', gap:6, padding:'8px 4px', borderRadius:12 }}>
-                  <div style={{ width:46, height:46, borderRadius:13, background:T.light, display:'flex', alignItems:'center', justifyContent:'center', fontSize:20, border:`1px solid ${T.border}` }}>
-                    {a.icon}
-                  </div>
-                  <span style={{ fontSize:10, color:T.navy, fontWeight:700, textAlign:'center' as const, lineHeight:1.3 }}>{a.label}</span>
-                </button>
-              ))}
-            </div>
-
-            {/* Bill due promo strips */}
-            <div style={{ display:'grid', gap:8, marginBottom:16 }}>
-              <button onClick={()=>goBill('broadband')}
-                style={{ display:'flex', alignItems:'center', gap:12, background:T.light, border:`1px solid ${T.border}`, borderRadius:14, padding:'12px 14px', cursor:'pointer', textAlign:'left' as const }}>
-                <span style={{ fontSize:20 }}>📶</span>
-                <div style={{ flex:1 }}>
-                  <p style={{ fontWeight:700, fontSize:12, color:T.navy, margin:0 }}>Wifi or Broadband Bill Due?</p>
-                  <p style={{ fontSize:11, color:T.muted, margin:0 }}>Check latest bill and pay instantly</p>
+          <h3 style={{ fontWeight:800, fontSize:16, color:T.navy, margin:'0 0 12px' }}>Recharge & Pay Bills</h3>
+          <div className="svc-row">
+            {NATIONAL_ACTIONS.map((a,i)=>(
+              <button key={a.label} onClick={()=>(a as any).cat ? goBill((a as any).cat) : navigate(a.path)}
+                className="svc-card" style={{ background:CARD_GRADIENTS[i%CARD_GRADIENTS.length] }}>
+                <span className="svc-card-icon">{a.icon}</span>
+                <div>
+                  <p className="svc-card-title">{a.label}</p>
+                  <p className="svc-card-sub">{NATIONAL_SUBS[a.label]||'Quick & secure'}</p>
                 </div>
-                <span style={{ color:T.accent, fontWeight:700, fontSize:12 }}>Pay →</span>
+                <span className="svc-card-arrow">→</span>
               </button>
-              <button onClick={()=>goBill('loan')}
-                style={{ display:'flex', alignItems:'center', gap:12, background:T.light, border:`1px solid ${T.border}`, borderRadius:14, padding:'12px 14px', cursor:'pointer', textAlign:'left' as const }}>
-                <span style={{ fontSize:20 }}>📅</span>
-                <div style={{ flex:1 }}>
-                  <p style={{ fontWeight:700, fontSize:12, color:T.navy, margin:0 }}>Loan EMI Due?</p>
-                  <p style={{ fontSize:11, color:T.muted, margin:0 }}>Pay pending EMIs in a few simple steps</p>
-                </div>
-                <span style={{ color:T.accent, fontWeight:700, fontSize:12 }}>Pay →</span>
-              </button>
-            </div>
+            ))}
+          </div>
 
-            {/* Travel booking tabs */}
-            <h3 style={{ fontWeight:800, fontSize:15, color:T.navy, margin:'0 0 12px' }}>Book Travel</h3>
-            <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:8 }}>
-              {[
-                { label:'Flights',      icon:'✈️' },
-                { label:'Bus',          icon:'🚌' },
-                { label:'Trains',       icon:'🚆' },
-                { label:'Intl Flights', icon:'🌍' },
-              ].map(tItem=>(
-                <button key={tItem.label} onClick={()=>navigate('/travel')}
-                  style={{ display:'flex', flexDirection:'column' as const, alignItems:'center', gap:6, background:'none', border:'none', cursor:'pointer', padding:'6px 0' }}>
-                  <span style={{ fontSize:22 }}>{tItem.icon}</span>
-                  <span style={{ fontSize:10, color:T.navy, fontWeight:700 }}>{tItem.label}</span>
-                </button>
-              ))}
-            </div>
+          {/* Bill due promo cards */}
+          <div style={{ display:'grid', gap:10, margin:'16px 0' }}>
+            <button onClick={()=>goBill('broadband')} className="svc-banner" style={{ background:'linear-gradient(120deg,#0F3D5C,#1E6FA8)' }}>
+              <span style={{ fontSize:26 }}>📶</span>
+              <div style={{ flex:1, textAlign:'left' as const }}>
+                <p className="svc-card-title" style={{ fontSize:14 }}>Wifi or Broadband Bill Due?</p>
+                <p className="svc-card-sub">Check latest bill and pay instantly</p>
+              </div>
+              <span className="svc-banner-arrow">→</span>
+            </button>
+            <button onClick={()=>goBill('loan')} className="svc-banner" style={{ background:'linear-gradient(120deg,#4A2E12,#B8763E)' }}>
+              <span style={{ fontSize:26 }}>📅</span>
+              <div style={{ flex:1, textAlign:'left' as const }}>
+                <p className="svc-card-title" style={{ fontSize:14 }}>Loan EMI Due?</p>
+                <p className="svc-card-sub">Pay pending EMIs in a few simple steps</p>
+              </div>
+              <span className="svc-banner-arrow">→</span>
+            </button>
+          </div>
+
+          <h3 style={{ fontWeight:800, fontSize:16, color:T.navy, margin:'0 0 12px' }}>Book Travel</h3>
+          <div className="svc-row" style={{ marginBottom:16 }}>
+            {[
+              { label:'Flights',      icon:'✈️', sub:'Domestic fares' },
+              { label:'Bus',          icon:'🚌', sub:'1000+ routes'   },
+              { label:'Trains',       icon:'🚆', sub:'IRCTC booking'  },
+              { label:'Intl Flights', icon:'🌍', sub:'Fly worldwide'  },
+            ].map((tItem,i)=>(
+              <button key={tItem.label} onClick={()=>navigate('/travel')}
+                className="svc-card" style={{ background:CARD_GRADIENTS[(i+3)%CARD_GRADIENTS.length] }}>
+                <span className="svc-card-icon">{tItem.icon}</span>
+                <div>
+                  <p className="svc-card-title">{tItem.label}</p>
+                  <p className="svc-card-sub">{tItem.sub}</p>
+                </div>
+                <span className="svc-card-arrow">→</span>
+              </button>
+            ))}
           </div>
         </div>
       )}
@@ -346,21 +365,25 @@ export default function Dashboard() {
 
         {/* ── ALL SERVICES ──────────────────────────────── */}
         <h3 style={{ fontWeight:800, fontSize:16, color:isIntl?T.text:T.navy, margin:'0 0 12px' }}>All Services</h3>
-        <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:10, marginBottom:16 }}>
+        <div className="svc-row" style={{ marginBottom:16 }}>
           {[
-            { label:'Stocks',    icon:'📈', path:'/stocks',     color:'#00897B' },
-            { label:'Gold',      icon:'🥇', path:'/gold',       color:T.gold    },
-            { label:'Insurance', icon:'🛡️', path:'/insurance',  color:T.accent  },
-            { label:'Loans',     icon:'💸', path:'/loans',      color:T.orange  },
-            { label:'CIBIL',     icon:'📊', path:'/cibil',      color:'#E91E63' },
-            { label:'Split',     icon:'÷',  path:'/split-bill', color:'#7B2FBE' },
-            { label:'Movies',    icon:'🎬', path:'/movies',     color:T.red     },
-            { label:'Travel',    icon:'✈️', path:'/travel',     color:'#00BCD4' },
-          ].map(s=>(
+            { label:'Stocks',    icon:'📈', path:'/stocks',     sub:'Invest in equity'   },
+            { label:'Gold',      icon:'🥇', path:'/gold',       sub:'24K digital gold'   },
+            { label:'Insurance', icon:'🛡️', path:'/insurance',  sub:'Life & health'      },
+            { label:'Loans',     icon:'💸', path:'/loans',      sub:'Instant approval'   },
+            { label:'CIBIL',     icon:'📊', path:'/cibil',      sub:'Check your score'   },
+            { label:'Split',     icon:'÷',  path:'/split-bill', sub:'Split with friends' },
+            { label:'Movies',    icon:'🎬', path:'/movies',     sub:'Book tickets'       },
+            { label:'Travel',    icon:'✈️', path:'/travel',     sub:'Flights & more'     },
+          ].map((s,i)=>(
             <button key={s.path} onClick={()=>navigate(s.path)}
-              style={{ display:'flex', flexDirection:'column' as const, alignItems:'center', gap:6, background:T.card, border:`1px solid ${T.border}`, borderRadius:16, padding:'14px 8px', cursor:'pointer', boxShadow:'0 1px 6px rgba(0,0,0,0.08)' }}>
-              <div style={{ width:42, height:42, borderRadius:11, background:s.color+'18', display:'flex', alignItems:'center', justifyContent:'center', fontSize:20, border:`1px solid ${s.color}25` }}>{s.icon}</div>
-              <span style={{ fontSize:10, color:isIntl?T.text:T.navy, fontWeight:700, textAlign:'center' as const }}>{s.label}</span>
+              className="svc-card" style={{ background:CARD_GRADIENTS[i%CARD_GRADIENTS.length] }}>
+              <span className="svc-card-icon">{s.icon}</span>
+              <div>
+                <p className="svc-card-title">{s.label}</p>
+                <p className="svc-card-sub">{s.sub}</p>
+              </div>
+              <span className="svc-card-arrow">→</span>
             </button>
           ))}
         </div>
@@ -471,6 +494,46 @@ export default function Dashboard() {
         @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800;900&display=swap');
         * { -webkit-tap-highlight-color: transparent; }
         button:active { transform: scale(0.97) !important; }
+
+        .svc-row {
+          display: flex; gap: 12px; overflow-x: auto; padding-bottom: 4px;
+          -ms-overflow-style: none; scrollbar-width: none;
+        }
+        .svc-row::-webkit-scrollbar { display: none; }
+
+        .svc-card {
+          flex: 0 0 150px; height: 176px; border-radius: 20px; padding: 16px;
+          border: none; cursor: pointer; position: relative; overflow: hidden;
+          display: flex; flex-direction: column; justify-content: space-between;
+          text-align: left; box-shadow: 0 6px 18px rgba(0,0,0,0.18);
+          transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+        .svc-card:hover { transform: translateY(-5px); box-shadow: 0 12px 28px rgba(0,0,0,0.28); }
+        .svc-card-icon { font-size: 26px; filter: drop-shadow(0 2px 6px rgba(0,0,0,0.25)); }
+        .svc-card-title { color: #fff; font-weight: 800; font-size: 13px; margin: 0 0 3px; line-height: 1.25; }
+        .svc-card-sub { color: rgba(255,255,255,0.7); font-size: 10.5px; margin: 0; line-height: 1.3; }
+        .svc-card-arrow {
+          position: absolute; bottom: 14px; right: 14px;
+          width: 28px; height: 28px; border-radius: 50%;
+          background: rgba(255,255,255,0.16); color: #fff;
+          display: flex; align-items: center; justify-content: center;
+          font-size: 13px; transition: background 0.2s ease, transform 0.2s ease;
+        }
+        .svc-card:hover .svc-card-arrow { background: rgba(255,255,255,0.32); transform: translateX(2px); }
+
+        .svc-banner {
+          display: flex; align-items: center; gap: 14px; border: none; cursor: pointer;
+          border-radius: 18px; padding: 16px 18px; box-shadow: 0 6px 18px rgba(0,0,0,0.15);
+          transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+        .svc-banner:hover { transform: translateY(-3px); box-shadow: 0 10px 24px rgba(0,0,0,0.22); }
+        .svc-banner-arrow {
+          width: 32px; height: 32px; border-radius: 50%; flex-shrink: 0;
+          background: rgba(255,255,255,0.16); color: #fff;
+          display: flex; align-items: center; justify-content: center; font-size: 14px;
+          transition: background 0.2s ease;
+        }
+        .svc-banner:hover .svc-banner-arrow { background: rgba(255,255,255,0.32); }
         @keyframes spin { to { transform: rotate(360deg); } }
 
       `}</style>
