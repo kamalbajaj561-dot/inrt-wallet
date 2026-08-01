@@ -84,6 +84,12 @@ export default function ModeDrawer({ open, onClose }: Props) {
 
         <div style={{ height: 1, background: 'rgba(255,255,255,0.08)', margin: '4px 0 16px' }} />
 
+        {mode === 'national' && (
+          <button onClick={() => { onClose(); navigate('/link-bank'); }}
+            style={{ display: 'flex', alignItems: 'center', gap: 10, background: 'none', border: 'none', color: '#fff', fontSize: 14, fontWeight: 600, padding: '11px 4px', cursor: 'pointer', textAlign: 'left' }}>
+            🏦 Link Bank Account
+          </button>
+        )}
         <button onClick={() => { onClose(); navigate('/settings'); }}
           style={{ display: 'flex', alignItems: 'center', gap: 10, background: 'none', border: 'none', color: '#fff', fontSize: 14, fontWeight: 600, padding: '11px 4px', cursor: 'pointer', textAlign: 'left' }}>
           ⚙️ Settings

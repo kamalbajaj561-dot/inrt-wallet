@@ -92,6 +92,20 @@ export async function setAppMode(uid: string, mode: 'national' | 'international'
   });
 }
 
+// ── Bank Account Linking (National mode funding source) ────────
+export async function setLinkedBankAccount(uid: string, account: {
+  bankName: string;
+  accountNumberMasked: string;
+  accountType: string;
+  ifsc: string;
+  mobileNumber: string;
+} | null) {
+  await updateDoc(doc(db, 'users', uid), {
+    linkedBankAccount: account,
+    updatedAt: serverTimestamp(),
+  });
+}
+
 // ── Notifications ─────────────────────────────────────────────
 export async function addNotification(uid: string, title: string, body: string, type = 'info') {
   await addDoc(collection(db, 'notifications'), {
