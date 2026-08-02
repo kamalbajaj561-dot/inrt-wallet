@@ -3,6 +3,7 @@ import {
   collection, query, where, orderBy,
   limit, getDocs, serverTimestamp,
   increment, addDoc, onSnapshot,
+  arrayUnion, arrayRemove,
   type DocumentSnapshot,
 } from 'firebase/firestore';
 import { db } from './firebase';
@@ -93,15 +94,29 @@ export async function setAppMode(uid: string, mode: 'national' | 'international'
 }
 
 // ── Bank Account Linking (National mode funding source) ────────
-export async function setLinkedBankAccount(uid: string, account: {
+// Supports multiple linked accounts, including several from the same
+// mobile number — stored as an array on the user's profile.
+export interface LinkedBankAccount {
+  id: string;
   bankName: string;
   accountNumberMasked: string;
   accountType: string;
   ifsc: string;
   mobileNumber: string;
-} | null) {
+  mockBalance: number;
+  mockTransactions: { id: string; label: string; amount: number; type: 'credit'|'debit'; date: string }[];
+}
+
+export async function addLinkedBankAccount(uid: string, account: LinkedBankAccount) {
   await updateDoc(doc(db, 'users', uid), {
-    linkedBankAccount: account,
+    linkedBankAccounts: arrayUnion(account),
+    updatedAt: serverTimestamp(),
+  });
+}
+
+export async function removeLinkedBankAccount(uid: string, account: LinkedBankAccount) {
+  await updateDoc(doc(db, 'users', uid), {
+    linkedBankAccounts: arrayRemove(account),
     updatedAt: serverTimestamp(),
   });
 }
