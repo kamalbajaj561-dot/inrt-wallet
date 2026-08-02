@@ -1,362 +1,345 @@
 /**
- * INRT WALLET — SendMoney.tsx
+ * INRT WALLET — SendMoney.tsx (National mode)
  *
- * LAUNCH VERSION:
- *  - INRT Global Transfer: ACTIVE ✅
- *  - UPI / Card / Netbanking: ACTIVE in TEST MODE ✅ (routes to
- *    /sandbox-send — a working simulator, not a real payment gateway.
- *    Real UPI/bank transfers still require a live PA integration.)
+ * National mode has NO wallet — every payment here debits directly
+ * from one of the user's linked bank accounts (see LinkBank.tsx),
+ * the way real UPI apps work. This is the Send-3 template selected
+ * earlier: segmented method tabs + photo hero + inline form.
+ *
+ * ⚠️ TEST MODE — no real bank, UPI switch, or card network is
+ * contacted. PINs are never stored or validated against anything real.
  */
-
-import { useState, useEffect } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
-import { useAuth }             from '../context/AuthContext';
-import { doc, onSnapshot }     from 'firebase/firestore';
-import { db as firestoreDb }   from '../lib/firebase';
-
-const API = import.meta.env.VITE_API_URL || '';
+import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';
+import { addTransaction, type LinkedBankAccount } from '../lib/db';
 
 const T = {
-  navy:'#0A2540', accent:'#0070F3', inrt:'#7B2FBE', inrtL:'#E0B0FF',
-  green:'#00C853', greenL:'#E8FAF0', teal:'#00e5cc',
-  border:'#E8ECF0', muted:'#6B7C93', light:'#F0F4F8',
-  text:'#0A2540', card:'#FFFFFF', red:'#FF3B30',
+  navy:'#0A2540', accent:'#0070F3', bg:'#F5F7FA', card:'#FFFFFF',
+  border:'#E8ECF0', muted:'#6B7C93', light:'#F0F4F8', green:'#00C853', red:'#FF3B30',
+  headerGrad:'linear-gradient(135deg,#002E6E 0%,#00BAF2 100%)',
 };
 
-type Step = 'form' | 'review' | 'pin' | 'processing' | 'success' | 'failed';
+type Method = 'upi' | 'card' | 'bank' | 'cash';
+type Step = 'method' | 'recipient' | 'amount' | 'account' | 'pin' | 'processing' | 'result';
 
-function PinPad({ onComplete, onCancel }: { onComplete:()=>void; onCancel:()=>void }) {
-  const [pin, setPin] = useState<string[]>([]);
-  const tap = (d: string) => {
-    if (pin.length >= 6) return;
-    const next = [...pin, d];
-    setPin(next);
-    if (next.length === 6) setTimeout(onComplete, 200);
-  };
-  return (
-    <div style={{ textAlign:'center' as const }}>
-      <p style={{ color:T.muted, fontSize:14, margin:'0 0 20px' }}>Enter your wallet PIN to confirm</p>
-      <div style={{ display:'flex', gap:12, justifyContent:'center', marginBottom:28 }}>
-        {Array.from({length:6},(_,i)=><div key={i} style={{ width:14, height:14, borderRadius:'50%', background:i<pin.length?T.inrt:T.border, transition:'background 0.15s' }}/>)}
-      </div>
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:10, maxWidth:240, margin:'0 auto 16px' }}>
-        {[1,2,3,4,5,6,7,8,9,'',0,'⌫'].map((k,i)=>(
-          <button key={i} onClick={()=>k==='⌫'?setPin(p=>p.slice(0,-1)):k!==''&&tap(String(k))}
-            style={{ height:56, borderRadius:14, border:`1.5px solid ${T.border}`, background:k===''?'transparent':T.card, fontSize:k==='⌫'?20:22, fontWeight:700, color:T.text, cursor:k===''?'default':'pointer', fontFamily:"'Plus Jakarta Sans',sans-serif" }}>
-            {k}
-          </button>
-        ))}
-      </div>
-      <button onClick={onCancel} style={{ background:'none', border:'none', color:T.muted, fontSize:13, cursor:'pointer' }}>Cancel</button>
-    </div>
-  );
-}
+const METHOD_INFO: Record<Method, { label:string; photo:string; tagline:string }> = {
+  upi:  { label:'UPI',           photo:'https://images.unsplash.com/photo-1571867424488-4565932edb41?w=400&q=80&fit=crop', tagline:'Instant · any UPI ID or number' },
+  card: { label:'Send to Card',  photo:'https://images.unsplash.com/photo-1726066012593-3175a0c4e9b8?w=400&q=80&fit=crop', tagline:'Straight to their debit card' },
+  bank: { label:'Bank Transfer', photo:'https://images.unsplash.com/photo-1684679674829-fc7b436ec8e8?w=400&q=80&fit=crop', tagline:'NEFT · IMPS · usually 30 min – 2 hrs' },
+  cash: { label:'Cash Pickup',   photo:'https://images.unsplash.com/photo-1565514158882-617325fbd873?w=400&q=80&fit=crop', tagline:'Recipient collects in person' },
+};
 
 export default function SendMoney() {
-  const { user }  = useAuth();
-  const navigate  = useNavigate();
-  const [searchParams] = useSearchParams();
+  const { user, userProfile, refreshProfile } = useAuth();
+  const navigate = useNavigate();
 
-  const [profile, setProfile] = useState<any>(null);
-  const [step, setStep]       = useState<Step>('form');
+  const linkedAccounts: LinkedBankAccount[] = userProfile?.linkedBankAccounts || [];
 
-  // INRT fields
-  const [toAddress,  setToAddress]  = useState('');
-  const [recipient,  setRecipient]  = useState<{name:string;verified:boolean}|null>(null);
-  const [lookupErr,  setLookupErr]  = useState('');
-  const [lookupLoad, setLookupLoad] = useState(false);
-  const [amount,     setAmount]     = useState('');
-  const [note,       setNote]       = useState('');
-  const [err,        setErr]        = useState('');
-  const [txRef,      setTxRef]      = useState('');
-  const [durationMs, setDurationMs] = useState(0);
-  const [elapsed,    setElapsed]    = useState(0);
+  const [step, setStep] = useState<Step>('method');
+  const [method, setMethod] = useState<Method>('upi');
 
-  useEffect(() => {
-    if (!user?.uid) return;
-    const unsub = onSnapshot(doc(firestoreDb,'users',user.uid), snap => {
-      if (snap.exists()) setProfile(snap.data());
-    });
-    return () => unsub();
-  }, [user?.uid]);
+  // recipient fields (only the relevant ones are used per method)
+  const [upiId, setUpiId] = useState('');
+  const [cardNum, setCardNum] = useState('');
+  const [acctNum, setAcctNum] = useState('');
+  const [acctNumConfirm, setAcctNumConfirm] = useState('');
+  const [ifsc, setIfsc] = useState('');
+  const [cashName, setCashName] = useState('');
+  const [cashCity, setCashCity] = useState('');
+  const [recipientName, setRecipientName] = useState('');
 
-  const inrtBal = Number(profile?.inrtBalance ?? 0);
-  const amt     = parseFloat(amount) || 0;
+  const [amount, setAmount] = useState('');
+  const [note, setNote] = useState('');
+  const [fundingAccount, setFundingAccount] = useState<LinkedBankAccount | null>(linkedAccounts[0] || null);
+  const [pin, setPin] = useState('');
+  const [progressMsg, setProgressMsg] = useState('');
+  const [result, setResult] = useState<{ success:boolean; refId:string; time:string } | null>(null);
+  const [err, setErr] = useState('');
 
-  // ── Lookup INRT address ───────────────────────────────────────
-  useEffect(() => {
-    const addr = toAddress.toUpperCase().trim();
-    if (addr.length < 15) { setRecipient(null); setLookupErr(''); return; }
-    setLookupLoad(true); setLookupErr(''); setRecipient(null);
-    const t = setTimeout(async () => {
-      try {
-        const r = await fetch(`${API}/inrt/lookup/${addr}`);
-        const d = await r.json();
-        if (d.success) setRecipient({ name:d.name, verified:d.verified });
-        else setLookupErr(d.error || 'Address not found');
-      } catch { setLookupErr('Lookup failed'); }
-      setLookupLoad(false);
-    }, 600);
-    return () => clearTimeout(t);
-  }, [toAddress]);
+  const amt = Number(amount);
+  const validAmount = amt > 0 && amt <= 200000;
 
-  // ── Poll transfer ─────────────────────────────────────────────
-  const pollTransfer = (ref: string, start: number) => {
-    let elapsed = 0;
-    const timer = setInterval(() => { elapsed += 100; setElapsed(elapsed); }, 100);
-    const poll  = setInterval(async () => {
-      try {
-        const r = await fetch(`${API}/inrt/transfer/${ref}`);
-        const d = await r.json();
-        if (d.status === 'completed') {
-          clearInterval(timer); clearInterval(poll);
-          setDurationMs(d.durationMs);
-          setStep('success');
-        } else if (d.status === 'failed') {
-          clearInterval(timer); clearInterval(poll);
-          setStep('failed');
-        }
-      } catch (e) {
-        console.error('Polling error:', e);
-        // Don't fail silently - user will see the original error if transfer fails
-      }
-    }, 300);
+  const recipientValid = () => {
+    if (method === 'upi')  return /^[\w.-]+@[\w.-]+$/.test(upiId.trim()) || /^\d{10}$/.test(upiId.trim());
+    if (method === 'card') return /^\d{16}$/.test(cardNum.replace(/\s/g,''));
+    if (method === 'bank') return acctNum.length >= 8 && acctNum === acctNumConfirm && /^[A-Z]{4}0[A-Z0-9]{6}$/.test(ifsc.trim().toUpperCase());
+    if (method === 'cash') return cashName.trim().length > 1 && cashCity.trim().length > 1;
+    return false;
   };
 
-  // ── Send ──────────────────────────────────────────────────────
-  const handleSend = async () => {
+  const goAmount = () => { if (!recipientValid()) { setErr('Please fill in valid recipient details'); return; } setErr(''); setStep('amount'); };
+
+  const goAccount = () => {
+    if (!validAmount) { setErr('Enter a valid amount (up to ₹2,00,000)'); return; }
     setErr('');
-    try {
-      const r = await fetch(`${API}/inrt/send`, {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ fromUserId:user!.uid, toAddress, amount:amt, note }),
-      });
-      const d = await r.json();
-      if (!r.ok) throw new Error(d.error || 'Send failed');
-      setTxRef(d.ref);
-      setStep('processing');
-      pollTransfer(d.ref, Date.now());
-    } catch (e: any) { setErr(e.message); setStep('review'); }
+    if (linkedAccounts.length === 0) { navigate('/link-bank'); return; }
+    if (linkedAccounts.length === 1) { setFundingAccount(linkedAccounts[0]); setStep('pin'); return; }
+    setStep('account');
   };
 
-  const reset = () => { setStep('form'); setToAddress(''); setAmount(''); setNote(''); setRecipient(null); setTxRef(''); setErr(''); setElapsed(0); };
-  const fmtMs = (ms: number) => ms < 1000 ? `${ms}ms` : `${(ms/1000).toFixed(2)}s`;
+  const choosePin = (acc: LinkedBankAccount) => { setFundingAccount(acc); setStep('pin'); };
 
-  // ── SUCCESS ───────────────────────────────────────────────────
-  if (step === 'success') return (
-    <div style={S.page}>
-      <div style={{ padding:'60px 24px', textAlign:'center' as const }}>
-        <div style={{ width:84, height:84, borderRadius:'50%', background:'rgba(0,200,83,0.1)', border:`3px solid ${T.green}`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:40, margin:'0 auto 20px' }}>✅</div>
-        <h2 style={S.h2}>INRT Sent!</h2>
-        <p style={{ color:T.muted, fontSize:14, margin:'0 0 20px' }}>{amt.toLocaleString('en-IN')} INRT delivered to {recipient?.name}</p>
-        {durationMs > 0 && (
-          <div style={{ background:'rgba(0,229,204,0.08)', border:`1px solid ${T.teal}30`, borderRadius:14, padding:'16px', marginBottom:20 }}>
-            <p style={{ color:T.muted, fontSize:11, margin:'0 0 4px', letterSpacing:1 }}>⚡ DELIVERED IN</p>
-            <p style={{ color:T.teal, fontSize:30, fontWeight:800, margin:0, fontFamily:'monospace' }}>{fmtMs(durationMs)}</p>
-          </div>
-        )}
-        <div style={{ background:T.light, borderRadius:14, padding:'14px 16px', marginBottom:20, textAlign:'left' as const }}>
-          {[['Reference', txRef],['To', toAddress],['Amount', `${amt.toLocaleString('en-IN')} INRT`],['Status','✅ Delivered']].map(([k,v])=>(
-            <div key={k} style={{ display:'flex', justifyContent:'space-between', padding:'6px 0', borderBottom:`1px solid ${T.border}` }}>
-              <span style={{ color:T.muted, fontSize:12 }}>{k}</span>
-              <span style={{ color:T.text, fontWeight:700, fontSize:12, fontFamily:k==='Reference'||k==='To'?'monospace':'inherit', maxWidth:'60%', textAlign:'right' as const, wordBreak:'break-all' as const }}>{v}</span>
-            </div>
-          ))}
-        </div>
-        <button onClick={reset} style={S.btnPrimary}>Send More INRT</button>
-        <button onClick={()=>navigate('/dashboard')} style={{ ...S.btnOutline, marginTop:10 }}>Back to Home</button>
-      </div>
-    </div>
-  );
+  const runProcessing = async () => {
+    if (!/^\d{4}$/.test(pin)) return setErr('Enter your 4-digit UPI PIN');
+    setErr('');
+    setStep('processing');
+    const stages = method === 'bank'
+      ? ['Connecting to sandbox NEFT network…', 'Verifying recipient account…', 'Simulating bank debit…', 'Confirming transfer…']
+      : ['Connecting to sandbox UPI switch…', 'Verifying recipient…', 'Authorizing with your bank…', 'Confirming payment…'];
+    for (const s of stages) { setProgressMsg(s); await new Promise(r => setTimeout(r, 500)); }
 
-  // ── PROCESSING ────────────────────────────────────────────────
-  if (step === 'processing') return (
-    <div style={S.page}>
-      <div style={{ padding:'60px 24px', textAlign:'center' as const }}>
-        <div style={{ width:64, height:64, border:`4px solid rgba(123,47,190,0.15)`, borderTopColor:T.inrt, borderRadius:'50%', animation:'spin 0.8s linear infinite', margin:'0 auto 20px' }}/>
-        <h2 style={S.h2}>Sending INRT…</h2>
-        <p style={{ color:T.muted, fontSize:14, margin:'0 0 20px' }}>Delivering to {recipient?.name}</p>
-        <div style={{ background:'rgba(123,47,190,0.06)', border:`1px solid ${T.inrt}20`, borderRadius:14, padding:'16px' }}>
-          <p style={{ color:T.muted, fontSize:11, margin:'0 0 6px', letterSpacing:1 }}>ELAPSED</p>
-          <p style={{ color:T.inrt, fontSize:28, fontWeight:800, margin:0, fontFamily:'monospace' }}>{fmtMs(elapsed)}</p>
-        </div>
-        <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
-      </div>
-    </div>
-  );
+    const success = Math.random() > 0.06;
+    const refId = String(Math.floor(100000000000 + Math.random() * 899999999999));
+    const time = new Date().toLocaleString('en-IN', { day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit' });
 
-  // ── PIN ───────────────────────────────────────────────────────
-  if (step === 'pin') return (
-    <div style={S.page}>
-      <div style={{ padding:'24px' }}>
-        <button onClick={()=>setStep('review')} style={S.backLink}>← Back</button>
-        <div style={{ background:'rgba(123,47,190,0.06)', border:`1px solid ${T.inrt}20`, borderRadius:14, padding:'16px', marginBottom:24, textAlign:'center' as const }}>
-          <p style={{ color:T.muted, fontSize:12, margin:'0 0 4px' }}>Sending</p>
-          <p style={{ color:T.text, fontWeight:800, fontSize:28, margin:'0 0 2px', fontFamily:"'Plus Jakarta Sans',sans-serif" }}>{amt.toLocaleString('en-IN')} INRT</p>
-          <p style={{ color:T.muted, fontSize:13, margin:0 }}>to {recipient?.name} · ≈ ₹{amt.toLocaleString('en-IN')}</p>
-        </div>
-        <PinPad onComplete={handleSend} onCancel={()=>setStep('review')}/>
-        {err && <p style={{ color:T.red, fontSize:13, marginTop:12, textAlign:'center' as const }}>{err}</p>}
-      </div>
-      <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
-    </div>
-  );
+    if (user?.uid) {
+      const label = method === 'cash' ? cashName : method === 'bank' ? `A/C ${acctNum.slice(-4)}` : method === 'card' ? `Card ••${cardNum.slice(-4)}` : upiId;
+      await addTransaction(user.uid, {
+        type: 'debit',
+        amount: amt,
+        note: `Sent to ${recipientName || label} via ${METHOD_INFO[method].label}${fundingAccount ? ` (${fundingAccount.bankName} ••${fundingAccount.accountNumberMasked.slice(-4)})` : ''}${success ? '' : ' — Failed'}`,
+        cat: 'transfer',
+        ref: refId,
+      });
+      await refreshProfile();
+    }
+    setResult({ success, refId, time });
+    setStep('result');
+  };
 
-  // ── REVIEW ────────────────────────────────────────────────────
-  if (step === 'review') return (
-    <div style={S.page}>
-      <div style={{ padding:'24px' }}>
-        <button onClick={()=>setStep('form')} style={S.backLink}>← Back</button>
-        <h2 style={{ ...S.h2, marginBottom:20 }}>Confirm Transfer</h2>
-        <div style={{ textAlign:'center' as const, marginBottom:20 }}>
-          <p style={{ color:T.text, fontSize:36, fontWeight:800, margin:0, fontFamily:"'Plus Jakarta Sans',sans-serif" }}>{amt.toLocaleString('en-IN')} <span style={{ fontSize:18, color:T.inrt }}>INRT</span></p>
-          <p style={{ color:T.muted, fontSize:13, margin:'4px 0 0' }}>≈ ₹{amt.toLocaleString('en-IN')} · 1 INRT = ₹1</p>
-        </div>
-        <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:16, padding:'14px 16px', marginBottom:16 }}>
-          {[
-            ['To', recipient?.name || ''],
-            ['INRT Address', toAddress],
-            ['Amount', `${amt.toLocaleString('en-IN')} INRT`],
-            ['Network Fee', '₹0 (Free)'],
-            ['Est. Delivery', '2-4 seconds'],
-            ...(note ? [['Note', note]] : []),
-          ].map(([k,v])=>(
-            <div key={k} style={{ display:'flex', justifyContent:'space-between', padding:'8px 0', borderBottom:`1px solid ${T.border}` }}>
-              <span style={{ color:T.muted, fontSize:13 }}>{k}</span>
-              <span style={{ color:k==='Network Fee'?T.green:T.text, fontWeight:700, fontSize:13, fontFamily:k==='INRT Address'?'monospace':'inherit', maxWidth:'60%', textAlign:'right' as const, wordBreak:'break-all' as const }}>{v}</span>
-            </div>
-          ))}
-        </div>
-        {err && <p style={{ color:T.red, fontSize:13, marginBottom:12 }}>{err}</p>}
-        <button onClick={()=>setStep('pin')} style={S.btnInrt}>Confirm & Enter PIN →</button>
-      </div>
-    </div>
-  );
+  const reset = () => {
+    setStep('method'); setUpiId(''); setCardNum(''); setAcctNum(''); setAcctNumConfirm(''); setIfsc('');
+    setCashName(''); setCashCity(''); setRecipientName(''); setAmount(''); setNote('');
+    setPin(''); setResult(null); setErr('');
+  };
 
-  // ── FAILED ────────────────────────────────────────────────────
-  if (step === 'failed') return (
-    <div style={S.page}>
-      <div style={{ padding:'60px 24px', textAlign:'center' as const }}>
-        <div style={{ width:84, height:84, borderRadius:'50%', background:'rgba(255,59,48,0.1)', border:`3px solid ${T.red}`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:40, margin:'0 auto 20px' }}>❌</div>
-        <h2 style={S.h2}>Transfer Failed</h2>
-        <p style={{ color:T.muted, fontSize:14, margin:'0 0 24px' }}>Your INRT has been refunded to your wallet.</p>
-        <button onClick={reset} style={S.btnPrimary}>Try Again</button>
-        <button onClick={()=>navigate('/dashboard')} style={{ ...S.btnOutline, marginTop:10 }}>Back to Home</button>
-      </div>
-      <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
-    </div>
-  );
-
-  // ── MAIN FORM ─────────────────────────────────────────────────
   return (
-    <div style={S.page}>
-      <div style={{ padding:'52px 20px 24px' }}>
-        <button onClick={()=>navigate('/dashboard')} style={S.backLink}>← Back</button>
-        <h2 style={{ ...S.h2, marginBottom:4 }}>Send Money</h2>
-        <p style={{ color:T.muted, fontSize:13, margin:'0 0 20px' }}>Send INRT to anyone in the world instantly</p>
-
-        {/* ── SEND METHOD SELECTOR ─────────────────────────── */}
-        <div style={{ background:'rgba(0,229,204,0.06)', border:'1px solid rgba(0,229,204,0.25)', borderRadius:14, padding:'14px 16px', marginBottom:20 }}>
-          <p style={{ color:T.teal, fontWeight:700, fontSize:13, margin:'0 0 4px' }}>📱 Prefer UPI, Card, or Netbanking?</p>
-          <p style={{ color:T.muted, fontSize:12, margin:'0 0 10px', lineHeight:1.6 }}>
-            Send to anyone via UPI ID, mobile number, or card — currently running in test mode
-            while our payment gateway integration is finalized.
-          </p>
-          <button onClick={() => navigate('/sandbox-send')}
-            style={{ width:'100%', background:'rgba(0,229,204,0.15)', border:`1px solid ${T.teal}`, color:T.teal, borderRadius:10, padding:'10px 0', fontSize:13, fontWeight:700, cursor:'pointer' }}>
-            Send via UPI / Card (Test Mode) →
-          </button>
-        </div>
-
-        {/* ── INRT BALANCE ─────────────────────────────────── */}
-        <div style={{ background:'rgba(123,47,190,0.06)', border:`1px solid ${T.inrt}25`, borderRadius:14, padding:'14px 16px', marginBottom:20, display:'flex', justifyContent:'space-between', alignItems:'center' }}>
-          <div>
-            <p style={{ color:T.muted, fontSize:11, fontWeight:700, margin:'0 0 2px', letterSpacing:0.5 }}>YOUR INRT BALANCE</p>
-            <p style={{ color:T.inrt, fontSize:22, fontWeight:800, margin:0, fontFamily:"'Plus Jakarta Sans',sans-serif" }}>{inrtBal.toLocaleString('en-IN')} INRT</p>
-          </div>
-          <div style={{ textAlign:'right' as const }}>
-            <p style={{ color:T.muted, fontSize:11, margin:'0 0 2px' }}>≈ ₹{inrtBal.toLocaleString('en-IN')}</p>
-            <button onClick={()=>navigate('/checkout')} style={{ background:T.inrt, border:'none', borderRadius:8, padding:'6px 12px', color:'#fff', fontSize:11, fontWeight:700, cursor:'pointer' }}>Buy INRT +</button>
-          </div>
-        </div>
-
-        {/* ── RECIPIENT ADDRESS ─────────────────────────────── */}
-        <p style={S.label}>RECIPIENT INRT ADDRESS</p>
-        <input
-          value={toAddress} onChange={e=>setToAddress(e.target.value.toUpperCase())}
-          placeholder="INRT-XXXX-XXXX-XXXX" maxLength={20}
-          style={{ ...S.input, fontFamily:'monospace', letterSpacing:1 }}
-        />
-        {lookupLoad && <p style={{ color:T.muted, fontSize:12, margin:'-10px 0 12px' }}>🔍 Looking up address…</p>}
-        {lookupErr  && <p style={{ color:T.red,  fontSize:12, margin:'-10px 0 12px' }}>⚠️ {lookupErr}</p>}
-        {recipient  && (
-          <div style={{ background:T.greenL, border:`1px solid ${T.green}30`, borderRadius:10, padding:'10px 14px', marginBottom:16, display:'flex', gap:10, alignItems:'center' }}>
-            <span style={{ fontSize:18 }}>✅</span>
-            <div>
-              <p style={{ fontWeight:700, fontSize:13, color:T.text, margin:0 }}>{recipient.name}</p>
-              <p style={{ color:T.green, fontSize:11, margin:0 }}>{recipient.verified ? 'KYC Verified ✓' : 'Address confirmed'}</p>
-            </div>
-          </div>
-        )}
-
-        {/* ── AMOUNT ───────────────────────────────────────── */}
-        <p style={S.label}>AMOUNT (INRT)</p>
-        <div style={{ display:'flex', alignItems:'center', gap:8, background:T.light, borderRadius:14, padding:'14px 16px', border:`1.5px solid ${amount?T.inrt:T.border}`, marginBottom:8 }}>
-          <span style={{ fontSize:22 }}>🪙</span>
-          <input type="number" value={amount} onChange={e=>setAmount(e.target.value)} placeholder="0"
-            style={{ flex:1, background:'none', border:'none', outline:'none', fontFamily:"'Plus Jakarta Sans',sans-serif", fontWeight:800, fontSize:28, color:T.text }}/>
-        </div>
-        <p style={{ color:T.muted, fontSize:12, margin:'0 0 12px' }}>= ₹{amt ? amt.toLocaleString('en-IN') : '0'} · No fees</p>
-
-        {/* Quick amounts */}
-        <div style={{ display:'flex', gap:8, marginBottom:16 }}>
-          {[10, 50, 100, 500].map(v=>(
-            <button key={v} onClick={()=>setAmount(String(v))}
-              style={{ flex:1, padding:'10px 0', borderRadius:10, border:`1px solid ${T.border}`, background:'transparent', cursor:'pointer', fontSize:13, fontWeight:700, color:T.inrt, fontFamily:"'Plus Jakarta Sans',sans-serif" }}>
-              {v}
-            </button>
-          ))}
-        </div>
-
-        {/* Note */}
-        <p style={S.label}>NOTE (OPTIONAL)</p>
-        <input value={note} onChange={e=>setNote(e.target.value)} placeholder="What's this for?"
-          style={{ ...S.input, marginBottom:20 }}/>
-
-        {amt > inrtBal && <p style={{ color:T.red, fontSize:12, marginBottom:12, textAlign:'center' as const }}>Insufficient INRT. <button onClick={()=>navigate('/checkout')} style={{ background:'none', border:'none', color:T.inrt, cursor:'pointer', fontWeight:700, fontSize:12 }}>Buy INRT →</button></p>}
-
-        <button
-          disabled={!recipient || amt <= 0 || amt > inrtBal}
-          onClick={()=>setStep('review')}
-          style={{ ...S.btnInrt, opacity:(!recipient||amt<=0||amt>inrtBal)?0.5:1 }}>
-          Continue →
-        </button>
-
-        {/* ── DON'T HAVE INRT? ─────────────────────────────── */}
-        <div onClick={()=>navigate('/checkout')} style={{ marginTop:16, background:'rgba(123,47,190,0.04)', border:`1px solid ${T.inrt}20`, borderRadius:14, padding:'14px 16px', cursor:'pointer', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
-          <div>
-            <p style={{ color:T.inrt, fontWeight:700, fontSize:13, margin:0 }}>🪙 Don't have INRT yet?</p>
-            <p style={{ color:T.muted, fontSize:12, margin:'2px 0 0' }}>Buy INRT with ₹ via Razorpay — instant</p>
-          </div>
-          <span style={{ color:T.inrt, fontSize:18 }}>→</span>
+    <div style={{ width:'100%', minHeight:'100vh', background:T.bg, fontFamily:"'Plus Jakarta Sans',sans-serif" }}>
+      <div style={{ background:T.headerGrad, padding:'20px 20px 16px', display:'flex', alignItems:'center', gap:14 }}>
+        <button onClick={() => step==='method' ? navigate(-1) : reset()}
+          style={{ width:38, height:38, borderRadius:10, background:'rgba(255,255,255,0.15)', border:'none', color:'#fff', fontSize:16, cursor:'pointer' }}>←</button>
+        <div>
+          <h1 style={{ color:'#fff', fontSize:20, fontWeight:800, margin:0 }}>Send Money</h1>
+          <p style={{ color:'rgba(255,255,255,0.7)', fontSize:11, margin:'2px 0 0' }}>Straight from your bank account</p>
         </div>
       </div>
 
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap');
-        @keyframes spin{to{transform:rotate(360deg)}}
-      `}</style>
+      <div style={{ padding:'18px', maxWidth:460, margin:'0 auto' }}>
+        <div style={{ background:T.card, borderRadius:20, border:`1px solid ${T.border}`, padding:24, boxShadow:'0 4px 20px rgba(0,0,0,0.06)' }}>
+
+          {step === 'method' && (
+            <>
+              <p style={{ fontSize:20, fontWeight:800, color:T.navy, margin:'0 0 4px' }}>Choose how you'd like to pay</p>
+              <p style={{ fontSize:12, color:T.muted, margin:'0 0 16px' }}>Pick a method to continue</p>
+
+              <div style={{ display:'flex', background:T.light, borderRadius:14, padding:4, marginBottom:16 }}>
+                {(Object.keys(METHOD_INFO) as Method[]).map(m => (
+                  <button key={m} onClick={() => setMethod(m)}
+                    style={{ flex:1, textAlign:'center', padding:'9px 0', borderRadius:11, fontSize:11, fontWeight:800,
+                      color: method===m ? T.navy : T.muted, background: method===m ? '#fff' : 'transparent',
+                      border:'none', cursor:'pointer', boxShadow: method===m ? '0 2px 6px rgba(0,0,0,0.1)' : 'none' }}>
+                    {METHOD_INFO[m].label}
+                  </button>
+                ))}
+              </div>
+
+              <div style={{ borderRadius:18, height:120, position:'relative', overflow:'hidden', marginBottom:18,
+                backgroundImage:`url(${METHOD_INFO[method].photo})`, backgroundSize:'cover', backgroundPosition:'center' }}>
+                <div style={{ position:'absolute', inset:0, background:'linear-gradient(180deg,rgba(10,20,35,0.2),rgba(10,20,35,0.65))' }} />
+                <p style={{ position:'absolute', bottom:10, left:14, color:'#fff', fontWeight:800, fontSize:15, margin:0 }}>{METHOD_INFO[method].label}</p>
+                <p style={{ position:'absolute', bottom:34, left:14, right:14, color:'rgba(255,255,255,0.85)', fontSize:11, margin:0 }}>{METHOD_INFO[method].tagline}</p>
+              </div>
+
+              <button onClick={() => setStep('recipient')}
+                style={{ width:'100%', background:T.headerGrad, color:'#fff', border:'none', borderRadius:12, padding:14, fontWeight:700, fontSize:14, cursor:'pointer' }}>
+                Continue →
+              </button>
+            </>
+          )}
+
+          {step === 'recipient' && (
+            <>
+              <p style={{ color:T.muted, fontSize:12, fontWeight:700, letterSpacing:0.5, margin:'0 0 14px' }}>
+                {METHOD_INFO[method].label.toUpperCase()} — RECIPIENT DETAILS
+              </p>
+
+              {method === 'upi' && (
+                <div style={{ marginBottom:14 }}>
+                  <label style={{ fontSize:10, color:T.muted, fontWeight:700 }}>UPI ID OR MOBILE NUMBER</label>
+                  <input value={upiId} onChange={e => setUpiId(e.target.value)} placeholder="name@bank or 10-digit number"
+                    style={{ width:'100%', boxSizing:'border-box', border:`1.5px solid ${T.border}`, borderRadius:12, padding:'13px 14px', fontSize:14, marginTop:5 }} />
+                </div>
+              )}
+
+              {method === 'card' && (
+                <div style={{ marginBottom:14 }}>
+                  <label style={{ fontSize:10, color:T.muted, fontWeight:700 }}>RECIPIENT'S CARD NUMBER</label>
+                  <input value={cardNum} onChange={e => setCardNum(e.target.value.replace(/[^\d ]/g,''))} placeholder="16-digit card number"
+                    style={{ width:'100%', boxSizing:'border-box', border:`1.5px solid ${T.border}`, borderRadius:12, padding:'13px 14px', fontSize:14, marginTop:5, fontFamily:'monospace' }} />
+                </div>
+              )}
+
+              {method === 'bank' && (
+                <>
+                  <div style={{ marginBottom:12 }}>
+                    <label style={{ fontSize:10, color:T.muted, fontWeight:700 }}>RECIPIENT'S ACCOUNT NUMBER</label>
+                    <input value={acctNum} onChange={e => setAcctNum(e.target.value.replace(/\D/g,''))} placeholder="Enter account number"
+                      style={{ width:'100%', boxSizing:'border-box', border:`1.5px solid ${T.border}`, borderRadius:12, padding:'13px 14px', fontSize:14, marginTop:5 }} />
+                  </div>
+                  <div style={{ marginBottom:12 }}>
+                    <label style={{ fontSize:10, color:T.muted, fontWeight:700 }}>CONFIRM ACCOUNT NUMBER</label>
+                    <input value={acctNumConfirm} onChange={e => setAcctNumConfirm(e.target.value.replace(/\D/g,''))} placeholder="Re-enter account number"
+                      style={{ width:'100%', boxSizing:'border-box', border:`1.5px solid ${T.border}`, borderRadius:12, padding:'13px 14px', fontSize:14, marginTop:5 }} />
+                  </div>
+                  <div style={{ marginBottom:6 }}>
+                    <label style={{ fontSize:10, color:T.muted, fontWeight:700 }}>IFSC CODE</label>
+                    <input value={ifsc} onChange={e => setIfsc(e.target.value.toUpperCase())} placeholder="e.g. HDFC0001234"
+                      style={{ width:'100%', boxSizing:'border-box', border:`1.5px solid ${T.border}`, borderRadius:12, padding:'13px 14px', fontSize:14, marginTop:5, textTransform:'uppercase' }} />
+                  </div>
+                  {acctNum.length >= 8 && acctNum === acctNumConfirm && /^[A-Z]{4}0[A-Z0-9]{6}$/.test(ifsc.trim()) && (
+                    <div style={{ display:'flex', alignItems:'center', gap:6, background:'#E8FAF0', border:'1px solid #A8E6C1', borderRadius:10, padding:'8px 12px', margin:'10px 0', fontSize:11, color:'#0A7A3E', fontWeight:700 }}>
+                      ✓ Verified: {recipientName || 'Account holder'} confirmed
+                    </div>
+                  )}
+                </>
+              )}
+
+              {method === 'cash' && (
+                <>
+                  <div style={{ marginBottom:12 }}>
+                    <label style={{ fontSize:10, color:T.muted, fontWeight:700 }}>RECIPIENT'S FULL NAME</label>
+                    <input value={cashName} onChange={e => setCashName(e.target.value)} placeholder="As on their ID"
+                      style={{ width:'100%', boxSizing:'border-box', border:`1.5px solid ${T.border}`, borderRadius:12, padding:'13px 14px', fontSize:14, marginTop:5 }} />
+                  </div>
+                  <div style={{ marginBottom:6 }}>
+                    <label style={{ fontSize:10, color:T.muted, fontWeight:700 }}>PICKUP CITY</label>
+                    <input value={cashCity} onChange={e => setCashCity(e.target.value)} placeholder="City where they'll collect"
+                      style={{ width:'100%', boxSizing:'border-box', border:`1.5px solid ${T.border}`, borderRadius:12, padding:'13px 14px', fontSize:14, marginTop:5 }} />
+                  </div>
+                </>
+              )}
+
+              {method !== 'bank' && (
+                <div style={{ marginTop:12 }}>
+                  <label style={{ fontSize:10, color:T.muted, fontWeight:700 }}>RECIPIENT NAME (OPTIONAL, FOR YOUR RECORDS)</label>
+                  <input value={recipientName} onChange={e => setRecipientName(e.target.value)} placeholder="e.g. Rohan Sharma"
+                    style={{ width:'100%', boxSizing:'border-box', border:`1.5px solid ${T.border}`, borderRadius:12, padding:'13px 14px', fontSize:14, marginTop:5 }} />
+                </div>
+              )}
+
+              {err && <p style={{ color:T.red, fontSize:12, margin:'14px 0 0' }}>{err}</p>}
+              <button onClick={goAmount}
+                style={{ width:'100%', background:T.headerGrad, color:'#fff', border:'none', borderRadius:12, padding:14, fontWeight:700, fontSize:14, cursor:'pointer', marginTop:18 }}>
+                Continue →
+              </button>
+            </>
+          )}
+
+          {step === 'amount' && (
+            <>
+              <p style={{ color:T.muted, fontSize:12, fontWeight:700, letterSpacing:0.5, margin:'0 0 10px' }}>AMOUNT</p>
+              <input type="number" value={amount} onChange={e => setAmount(e.target.value)} placeholder="₹ 0"
+                style={{ width:'100%', boxSizing:'border-box', border:`1.5px solid ${T.border}`, borderRadius:12, padding:'16px 14px', fontSize:22, fontWeight:800, marginBottom:14, color:T.navy }} />
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:8, marginBottom:16 }}>
+                {[100, 500, 1000, 5000].map(a => (
+                  <button key={a} onClick={() => setAmount(String(a))}
+                    style={{ background:T.light, border:`1px solid ${T.border}`, borderRadius:10, padding:'9px 0', fontSize:12, fontWeight:700, color:T.navy, cursor:'pointer' }}>₹{a}</button>
+                ))}
+              </div>
+              <label style={{ fontSize:10, color:T.muted, fontWeight:700 }}>NOTE (OPTIONAL)</label>
+              <input value={note} onChange={e => setNote(e.target.value)} placeholder="What's this for?"
+                style={{ width:'100%', boxSizing:'border-box', border:`1.5px solid ${T.border}`, borderRadius:12, padding:'13px 14px', fontSize:14, marginTop:5, marginBottom:16 }} />
+              {err && <p style={{ color:T.red, fontSize:12, marginBottom:12 }}>{err}</p>}
+              <button disabled={!validAmount} onClick={goAccount}
+                style={{ width:'100%', background: validAmount ? T.headerGrad : T.light, color: validAmount ? '#fff' : T.muted, border:'none', borderRadius:12, padding:14, fontWeight:700, fontSize:14, cursor: validAmount ? 'pointer':'not-allowed' }}>
+                Continue →
+              </button>
+            </>
+          )}
+
+          {step === 'account' && (
+            <>
+              <p style={{ color:T.muted, fontSize:12, fontWeight:700, letterSpacing:0.5, margin:'0 0 14px' }}>PAY FROM</p>
+              {linkedAccounts.map(acc => (
+                <button key={acc.id} onClick={() => choosePin(acc)}
+                  style={{ width:'100%', display:'flex', alignItems:'center', gap:14, background:T.light, border:`1.5px solid ${T.border}`, borderRadius:14, padding:14, marginBottom:10, cursor:'pointer', textAlign:'left' }}>
+                  <div style={{ width:40, height:40, borderRadius:10, background:T.headerGrad, display:'flex', alignItems:'center', justifyContent:'center', color:'#fff', fontWeight:800, fontSize:13, flexShrink:0 }}>
+                    {acc.bankName.split(' ').map(w=>w[0]).slice(0,2).join('')}
+                  </div>
+                  <div style={{ flex:1 }}>
+                    <p style={{ fontWeight:700, fontSize:13, color:T.navy, margin:0 }}>{acc.bankName}</p>
+                    <p style={{ fontSize:11, color:T.muted, margin:'2px 0 0' }}>A/C {acc.accountNumberMasked}</p>
+                  </div>
+                  <span style={{ color:T.accent }}>→</span>
+                </button>
+              ))}
+            </>
+          )}
+
+          {step === 'pin' && fundingAccount && (
+            <>
+              <p style={{ color:T.muted, fontSize:12, fontWeight:700, letterSpacing:0.5, margin:'0 0 4px' }}>ENTER UPI PIN</p>
+              <p style={{ color:T.muted, fontSize:12, margin:'0 0 18px' }}>
+                Paying ₹{amt.toLocaleString('en-IN')} from {fundingAccount.bankName} {fundingAccount.accountNumberMasked}
+              </p>
+              <input type="password" inputMode="numeric" maxLength={4} value={pin}
+                onChange={e => setPin(e.target.value.replace(/\D/g,''))} placeholder="••••"
+                style={{ width:'100%', textAlign:'center', letterSpacing:12, fontSize:24, fontWeight:800, border:`1.5px solid ${T.border}`, borderRadius:12, padding:'16px 14px', marginBottom:16, boxSizing:'border-box', color:T.navy }} />
+              {err && <p style={{ color:T.red, fontSize:12, marginBottom:12, textAlign:'center' }}>{err}</p>}
+              <button disabled={pin.length!==4} onClick={runProcessing}
+                style={{ width:'100%', background: pin.length===4 ? T.headerGrad : T.light, color: pin.length===4 ? '#fff':T.muted, border:'none', borderRadius:12, padding:14, fontWeight:700, fontSize:14, cursor: pin.length===4 ? 'pointer':'not-allowed' }}>
+                Pay ₹{amt.toLocaleString('en-IN')}
+              </button>
+            </>
+          )}
+
+          {step === 'processing' && (
+            <div style={{ textAlign:'center', padding:'30px 0' }}>
+              <div style={{ width:52, height:52, border:`4px solid ${T.light}`, borderTopColor:T.accent, borderRadius:'50%', animation:'sendSpin 0.8s linear infinite', margin:'0 auto 18px' }} />
+              <style>{`@keyframes sendSpin{to{transform:rotate(360deg)}}`}</style>
+              <p style={{ color:T.navy, fontWeight:700, fontSize:14 }}>{progressMsg}</p>
+              <p style={{ color:T.muted, fontSize:11, marginTop:8 }}>🧪 Test mode — no real network call is happening</p>
+            </div>
+          )}
+
+          {step === 'result' && result && (
+            <div style={{ textAlign:'center' }}>
+              <div style={{ background: result.success ? 'rgba(0,200,83,0.08)' : 'rgba(255,59,48,0.08)', border:`1px solid ${result.success?'rgba(0,200,83,0.3)':'rgba(255,59,48,0.3)'}`, borderRadius:18, padding:'28px 20px', marginBottom:20 }}>
+                <div style={{ display:'flex', alignItems:'center', justifyContent:'center', gap:8, marginBottom:14 }}>
+                  <span style={{ fontSize:30, fontWeight:800, color:T.navy }}>₹{amt.toLocaleString('en-IN')}</span>
+                  <span style={{ fontSize:22 }}>{result.success ? '✅' : '❌'}</span>
+                </div>
+                <p style={{ color: result.success ? T.green : T.red, fontSize:16, fontWeight:800, margin:'0 0 18px' }}>
+                  {result.success ? 'Paid Successfully' : 'Payment Failed'}
+                </p>
+                <p style={{ color:T.navy, fontSize:14, fontWeight:700, margin:'0 0 4px' }}>
+                  To {recipientName || (method==='cash'?cashName:method==='bank'?`A/C ••${acctNum.slice(-4)}`:method==='card'?`Card ••${cardNum.slice(-4)}`:upiId)}
+                </p>
+                <p style={{ color:T.muted, fontSize:12, margin:'0 0 4px' }}>{result.time}</p>
+                <p style={{ color:T.muted, fontSize:12, margin:0 }}>Ref No. {result.refId}</p>
+              </div>
+              <button onClick={reset}
+                style={{ width:'100%', background:T.headerGrad, color:'#fff', border:'none', borderRadius:12, padding:14, fontWeight:700, fontSize:14, cursor:'pointer', marginBottom:10 }}>
+                Send Another Payment
+              </button>
+              <button onClick={() => navigate('/dashboard')}
+                style={{ width:'100%', background:'transparent', color:T.muted, border:'none', padding:10, fontSize:13, cursor:'pointer' }}>
+                Back to Dashboard
+              </button>
+            </div>
+          )}
+
+        </div>
+
+        {step === 'method' && (
+          <div style={{ background:'rgba(255,214,10,0.12)', border:'1px solid rgba(255,214,10,0.3)', borderRadius:12, padding:'10px 14px', marginTop:16 }}>
+            <p style={{ color:'#B8860B', fontSize:11, fontWeight:700, margin:0, lineHeight:1.5 }}>
+              🧪 Test mode — no real bank, UPI switch, or card network is contacted.
+            </p>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
-
-const S: Record<string,any> = {
-  page:    { width:'100%', minHeight:'100vh', background:'#fff', fontFamily:"'Plus Jakarta Sans',sans-serif" },
-  backLink:{ background:'none', border:'none', color:'#0070F3', cursor:'pointer', fontSize:14, fontWeight:700, padding:'0 0 16px', display:'block' },
-  h2:      { fontFamily:"'Plus Jakarta Sans',sans-serif", fontWeight:800, fontSize:24, color:'#0A2540', margin:0 },
-  label:   { fontSize:11, color:'#6B7C93', fontWeight:700, letterSpacing:0.5, margin:'0 0 8px' },
-  input:   { width:'100%', padding:'13px 14px', borderRadius:12, border:'1.5px solid #E8ECF0', fontSize:15, outline:'none', boxSizing:'border-box' as const, fontFamily:"'Plus Jakarta Sans',sans-serif", marginBottom:16, color:'#0A2540' },
-  btnPrimary:{ width:'100%', padding:'16px', borderRadius:14, border:'none', background:'#0A2540', color:'#fff', fontWeight:700, fontSize:15, cursor:'pointer', fontFamily:"'Plus Jakarta Sans',sans-serif" },
-  btnInrt:   { width:'100%', padding:'16px', borderRadius:14, border:'none', background:'linear-gradient(135deg,#7B2FBE,#5B17A3)', color:'#fff', fontWeight:700, fontSize:15, cursor:'pointer', fontFamily:"'Plus Jakarta Sans',sans-serif" },
-  btnOutline:{ width:'100%', padding:'14px', borderRadius:14, border:'1.5px solid #E8ECF0', background:'transparent', color:'#6B7C93', fontWeight:700, fontSize:14, cursor:'pointer', fontFamily:"'Plus Jakarta Sans',sans-serif" },
-};
