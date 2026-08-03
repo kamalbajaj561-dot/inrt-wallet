@@ -20,14 +20,13 @@ const T = {
   headerGrad:'linear-gradient(135deg,#002E6E 0%,#00BAF2 100%)',
 };
 
-type Method = 'upi' | 'card' | 'bank' | 'cash';
+type Method = 'upi' | 'card' | 'bank';
 type Step = 'method' | 'recipient' | 'amount' | 'account' | 'pin' | 'processing' | 'result';
 
 const METHOD_INFO: Record<Method, { label:string; photo:string; tagline:string }> = {
   upi:  { label:'UPI',           photo:'https://images.unsplash.com/photo-1571867424488-4565932edb41?w=400&q=80&fit=crop', tagline:'Instant · any UPI ID or number' },
   card: { label:'Send to Card',  photo:'https://images.unsplash.com/photo-1726066012593-3175a0c4e9b8?w=400&q=80&fit=crop', tagline:'Straight to their debit card' },
   bank: { label:'Bank Transfer', photo:'https://images.unsplash.com/photo-1684679674829-fc7b436ec8e8?w=400&q=80&fit=crop', tagline:'NEFT · IMPS · usually 30 min – 2 hrs' },
-  cash: { label:'Cash Pickup',   photo:'https://images.unsplash.com/photo-1565514158882-617325fbd873?w=400&q=80&fit=crop', tagline:'Recipient collects in person' },
 };
 
 export default function SendMoney() {
@@ -45,8 +44,6 @@ export default function SendMoney() {
   const [acctNum, setAcctNum] = useState('');
   const [acctNumConfirm, setAcctNumConfirm] = useState('');
   const [ifsc, setIfsc] = useState('');
-  const [cashName, setCashName] = useState('');
-  const [cashCity, setCashCity] = useState('');
   const [recipientName, setRecipientName] = useState('');
 
   const [amount, setAmount] = useState('');
@@ -64,7 +61,6 @@ export default function SendMoney() {
     if (method === 'upi')  return /^[\w.-]+@[\w.-]+$/.test(upiId.trim()) || /^\d{10}$/.test(upiId.trim());
     if (method === 'card') return /^\d{16}$/.test(cardNum.replace(/\s/g,''));
     if (method === 'bank') return acctNum.length >= 8 && acctNum === acctNumConfirm && /^[A-Z]{4}0[A-Z0-9]{6}$/.test(ifsc.trim().toUpperCase());
-    if (method === 'cash') return cashName.trim().length > 1 && cashCity.trim().length > 1;
     return false;
   };
 
@@ -94,7 +90,7 @@ export default function SendMoney() {
     const time = new Date().toLocaleString('en-IN', { day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit' });
 
     if (user?.uid) {
-      const label = method === 'cash' ? cashName : method === 'bank' ? `A/C ${acctNum.slice(-4)}` : method === 'card' ? `Card ••${cardNum.slice(-4)}` : upiId;
+      const label = method === 'bank' ? `A/C ${acctNum.slice(-4)}` : method === 'card' ? `Card ••${cardNum.slice(-4)}` : upiId;
       await addTransaction(user.uid, {
         type: 'debit',
         amount: amt,
@@ -110,7 +106,7 @@ export default function SendMoney() {
 
   const reset = () => {
     setStep('method'); setUpiId(''); setCardNum(''); setAcctNum(''); setAcctNumConfirm(''); setIfsc('');
-    setCashName(''); setCashCity(''); setRecipientName(''); setAmount(''); setNote('');
+    setRecipientName(''); setAmount(''); setNote('');
     setPin(''); setResult(null); setErr('');
   };
 
@@ -202,21 +198,6 @@ export default function SendMoney() {
                       ✓ Verified: {recipientName || 'Account holder'} confirmed
                     </div>
                   )}
-                </>
-              )}
-
-              {method === 'cash' && (
-                <>
-                  <div style={{ marginBottom:12 }}>
-                    <label style={{ fontSize:10, color:T.muted, fontWeight:700 }}>RECIPIENT'S FULL NAME</label>
-                    <input value={cashName} onChange={e => setCashName(e.target.value)} placeholder="As on their ID"
-                      style={{ width:'100%', boxSizing:'border-box', border:`1.5px solid ${T.border}`, borderRadius:12, padding:'13px 14px', fontSize:14, marginTop:5 }} />
-                  </div>
-                  <div style={{ marginBottom:6 }}>
-                    <label style={{ fontSize:10, color:T.muted, fontWeight:700 }}>PICKUP CITY</label>
-                    <input value={cashCity} onChange={e => setCashCity(e.target.value)} placeholder="City where they'll collect"
-                      style={{ width:'100%', boxSizing:'border-box', border:`1.5px solid ${T.border}`, borderRadius:12, padding:'13px 14px', fontSize:14, marginTop:5 }} />
-                  </div>
                 </>
               )}
 
@@ -314,7 +295,7 @@ export default function SendMoney() {
                   {result.success ? 'Paid Successfully' : 'Payment Failed'}
                 </p>
                 <p style={{ color:T.navy, fontSize:14, fontWeight:700, margin:'0 0 4px' }}>
-                  To {recipientName || (method==='cash'?cashName:method==='bank'?`A/C ••${acctNum.slice(-4)}`:method==='card'?`Card ••${cardNum.slice(-4)}`:upiId)}
+                  To {recipientName || (method==='bank'?`A/C ••${acctNum.slice(-4)}`:method==='card'?`Card ••${cardNum.slice(-4)}`:upiId)}
                 </p>
                 <p style={{ color:T.muted, fontSize:12, margin:'0 0 4px' }}>{result.time}</p>
                 <p style={{ color:T.muted, fontSize:12, margin:0 }}>Ref No. {result.refId}</p>
