@@ -9,8 +9,13 @@ interface Props {
 
 export default function ModeDrawer({ open, onClose }: Props) {
   const { mode, setMode } = useAppMode();
-  const { logout } = useAuth();
+  const { logout, userProfile } = useAuth();
   const navigate = useNavigate();
+
+  const upiId = userProfile?.upiId || (userProfile?.phone ? `${userProfile.phone}@inrt` : '');
+  const qrUrl = upiId
+    ? `https://api.qrserver.com/v1/create-qr-code/?size=140x140&data=${encodeURIComponent(`upi://pay?pa=${upiId}&pn=${encodeURIComponent(userProfile?.name || 'INRT User')}&cu=INR`)}`
+    : '';
 
   if (!open) return null;
 
@@ -83,6 +88,24 @@ export default function ModeDrawer({ open, onClose }: Props) {
         </p>
 
         <div style={{ height: 1, background: 'rgba(255,255,255,0.08)', margin: '4px 0 16px' }} />
+
+        {mode === 'national' && upiId && (
+          <div style={{
+            background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)',
+            borderRadius: 16, padding: 16, marginBottom: 16, textAlign: 'center',
+          }}>
+            <div style={{ width: 110, height: 110, background: '#fff', borderRadius: 10, margin: '0 auto 10px', overflow: 'hidden', padding: 6 }}>
+              <img src={qrUrl} alt="My UPI QR" style={{ width: '100%', height: '100%' }} />
+            </div>
+            <p style={{ color: '#fff', fontWeight: 700, fontSize: 13, margin: '0 0 2px' }}>{userProfile?.name || 'INRT User'}</p>
+            <p style={{ color: '#8B9DB3', fontSize: 11, margin: '0 0 10px' }}>{upiId}</p>
+            <button
+              onClick={() => navigator.clipboard.writeText(upiId)}
+              style={{ width: '100%', background: 'rgba(255,255,255,0.1)', border: 'none', borderRadius: 9, padding: '8px 0', color: '#fff', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
+              📋 Copy UPI ID
+            </button>
+          </div>
+        )}
 
         {mode === 'national' && (
           <button onClick={() => { onClose(); navigate('/link-bank'); }}

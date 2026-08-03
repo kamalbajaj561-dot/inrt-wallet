@@ -225,16 +225,6 @@ export default function ScanPay() {
         <button onClick={()=>navigate('/dashboard')} style={{ background:'none', border:'none', color:T.accent, cursor:'pointer', fontSize:14, fontWeight:700, padding:'0 0 16px', display:'block' }}>← Back</button>
         <h2 style={{ fontFamily:"'Plus Jakarta Sans',sans-serif", fontWeight:800, fontSize:24, color:T.text, marginBottom:16 }}>Scan & Pay</h2>
 
-        {/* Tabs */}
-        <div style={{ display:'flex', gap:8, marginBottom:20 }}>
-          {([['scan','📷 Scan QR'],['show','🖼️ My QR']] as [Mode,string][]).map(([m,l])=>(
-            <button key={m} onClick={()=>{ setMode(m as Mode); setScanned(null); setPayStep('form'); setPayErr(''); }}
-              style={{ flex:1, padding:'12px', borderRadius:12, cursor:'pointer', border:`2px solid ${mode===m?T.navy:T.border}`, background:mode===m?`${T.navy}0a`:'transparent', color:mode===m?T.navy:T.muted, fontWeight:700, fontFamily:"'Plus Jakarta Sans',sans-serif", fontSize:13 }}>
-              {l}
-            </button>
-          ))}
-        </div>
-
         {/* ── SCAN MODE ─────────────────────────────────────── */}
         {mode==='scan'&&(
           <>
@@ -392,45 +382,6 @@ export default function ScanPay() {
               </>
             )}
           </>
-        )}
-
-        {/* ── MY QR MODE ──────────────────────────────────────── */}
-        {mode==='show'&&(
-          <div style={{ textAlign:'center' as const }}>
-            <div style={{ background:T.card, border:`1px solid ${T.border}`, borderRadius:20, padding:24, marginBottom:16, boxShadow:'0 4px 20px rgba(10,37,64,0.08)' }}>
-              <div style={{ width:200, height:200, background:'#fff', borderRadius:12, margin:'0 auto 16px', overflow:'hidden', padding:8 }}>
-                {upiId ? (
-                  <img src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(`upi://pay?pa=${upiId}&pn=${encodeURIComponent(profile?.name||'INRT User')}&cu=INR`)}`} alt="UPI QR" style={{ width:'100%', height:'100%' }}/>
-                ) : (
-                  <div style={{ display:'flex', alignItems:'center', justifyContent:'center', height:'100%', color:'#999', fontSize:13 }}>Generating…</div>
-                )}
-              </div>
-              <p style={{ fontFamily:"'Plus Jakarta Sans',sans-serif", fontWeight:800, fontSize:18, margin:'0 0 4px', color:T.text }}>{profile?.name||'INRT User'}</p>
-              <p style={{ fontSize:13, color:T.muted, margin:'0 0 16px' }}>{upiId}</p>
-              <div style={{ display:'flex', gap:10 }}>
-                <button style={{ flex:1, padding:'12px', borderRadius:12, border:'none', background:T.accent, color:'#fff', fontWeight:700, fontSize:13, cursor:'pointer', fontFamily:"'Plus Jakarta Sans',sans-serif" }}
-                  onClick={()=>navigator.share?navigator.share({title:'Pay me via UPI',text:upiId}):navigator.clipboard.writeText(upiId).then(()=>alert('Copied!'))}>
-                  📤 Share
-                </button>
-                <button style={{ flex:1, padding:'12px', borderRadius:12, border:`1px solid ${T.border}`, background:'transparent', color:T.text, fontWeight:700, fontSize:13, cursor:'pointer', fontFamily:"'Plus Jakarta Sans',sans-serif" }}
-                  onClick={()=>navigator.clipboard.writeText(upiId).then(()=>alert('UPI ID copied!'))}>
-                  📋 Copy
-                </button>
-              </div>
-            </div>
-
-            {inrtAddr&&(
-              <div onClick={()=>navigate('/crypto')} style={{ background:'rgba(123,47,190,0.06)', border:'1px solid rgba(123,47,190,0.2)', borderRadius:14, padding:'14px 16px', cursor:'pointer', textAlign:'left' as const, marginBottom:12 }}>
-                <p style={{ color:'#7B2FBE', fontWeight:700, fontSize:13, margin:'0 0 4px' }}>🪙 Share INRT address instead</p>
-                <p style={{ color:T.muted, fontSize:11, margin:0, fontFamily:'monospace' }}>{inrtAddr}</p>
-              </div>
-            )}
-
-            <div onClick={()=>navigate('/checkout')} style={{ background:'rgba(0,112,243,0.06)', border:'1px solid rgba(0,112,243,0.2)', borderRadius:14, padding:'14px 16px', cursor:'pointer', textAlign:'left' as const }}>
-              <p style={{ color:T.accent, fontWeight:700, fontSize:13, margin:'0 0 4px' }}>💰 Want to buy or sell INRT?</p>
-              <p style={{ color:T.muted, fontSize:12, margin:0 }}>Buy INRT with ₹ or sell INRT back to ₹ →</p>
-            </div>
-          </div>
         )}
       </div>
 
