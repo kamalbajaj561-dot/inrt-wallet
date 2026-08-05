@@ -3,7 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { doc, updateDoc, increment, serverTimestamp, collection, addDoc, getDoc } from 'firebase/firestore';
 import { db } from '../lib/firebase';
-import PaymentSheet from '../components/PaymentSheet';
+import BankPaySheet from '../components/BankPaySheet';
+import type { LinkedBankAccount } from '../lib/db';
 import '../styles/theme.css';
 
 async function fetchGoldPrice() {
@@ -27,7 +28,6 @@ export default function GoldPage() {
   const [toast,setToast] = useState('');
   const [holdings,setHoldings] = useState({grams:0,invested:0});
 
-  const bal = userProfile?.balance||0;
   const showToast=(m:string)=>{setToast(m);setTimeout(()=>setToast(''),3000);};
 
   useEffect(()=>{
@@ -44,11 +44,10 @@ export default function GoldPage() {
   const handleBuy = async () => {
     const amt=parseFloat(amount);
     if(!amt||amt<10) return showToast('Minimum ₹10');
-    if(amt>bal) return showToast(`Insufficient balance. You have ₹${bal}`);
     setShowPaySheet(true);
   };
 
-  const completeSandboxGoldBuy = async (success: boolean, refId: string) => {
+  const completeSandboxGoldBuy = async (success: boolean, refId: string, account: LinkedBankAccount) => {
     setShowPaySheet(false);
     if (!success) { showToast('❌ Payment failed — try again'); return; }
     const amt=parseFloat(amount);
@@ -56,10 +55,10 @@ export default function GoldPage() {
     try {
       const g = amt/gold.price;
       await updateDoc(doc(db,'users',user!.uid),{
-        balance:increment(-amt),goldGrams:increment(g),goldInvested:increment(amt),
+        goldGrams:increment(g),goldInvested:increment(amt),
         rewardPoints:increment(Math.floor(amt/10)),updatedAt:serverTimestamp(),
       });
-      await addDoc(collection(db,'transactions'),{uid:user!.uid,type:'debit',amount:amt,note:`[SANDBOX] Gold purchase ${g.toFixed(4)}g`,ref:refId,cat:'gold',status:'success',createdAt:serverTimestamp()});
+      await addDoc(collection(db,'transactions'),{uid:user!.uid,type:'debit',amount:amt,note:`Gold purchase ${g.toFixed(4)}g (${account.bankName} ••${account.accountNumberMasked.slice(-4)})`,ref:refId,cat:'gold',status:'success',createdAt:serverTimestamp()});
       await refreshProfile();
       showToast(`✅ Bought ${g.toFixed(4)}g of 24K gold!`);
       setAmount('');
@@ -72,14 +71,17 @@ export default function GoldPage() {
     if(!g||g<=0) return showToast('Enter grams to sell');
     if(g>holdings.grams) return showToast('Insufficient gold holdings');
     const proceeds=Math.floor(g*gold.price*0.985);
+    const linkedAccounts: LinkedBankAccount[] = userProfile?.linkedBankAccounts || [];
+    if (linkedAccounts.length === 0) { navigate('/link-bank'); return; }
+    const account = linkedAccounts[0];
     setLoading(true);
     try {
       await updateDoc(doc(db,'users',user!.uid),{
-        balance:increment(proceeds),goldGrams:increment(-g),updatedAt:serverTimestamp(),
+        goldGrams:increment(-g),updatedAt:serverTimestamp(),
       });
-      await addDoc(collection(db,'transactions'),{uid:user!.uid,type:'credit',amount:proceeds,note:`Gold sale ${g}g`,cat:'gold',status:'success',createdAt:serverTimestamp()});
+      await addDoc(collection(db,'transactions'),{uid:user!.uid,type:'credit',amount:proceeds,note:`Gold sale ${g}g — credited to ${account.bankName} ••${account.accountNumberMasked.slice(-4)}`,cat:'gold',status:'success',createdAt:serverTimestamp()});
       await refreshProfile();
-      showToast(`✅ Sold ${g}g for ₹${proceeds.toLocaleString('en-IN')}`);
+      showToast(`✅ Sold ${g}g — ₹${proceeds.toLocaleString('en-IN')} credited to your bank account`);
       setAmount('');
     } catch(e:any){showToast(e.message||'Failed');}
     setLoading(false);
@@ -140,8 +142,8 @@ export default function GoldPage() {
               <p style={{color:'var(--t2)',fontSize:13}}>Holdings: <strong style={{color:'var(--t1)'}}>{holdings.grams.toFixed(4)}g</strong></p>
             </div>}
             <div style={{display:'flex',justifyContent:'space-between',padding:'8px 0',borderTop:'1px solid var(--b1)',marginBottom:14}}>
-              <span style={{color:'var(--t3)',fontSize:12}}>{tab==='buy'?'Wallet balance':'Current value'}</span>
-              <span style={{color:'var(--green)',fontWeight:700,fontSize:12}}>{tab==='buy'?`₹${bal.toLocaleString('en-IN')}`:`₹${currentVal.toLocaleString('en-IN')}`}</span>
+              <span style={{color:'var(--t3)',fontSize:12}}>{tab==='buy'?'Pay from bank':'Current value'}</span>
+              <span style={{color:'var(--green)',fontWeight:700,fontSize:12}}>{tab==='buy'?'Linked account':`₹${currentVal.toLocaleString('en-IN')}`}</span>
             </div>
             <button onClick={tab==='buy'?handleBuy:handleSell} disabled={loading||!amount}
               className={tab==='buy'?'btn-primary':''}
@@ -179,7 +181,7 @@ export default function GoldPage() {
       </div>
 
       {showPaySheet && (
-        <PaymentSheet
+        <BankPaySheet
           amount={parseFloat(amount)}
           itemLabel="24K Digital Gold Purchase"
           onCancel={() => setShowPaySheet(false)}

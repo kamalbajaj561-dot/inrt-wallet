@@ -3,7 +3,8 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { doc, updateDoc, increment, serverTimestamp, collection, addDoc } from 'firebase/firestore';
 import { db } from '../lib/firebase';
-import PaymentSheet from '../components/PaymentSheet';
+import BankPaySheet from '../components/BankPaySheet';
+import type { LinkedBankAccount } from '../lib/db';
 import '../styles/theme.css';
 
 const CATEGORIES = [
@@ -37,8 +38,6 @@ export default function BillPayments() {
   const [error,    setError]    = useState('');
   const [txId,     setTxId]     = useState('');
 
-  const bal = userProfile?.balance || 0;
-
   const fetchBill = async () => {
     if(!provider) return setError('Select a provider');
     if(!accountNo.trim()) return setError('Enter account number');
@@ -55,24 +54,23 @@ export default function BillPayments() {
   const handlePay = async () => {
     const amt = parseFloat(amount);
     if(!amt||amt<1) return setError('Invalid amount');
-    if(amt>bal)     return setError(`Insufficient balance. You have ₹${bal}`);
     setError('');
     setShowPaySheet(true);
   };
 
-  const completeSandboxBillPayment = async (success: boolean, refId: string) => {
+  const completeSandboxBillPayment = async (success: boolean, refId: string, account: LinkedBankAccount) => {
     setShowPaySheet(false);
     const amt = parseFloat(amount);
     if (!success) { setError('Payment failed — please try again'); return; }
     setLoading(true); setError('');
     try {
       await updateDoc(doc(db,'users',user!.uid),{
-        balance:increment(-amt),cashback:increment(Math.floor(amt*0.02)),
+        cashback:increment(Math.floor(amt*0.02)),
         rewardPoints:increment(Math.floor(amt/10)),updatedAt:serverTimestamp(),
       });
       await addDoc(collection(db,'transactions'),{
         uid:user!.uid,type:'debit',amount:amt,cat:'bills',
-        note:`[SANDBOX] ${category.label} — ${provider}`,ref:refId,status:'success',
+        note:`${category.label} — ${provider} (${account.bankName} ••${account.accountNumberMasked.slice(-4)})`,ref:refId,status:'success',
         billRef,accountNo,provider,createdAt:serverTimestamp(),
       });
       setTxId(refId); await refreshProfile(); setStep('success');
@@ -160,10 +158,6 @@ export default function BillPayments() {
             <div style={{background:'rgba(0,214,143,0.06)',border:'1px solid rgba(0,214,143,0.15)',borderRadius:'var(--r2)',padding:'12px 16px',marginBottom:14}}>
               <p style={{color:'var(--green)',fontSize:13,fontWeight:600}}>🎁 Earn ₹{Math.floor(parseFloat(amount||'0')*0.02)} cashback + {Math.floor(parseFloat(amount||'0')/10)} reward points</p>
             </div>
-            <div style={{display:'flex',justifyContent:'space-between',padding:'10px 14px',background:'var(--bg-card)',borderRadius:'var(--r1)',marginBottom:14,border:'1px solid var(--b1)'}}>
-              <span style={{color:'var(--t2)',fontSize:13}}>Wallet balance</span>
-              <span style={{color:parseFloat(amount)>bal?'var(--red)':'var(--green)',fontWeight:700,fontSize:13}}>₹{bal.toLocaleString('en-IN')}</span>
-            </div>
             {error&&<p className="err-box" style={{marginBottom:12}}>⚠️ {error}</p>}
             <button className="btn-primary" onClick={handlePay} disabled={loading} style={{opacity:loading?0.6:1}}>
               {loading?'⏳ Processing…':`Pay ₹${parseFloat(amount).toLocaleString('en-IN')} →`}
@@ -192,7 +186,7 @@ export default function BillPayments() {
       </div>
 
       {showPaySheet && (
-        <PaymentSheet
+        <BankPaySheet
           amount={parseFloat(amount)}
           itemLabel={`${category.label} — ${provider}`}
           onCancel={() => setShowPaySheet(false)}

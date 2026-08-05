@@ -7,8 +7,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import PaymentSheet from '../components/PaymentSheet';
-import { addTransaction, updateBalance } from '../lib/db';
+import BankPaySheet from '../components/BankPaySheet';
+import { addTransaction, type LinkedBankAccount } from '../lib/db';
 import '../styles/theme.css';
 
 const API = import.meta.env.VITE_API_URL || '';
@@ -64,8 +64,6 @@ export default function RechargePage() {
   const [txResult,   setTxResult]  = useState<any>(null);
   const [detecting,  setDetecting] = useState(false);
   const pollRef = useRef<any>(null);
-
-  const bal = userProfile?.balance || 0;
 
   // ── Auto-detect operator from mobile number ───────────────
   useEffect(() => {
@@ -127,24 +125,21 @@ export default function RechargePage() {
 
   const handlePay = async () => {
     if (!plan || !user) return;
-    const amt = plan.amount;
-    if (amt > bal) return setErr(`Insufficient balance. You have ₹${bal.toLocaleString('en-IN')}`);
     setErr('');
     setShowPaySheet(true);
   };
 
-  const completeSandboxRecharge = async (success: boolean, refId: string) => {
+  const completeSandboxRecharge = async (success: boolean, refId: string, account: LinkedBankAccount) => {
     setShowPaySheet(false);
     if (!plan || !user) return;
     setStep('processing');
     setLoading(true);
     try {
       if (success) {
-        await updateBalance(user.uid, -plan.amount);
         await addTransaction(user.uid, {
           type: 'debit',
           amount: plan.amount,
-          note: `[SANDBOX] ${OPERATOR_DISPLAY[operator] || operator} ${type.toUpperCase()} — ${mobile}`,
+          note: `${OPERATOR_DISPLAY[operator] || operator} ${type.toUpperCase()} — ${mobile} (${account.bankName} ••${account.accountNumberMasked.slice(-4)})`,
           cat: 'recharge',
           ref: refId,
         });
@@ -236,11 +231,11 @@ export default function RechargePage() {
         <div style={S.bigIcon('#ff4d6a')}>❌</div>
         <h2 style={S.successTitle}>Recharge Failed</h2>
         <p style={{ color:'var(--t2)',fontSize:14,marginBottom:16,lineHeight:1.7 }}>
-          Your recharge could not be processed. Your wallet balance has been refunded automatically.
+          Your recharge could not be processed. No amount was deducted from your bank account.
         </p>
         <div style={{ background:'rgba(255,77,106,0.06)',border:'1px solid rgba(255,77,106,0.2)',borderRadius:'var(--r2)',padding:'12px 16px',marginBottom:24,width:'100%' }}>
           <p style={{ color:'var(--red)',fontSize:13 }}>
-            ₹{planAmount} refunded to your INRT wallet
+            ₹{planAmount} was not debited — payment was declined before authorization
           </p>
         </div>
         <button className="btn-primary" onClick={reset}>Try Again</button>
@@ -261,9 +256,6 @@ export default function RechargePage() {
           }}
           className="back-btn">←</button>
         <h1 className="page-title">Recharge</h1>
-        <span style={{ color:'var(--teal)',fontSize:12,fontWeight:700 }}>
-          ₹{bal.toLocaleString('en-IN')}
-        </span>
       </div>
 
       <div style={{ padding:'16px 16px 90px' }}>
@@ -446,20 +438,12 @@ export default function RechargePage() {
               ))}
             </div>
 
-            {/* Balance */}
-            <div style={{ display:'flex',justifyContent:'space-between',padding:'10px 14px',background:'var(--bg-card)',border:'1px solid var(--b1)',borderRadius:'var(--r1)',marginBottom:14 }}>
-              <span style={{ color:'var(--t2)',fontSize:13 }}>Wallet balance</span>
-              <span style={{ color:planAmount>bal?'var(--red)':'var(--green)',fontWeight:700,fontSize:13 }}>
-                ₹{bal.toLocaleString('en-IN')}
-              </span>
-            </div>
-
             {err && <p className="err-box" style={{ marginBottom:12 }}>⚠️ {err}</p>}
 
             <button className="btn-primary"
               onClick={handlePay}
-              disabled={loading || planAmount > bal}
-              style={{ opacity:loading||planAmount>bal?0.5:1 }}>
+              disabled={loading}
+              style={{ opacity:loading?0.5:1 }}>
               {loading
                 ? <span style={{ display:'flex',alignItems:'center',justifyContent:'center',gap:10 }}>
                     <span style={{ width:18,height:18,border:'2px solid #000',borderTopColor:'transparent',borderRadius:'50%',display:'inline-block',animation:'spin 0.7s linear infinite' }}/>
@@ -474,7 +458,7 @@ export default function RechargePage() {
       <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
 
       {showPaySheet && plan && (
-        <PaymentSheet
+        <BankPaySheet
           amount={plan.amount}
           itemLabel={`${OPERATOR_DISPLAY[operator] || operator} ${type.toUpperCase()} — ${mobile}`}
           onCancel={() => setShowPaySheet(false)}
